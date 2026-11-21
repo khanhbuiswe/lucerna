@@ -1,58 +1,67 @@
-# Mở file lẻ như Zed — thiết kế ngắn
+# Open a single file like Zed — short design
 
-Ngày: 2026-11-13. Trạng thái: đã duyệt.
+Date: 2026-11-13. Status: Approved.
 
-## Ý định
+## Intent
 
-Mở một file lẻ (Finder, `luc file`, Open File…, Open Recent) hiện mở cả
-thư mục cha (ví dụ `~/Downloads`) hoặc cả repo git chứa file, nên sidebar
-liệt kê cả thư mục. Người dùng muốn như Zed: mở một file thì chỉ có file đó.
+Opening a single file (Finder, `luc file`, Open File…, Open Recent) currently
+opens the whole parent folder (for example `~/Downloads`) or the whole git
+repo containing the file, so the sidebar lists the whole folder. Users want it
+like Zed: opening a file shows only that file.
 
-## Hiện trạng
+## Current state
 
-`resolve_target` (`crates/lucerna/src/target.rs`) chọn gốc cho một file:
-repo git gần nhất, nếu không thì thư mục cha. Chế độ một file (R27: không
-quét, không theo dõi, sidebar và Quick Open chỉ có file đó, Search tắt)
-đã có nhưng chỉ bật khi thư mục cha là `$HOME` hoặc `/`.
+`resolve_target` (`crates/lucerna/src/target.rs`) picks the root for a file:
+the nearest git repo, otherwise the parent folder. Single-file mode (R27: no
+scan, no watching, sidebar and Quick Open contain only that file, Search
+disabled) already exists but only turns on when the parent folder is `$HOME`
+or `/`.
 
-## Tham khảo
+## References
 
-- Zed (`crates/workspace/src/workspace.rs`, `OpenVisible`): mở file vào
-  project trống tạo worktree chỉ gồm file đó (`OpenVisible::All`); mở thêm
-  file vào project đã có worktree hiện thì file đó ẩn (`OpenVisible::None`).
-  Không tìm repo git, không lấy thư mục cha.
-- VS Code: `code file` mở cửa sổ không có folder; Explorer báo chưa mở
-  folder. Cũng không tìm repo git.
+- Zed (`crates/workspace/src/workspace.rs`, `OpenVisible`): opening a file
+  into an empty project creates a worktree containing only that file
+  (`OpenVisible::All`); opening another file into a project that already has
+  a visible worktree makes that file hidden (`OpenVisible::None`). It does
+  not look for a git repo and does not take the parent folder.
+- VS Code: `code file` opens a window with no folder; the Explorer says no
+  folder is open. It also does not look for a git repo.
 
-## Cách làm đã cân nhắc
+## Approaches considered
 
-1. **Mọi file lẻ vào chế độ một file** (chọn). Dùng lại R27, ít mã, giống
-   Zed và VS Code.
-2. Giữ luật repo git, chỉ file ngoài repo mở lẻ. Bỏ: người dùng chọn làm
-   như Zed; khác cả hai editor tham khảo.
-3. Chế độ mới với file ẩn kiểu Zed. Bỏ: chế độ một file đã đủ, việc này
-   để sau.
+1. **Every single file goes into single-file mode** (chosen). Reuses R27,
+   little code, matches Zed and VS Code.
+2. Keep the git repo rule, open only files outside a repo as single files.
+   Dropped: the user chose to do it like Zed; differs from both reference
+   editors.
+3. A new mode with Zed-style hidden files. Dropped: single-file mode is
+   enough, this is left for later.
 
-## Thiết kế
+## Design
 
-- `resolve_target`: file luôn trả `single_file: true`, `root` = thư mục cha.
-  Bỏ tìm `.git` và điều kiện `$HOME`/`/`. Thư mục vẫn mở như cũ.
-- Sidebar: ở chế độ một file không vẽ dòng gốc (thư mục), chỉ còn dòng
-  của file, như Zed. Thanh tiêu đề hiện tên file. (Bản duyệt đầu ghi
-  "dòng gốc hiện tên file"; đổi khi lập kế hoạch vì sẽ lặp tên hai lần.)
-- Mở thêm file: Open File… trong ứng dụng mở tab ở cửa sổ này (như nay);
-  Finder/`luc` mở cửa sổ mới (như nay, `open_requests::route`).
-- Restricted Mode: tin cậy vẫn theo thư mục chứa file.
-- Recent: file lẻ ghi là `RecentKind::File` (đã có).
-- Test: sửa test luật repo git trong `target.rs` và `tests/cli.rs`; thêm
-  test file trong thư mục thường (kiểu `~/Downloads`) và file trong repo
-  đều mở lẻ; test không có dòng gốc và tiêu đề là tên file.
+- `resolve_target`: a file always returns `single_file: true`, `root` = parent
+  folder. Remove the `.git` lookup and the `$HOME`/`/` condition. Folders
+  still open as before.
+- Sidebar: in single-file mode do not draw the root row (the folder); only
+  the file's row remains, like Zed. The title bar shows the file name. (The
+  first approved version said "the root row shows the file name"; changed
+  while writing the plan because it would repeat the name twice.)
+- Opening more files: Open File… inside the app opens a tab in this window
+  (as now); Finder/`luc` opens a new window (as now, `open_requests::route`).
+- Restricted Mode: trust still follows the folder containing the file.
+- Recent: a single file is recorded as `RecentKind::File` (already exists).
+- Tests: update the git repo rule tests in `target.rs` and `tests/cli.rs`; add
+  tests that a file in a plain folder (like `~/Downloads`) and a file in a
+  repo both open as single files; tests for no root row and the title being
+  the file name.
 
-## Không làm
+## Not doing
 
-- File thứ hai hiện ẩn trong cùng cửa sổ như Zed.
-- Đổi folder trong cửa sổ hiện tại (việc riêng của session Open Folder).
+- A second file shown hidden in the same window like Zed.
+- Changing the folder in the current window (a separate job for the Open
+  Folder session).
 
-## Để người làm quyết
+## Left to the implementer
 
-Cách đưa tên file vào nhãn gốc sidebar và tiêu đề; tên test.
+How to put the file name into the sidebar root label and the title; test
+names.

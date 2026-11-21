@@ -1,36 +1,36 @@
-# Sổ ghi terminal tích hợp: hiệu năng và kiểm tra thủ công
+# Integrated terminal ledger: performance and manual checks
 
-Ngày: 2026-11-13. Spec: `2026-11-13-terminal-design.md` (§9.2 ngưỡng, §11 kiểm thử). Plan: `../plans/2026-11-13-terminal.md`, Task 13.
+Date: 2026-11-13. Spec: `2026-11-13-terminal-design.md` (§9.2 thresholds, §11 testing). Plan: `../plans/2026-11-13-terminal.md`, Task 13.
 
-Máy đo: Apple M4, 10 nhân, 16 GB RAM, macOS 26 (Darwin 25.6). Spec đặt ngưỡng trên M1; M4 nhanh hơn M1, nên số dưới đây là cận dưới cho máy chậm hơn.
+Measuring machine: Apple M4, 10 cores, 16 GB RAM, macOS 26 (Darwin 25.6). The spec sets thresholds on M1; M4 is faster than M1, so the numbers below are a lower bound for slower machines.
 
-## 1. Số đo so với ngưỡng §9.2
+## 1. Measurements against the §9.2 thresholds
 
-| Đo | Ngưỡng | Kết quả | Trạng thái |
+| Measure | Threshold | Result | Status |
 |---|---|---|---|
-| Prepaint + paint một terminal 200 × 60 đầy chữ có màu (đổi kiểu mỗi 3 ô, 4020 run), bản release | ≤ 4 ms | Cả lần vẽ cửa sổ (render, layout, prepaint, paint): p95 **2,35 ms** khi màn không đổi, **2,46 ms** khi mọi dòng đổi mỗi khung (p50 2,22 / 2,25 ms), máy rảnh. Chạy lại sau khi sửa dấu descent (§1.3), máy đang tải nặng: p95 4,04 / 3,41 ms (p50 3,24 / 2,88 ms) | Đạt trên máy rảnh; cần đo lại khi máy rảnh |
-| `cat` file 100 MB, phía PTY và parser | terminal xong ≤ 3 s | **0,71 s** (dòng 108 byte, 3000 wakeup) | Đạt |
-| `cat` file 100 MB, khung hình editor bên cạnh ≤ 16 ms | ≤ 16 ms | chưa đo, cần app thật | Chờ người dùng kiểm tra |
-| Terminal đứng yên | 0 khung hình mỗi giây | 0 khung hình, 0 `notify` trong 10 s giả lập | Đạt |
-| Panel ẩn, terminal đang xả output | không vẽ | 0 khung hình qua 500 dòng output; output vẫn được parse | Đạt |
-| RAM scrollback | bị chặn bởi `scrollback` (10 000 dòng) | scrollback tối đa 10 000 dòng; RSS đỉnh của tiến trình test 55,5 MB ở 200 cột, không đổi giữa `cat` 100 MB và `yes` 50 MB | Đạt |
-| RAM cả app khi mở 1 terminal chạy Claude Code | tăng ≤ 50 MB | chưa đo, cần app thật | Chờ người dùng kiểm tra |
-| Binary release `luc` | tăng ≤ 1,5 MB | **+1,09 MiB** (+1 147 760 byte) chưa strip; +0,88 MiB đã `strip -x`; `__TEXT` +0,80 MiB | Đạt |
+| Prepaint + paint of one 200 × 60 terminal full of colored text (style changes every 3 cells, 4020 runs), release build | ≤ 4 ms | The whole window draw (render, layout, prepaint, paint): p95 **2.35 ms** when the screen is unchanged, **2.46 ms** when every row changes each frame (p50 2.22 / 2.25 ms), idle machine. Rerun after fixing the descent sign (§1.3), machine under heavy load: p95 4.04 / 3.41 ms (p50 3.24 / 2.88 ms) | Passes on an idle machine; needs re-measuring when the machine is idle |
+| `cat` of a 100 MB file, PTY and parser side | terminal done ≤ 3 s | **0.71 s** (108-byte lines, 3000 wakeups) | Passes |
+| `cat` of a 100 MB file, editor frame next to it ≤ 16 ms | ≤ 16 ms | not measured, needs the real app | Waiting for user check |
+| Idle terminal | 0 frames per second | 0 frames, 0 `notify` in 10 s simulated | Passes |
+| Panel hidden, terminal flushing output | no drawing | 0 frames over 500 lines of output; output still parsed | Passes |
+| Scrollback RAM | bounded by `scrollback` (10,000 lines) | scrollback max 10,000 lines; peak RSS of the test process 55.5 MB at 200 columns, unchanged between `cat` 100 MB and `yes` 50 MB | Passes |
+| Whole-app RAM with 1 terminal running Claude Code | grows ≤ 50 MB | not measured, needs the real app | Waiting for user check |
+| Release binary `luc` | grows ≤ 1.5 MB | **+1.09 MiB** (+1,147,760 bytes) unstripped; +0.88 MiB after `strip -x`; `__TEXT` +0.80 MiB | Passes |
 
-### 1.1 Cách đo
+### 1.1 How it was measured
 
-**Vẽ** (`crates/lucerna-workbench/tests/terminal_perf.rs`, không dùng harness libtest vì text system thật của macOS chỉ tạo được trên main thread):
+**Drawing** (`crates/lucerna-workbench/tests/terminal_perf.rs`, without the libtest harness because macOS's real text system can only be created on the main thread):
 
 ```
 cargo test --release -p lucerna-workbench --test terminal_perf -- --ignored
 ```
 
-- `TestAppContext::build_with_text_system` với text system thật của nền tảng, nên chữ được shape và glyph được rasterize thật. Font Lilex đi kèm, scale 2× như màn Retina, cửa sổ vừa đủ 200 × 60 ô (ô 8,40 × 17,00 px).
-- Màn hình: 60 dòng, mỗi 3 ô đổi một trong 8 kiểu SGR (màu 16, đậm, nghiêng, gạch chân, nền 256 màu). Tổng 4020 run chữ.
-- Đo 200 lần `window.draw` của một cửa sổ chỉ chứa `TerminalView`, sau 10 lần khởi động. Hai trường hợp: màn không đổi, và mỗi khung feed một màn mới (mọi dòng khác chữ). Không gồm việc GPU vẽ.
-- Đo riêng: `layout_line` cho 60 dòng p95 0,55 ms; `snapshot()` 200 × 60 p95 0,07 ms.
+- `TestAppContext::build_with_text_system` with the platform's real text system, so text is really shaped and glyphs really rasterized. The bundled Lilex font, 2× scale like a Retina screen, a window just big enough for 200 × 60 cells (cell 8.40 × 17.00 px).
+- Screen: 60 rows, every 3 cells switching one of 8 SGR styles (16 color, bold, italic, underline, 256-color background). 4020 text runs in total.
+- Measures 200 `window.draw` calls of a window containing only `TerminalView`, after 10 warm-up runs. Two cases: unchanged screen, and each frame feeding a new screen (every row has different text). Does not include the GPU drawing.
+- Measured separately: `layout_line` for 60 rows p95 0.55 ms; `snapshot()` 200 × 60 p95 0.07 ms.
 
-Lần chạy trên máy rảnh (trước khi sửa dấu descent ở §1.3; cách sửa không đổi lượng việc mỗi khung):
+The run on an idle machine (before fixing the descent sign in §1.3; the fix does not change the amount of work per frame):
 
 ```
 cell 8.40×17.00 px at 2×, grid 200×60
@@ -42,7 +42,7 @@ window draw, every row new: p50 2.249 ms, p95 2.462 ms, max 3.990 ms (200 frames
 budget 4 ms: unchanged p95 2.348 ms, every row new p95 2.462 ms
 ```
 
-Lần chạy cuối, sau khi sửa dấu descent, trong lúc một phiên khác đang build (load average 30 trên 10 nhân). `layout_line` (không đổi code) cũng chậm hơn ~30 %, nên phần chậm hơn là do tải máy:
+The last run, after fixing the descent sign, while another session was building (load average 30 on 10 cores). `layout_line` (code unchanged) was also ~30% slower, so the slowdown comes from machine load:
 
 ```
 terminal_perf: baseline matches shaped text: ok
@@ -55,7 +55,7 @@ window draw, every row new: p50 2.878 ms, p95 3.405 ms, max 3.742 ms (200 frames
 budget 4 ms: unchanged p95 4.040 ms, every row new p95 3.405 ms
 ```
 
-**Flood** (`crates/lucerna-terminal/tests/flood.rs`, PTY thật, không có UI; luồng test nhận sự kiện và lấy snapshot mỗi 64 wakeup như UI):
+**Flood** (`crates/lucerna-terminal/tests/flood.rs`, real PTY, no UI; the test thread receives events and takes a snapshot every 64 wakeups like the UI):
 
 ```
 cargo test --release -p lucerna-terminal --test flood -- --ignored --nocapture --test-threads=1
@@ -66,85 +66,85 @@ cat 100 MB file (108-byte lines): exit Some(0) after 0.71 s, 3000 wakeups, 46 sn
 yes | head -c 50 MB: exit Some(0) after 15.77 s, 2951183 wakeups, 46112 snapshots, scrollback max 10000 lines (cap 10000), peak RSS 55.5 MB (before 55.4 MB)
 ```
 
-`yes` là trường hợp xấu nhất theo số dòng: 25 triệu dòng 2 byte, mỗi dòng cuộn lưới một lần, khoảng 0,63 µs mỗi dòng trong parser của alacritty. `cat` 100 MB chỉ có ~0,93 triệu dòng. RSS 55 MB là scrollback đầy ở 200 cột (10 000 × 200 ô × ~24 byte ≈ 48 MB); ở 120 cột như ước tính của spec thì khoảng 30 MB.
+`yes` is the worst case by line count: 25 million lines of 2 bytes, each line scrolling the grid once, about 0.63 µs per line in alacritty's parser. `cat` of 100 MB has only ~0.93 million lines. The 55 MB RSS is a full scrollback at 200 columns (10,000 × 200 cells × ~24 bytes ≈ 48 MB); at 120 columns as in the spec's estimate it is about 30 MB.
 
-**Đứng yên và panel ẩn** (`crates/lucerna-workbench/tests/terminal_view.rs`, chạy cùng bộ test thường): `idle_prompt_draws_nothing_for_ten_seconds`, `hidden_busy_panel_draws_nothing`.
+**Idle and hidden panel** (`crates/lucerna-workbench/tests/terminal_view.rs`, run with the normal test suite): `idle_prompt_draws_nothing_for_ten_seconds`, `hidden_busy_panel_draws_nothing`.
 
-**Binary**: `cargo build --release --bin luc` trên nhánh này (đã gồm thay đổi vẽ ở §1.2) và trên điểm tách nhánh `9f7d77c` (một `git worktree` tạm, target riêng, xóa sau khi đo). So với điểm tách chứ không với `main` hiện tại, vì `main` đã có thêm Markdown preview không thuộc terminal.
+**Binary**: `cargo build --release --bin luc` on this branch (including the drawing change in §1.2) and on the branch point `9f7d77c` (a temporary `git worktree`, its own target, deleted after measuring). Compared with the branch point and not with the current `main`, because `main` has since gained Markdown preview, which is not part of the terminal.
 
-| | `9f7d77c` | nhánh terminal | Tăng |
+| | `9f7d77c` | terminal branch | Growth |
 |---|---|---|---|
-| `luc` release | 48 823 568 | 49 971 328 | +1 147 760 (1,09 MiB) |
-| sau `strip -x` | 40 182 904 | 41 104 288 | +921 384 (0,88 MiB) |
-| `__TEXT` | 36 536 320 | 37 371 904 | +835 584 |
+| `luc` release | 48,823,568 | 49,971,328 | +1,147,760 (1.09 MiB) |
+| after `strip -x` | 40,182,904 | 41,104,288 | +921,384 (0.88 MiB) |
+| `__TEXT` | 36,536,320 | 37,371,904 | +835,584 |
 
-### 1.2 Vẽ: lần đo đầu vượt ngưỡng, đã sửa
+### 1.2 Drawing: the first measurement exceeded the threshold, fixed
 
-Lần đo đầu (mỗi run một `shape_line` và một `ShapedLine::paint`): màn không đổi p95 5,55 ms, mọi dòng đổi p95 10,15 ms. Tách ra: prepaint 1,5 ms (cache dòng của GPUI trúng) hoặc 4,7–5,2 ms (shape lại), paint 2,8 ms cho 4020 lần paint một dòng.
+First measurement (one `shape_line` and one `ShapedLine::paint` per run): unchanged screen p95 5.55 ms, every row changed p95 10.15 ms. Broken down: prepaint 1.5 ms (GPUI's row cache hit) or 4.7–5.2 ms (reshaping), paint 2.8 ms for 4020 single-line paints.
 
-Đã thử và bỏ:
+Tried and dropped:
 
-- **Gộp cả dòng thành một `shape_line` nhiều run:** màn không đổi xuống 2,2 ms nhưng mọi dòng đổi lên 30 ms. GPUI tách font run ở mỗi lần đổi màu, và CoreText chậm hẳn với dòng có nhiều font run.
-- **Vẽ từng glyph mà không có layer:** 7,8 ms cho 12 000 glyph, vì mỗi primitive được xếp thứ tự riêng trong cây bounds của scene.
+- **Merging a whole row into one multi-run `shape_line`:** unchanged screen dropped to 2.2 ms but every row changed rose to 30 ms. GPUI splits font runs at every color change, and CoreText is much slower on a row with many font runs.
+- **Drawing glyph by glyph without a layer:** 7.8 ms for 12,000 glyphs, because each primitive is ordered separately in the scene's bounds tree.
 
-Cách giữ lại (`element.rs`):
+What was kept (`element.rs`):
 
-- Run chỉ gồm ký tự hẹp thường (rộng 1 ô, không dấu kết hợp) không shape. Glyph của mỗi ký tự theo từng kiểu (thường, đậm, nghiêng) được tra một lần bằng `layout_line` của một ký tự, rồi cache trong `TerminalView` (đổi font thì xóa; quá 8192 ký tự thì làm lại). Ligature đã tắt và lưới cố định, nên kết quả giống shape cả run. Font dự phòng vẫn đúng vì cache giữ `font_id` mà CoreText chọn.
-- Paint vẽ các glyph đó bằng `paint_glyph` ở đúng ô, cùng baseline mà một dòng shape bằng font terminal có; gạch chân, gạch ngang vẽ theo run.
-- Toàn bộ chữ vẽ trong một `paint_layer`.
-- Run có ký tự rộng, dấu kết hợp, emoji hoặc ký tự không ra đúng một glyph vẫn shape như trước (ép độ rộng ô).
+- A run consisting only of ordinary narrow characters (1 cell wide, no combining marks) is not shaped. Each character's glyph per style (regular, bold, italic) is looked up once with `layout_line` of one character, then cached in `TerminalView` (cleared when the font changes; rebuilt past 8192 characters). Ligatures are off and the grid is fixed, so the result is the same as shaping the whole run. Fallback fonts are still right because the cache keeps the `font_id` that CoreText chose.
+- Paint draws those glyphs with `paint_glyph` at the exact cell, on the same baseline that a row shaped with the terminal font has; underline and strikethrough are drawn per run.
+- All text is drawn in one `paint_layer`.
+- A run with wide characters, combining marks, emoji or characters that do not produce exactly one glyph is still shaped as before (forcing the cell width).
 
-Cache shape theo damage của §9.1 không làm: prepaint 200 × 60 bây giờ ~1,4 ms kể cả khi mọi dòng đổi (dưới mốc 2 ms của §9.1), và giá không còn phụ thuộc màn có đổi hay không. Ghi chú còn lại từ Task 8 (prepaint dựng lại cả lưới ở mỗi khung của cửa sổ khi terminal đang hiện) vì vậy chỉ tốn ~1,4 ms mỗi khung có vẽ lại; nếu đo trên M1 thấy vượt 2 ms thì làm cache theo dòng sau.
+The damage-based shape cache of §9.1 is not done: prepaint of 200 × 60 is now ~1.4 ms even when every row changes (under §9.1's 2 ms mark), and the cost no longer depends on whether the screen changed. The remaining note from Task 8 (prepaint rebuilds the whole grid on every window frame while the terminal is shown) therefore costs only ~1.4 ms per redrawn frame; if M1 measurements exceed 2 ms, do a per-row cache later.
 
-### 1.3 Sửa: baseline của chữ vẽ từ glyph cache
+### 1.3 Fix: baseline of text drawn from the glyph cache
 
-Bản đầu của §1.2 lấy `descent` của font với dấu âm (font-kit trả descent là số âm), nên baseline thấp hơn baseline của dòng shape khoảng một descent (17,60 px so với 13,39 px trong ô cao 17 px), chữ lệch với ký tự rộng, dấu kết hợp, con trỏ khối và chữ IME trên cùng dòng, gạch chân và gạch ngang lệch theo. Đã sửa bằng `abs()`, như layout của GPUI. `terminal_perf` bây giờ luôn kiểm tra (cả khi chạy `cargo test` thường, không cần `--ignored`) rằng baseline của chữ vẽ từ glyph bằng `(cao ô − ascent − descent) / 2 + ascent` của `layout_line("m")` bằng text system thật.
+The first version of §1.2 took the font's `descent` with its negative sign (font-kit returns descent as a negative number), so the baseline was lower than the shaped row's baseline by about one descent (17.60 px versus 13.39 px in a 17 px tall cell), making text misaligned with wide characters, combining marks, the block cursor and IME text on the same row, and underline and strikethrough offset along with it. Fixed with `abs()`, like GPUI's layout. `terminal_perf` now always checks (even in a normal `cargo test`, without `--ignored`) that the baseline of text drawn from glyphs equals `(cell height − ascent − descent) / 2 + ascent` of `layout_line("m")` using the real text system.
 
-### 1.4 Sửa sau review cuối nhánh
+### 1.4 Fixes after the final branch review
 
-Mỗi mục có test hồi quy, viết trước và thấy fail rồi mới sửa.
+Each item has a regression test, written first and seen failing before the fix.
 
-1. Bấm vào thanh tab của panel (tab, × kể cả trên tab nền, nút giữa, ⤢) để focus ở khung panel chứ không ở terminal: bộ xử lý nhập (IME, gõ Telex) không được cài, con trỏ vẽ rỗng. `TerminalPanel` giờ chuyển focus của chính panel sang terminal đang hiện (`cx.on_focus`), và bấm tab hoặc đóng tab khi focus đang trong panel thì focus terminal được hiện. Test: `clicks_in_the_tab_bar_keep_the_terminal_focused`, `middle_click_close_keeps_the_terminal_focused`.
-2. Câu hỏi màu OSC 4/10/11/12 luôn được trả bằng bảng màu tối cố định, nên Neovim và Codex chọn kiểu tối dưới Lucerna Light. Bảng màu để trả lời giờ nằm trong terminal (`Terminal::set_query_palette`), `TerminalView` đặt nó lúc tạo và mỗi khi `theme_generation` đổi. Bảng cố định trong `lucerna-terminal` đã bỏ; trước khi có bảng màu thì không trả lời. Test: `background_query_answers_with_the_theme`, `color_request_is_answered_from_the_query_palette`.
-3. Terminal mở lại cùng cửa sổ luôn chạy như Restricted Mode vì nó khởi động trước khi đọc xong trust store. Giờ nó chờ trust store trả lời (`open_restored_terminal`). Test: `restored_terminal_in_a_trusted_folder_uses_workspace_settings`.
-4. `foreground_process` có thể đọc một fd đã bị đóng và dùng lại. Giờ `Terminal::with_pty_fd` giữ khóa `pty_open` trong lúc gọi `tcgetpgrp`. Test: `with_pty_fd_keeps_the_fd_open_while_it_runs`.
-5. `env -u` coi đường dẫn chương trình có `=` là phép gán biến. Chương trình như vậy giờ chạy qua `/bin/sh -c 'exec "$0" "$@"'`, vì cả `env` của BSD lẫn GNU vẫn đọc `a=b` là phép gán dù có `--`. `ALACRITTY_WINDOW_ID` và `WINDOWID` (alacritty tự thêm) cũng bị bỏ khỏi môi trường của shell. Test: `program_path_with_equals_sign_runs`, `alacritty_window_variables_do_not_reach_the_child`.
-6. ⌘+click vào file đang là editor active khi panel phóng to thì không hiện gì. Giờ link file luôn đưa panel về kích thước thường. Test: `link_to_the_shown_file_restores_a_maximized_panel`.
-7. `PanelState` có `#[serde(default)]`: file trạng thái thiếu một trường vẫn đọc được. Test: `panel_state_with_missing_fields_keeps_the_others`.
+1. Clicking the panel's tab bar (tab, × including on a background tab, middle button, ⤢) left focus on the panel frame and not on the terminal: the input handler (IME, Telex typing) was not installed, and the cursor was drawn empty. `TerminalPanel` now moves the panel's own focus to the shown terminal (`cx.on_focus`), and clicking a tab or closing a tab while focus is inside the panel focuses the terminal that gets shown. Tests: `clicks_in_the_tab_bar_keep_the_terminal_focused`, `middle_click_close_keeps_the_terminal_focused`.
+2. OSC 4/10/11/12 color queries were always answered with a fixed dark palette, so Neovim and Codex picked the dark style under Lucerna Light. The palette used to answer now lives in the terminal (`Terminal::set_query_palette`), `TerminalView` sets it at creation and every time `theme_generation` changes. The fixed palette in `lucerna-terminal` is removed; until a palette is set, no answer is given. Tests: `background_query_answers_with_the_theme`, `color_request_is_answered_from_the_query_palette`.
+3. A terminal reopened in the same window always ran as Restricted Mode because it started before the trust store finished reading. It now waits for the trust store's answer (`open_restored_terminal`). Test: `restored_terminal_in_a_trusted_folder_uses_workspace_settings`.
+4. `foreground_process` could read an fd that had been closed and reused. Now `Terminal::with_pty_fd` holds the `pty_open` lock during the `tcgetpgrp` call. Test: `with_pty_fd_keeps_the_fd_open_while_it_runs`.
+5. `env -u` treated a program path containing `=` as a variable assignment. Such a program now runs through `/bin/sh -c 'exec "$0" "$@"'`, because both BSD and GNU `env` still read `a=b` as an assignment even with `--`. `ALACRITTY_WINDOW_ID` and `WINDOWID` (added by alacritty itself) are also removed from the shell's environment. Tests: `program_path_with_equals_sign_runs`, `alacritty_window_variables_do_not_reach_the_child`.
+6. ⌘+click on a file that is already the active editor while the panel is maximized showed nothing. A file link now always returns the panel to its normal size. Test: `link_to_the_shown_file_restores_a_maximized_panel`.
+7. `PanelState` has `#[serde(default)]`: a state file missing a field can still be read. Test: `panel_state_with_missing_fields_keeps_the_others`.
 
-Các mục kiểm tra thủ công ở §2 vẫn chưa đánh dấu: chờ người dùng kiểm tra, nhất là gõ Telex sau khi bấm đổi tab và OSC 11 dưới Lucerna Light (Neovim, Codex).
+The manual check items in §2 are still not ticked: waiting for the user's check, especially Telex typing after clicking to switch tabs and OSC 11 under Lucerna Light (Neovim, Codex).
 
-## 2. Kiểm tra thủ công (chờ người dùng kiểm tra)
+## 2. Manual checks (waiting for user check)
 
-Chạy bản release (`scripts/bundle-app.sh`), đặt cạnh Zed khi so giao diện (design-principles §1.1).
+Run the release build (`scripts/bundle-app.sh`), put it next to Zed when comparing the UI (design-principles §1.1).
 
-### 2.1 Hiệu năng trong app
+### 2.1 Performance in the app
 
-- [ ] `cat` file 100 MB trong terminal trong khi cuộn editor bên cạnh: khung hình editor ≤ 16 ms (log thời gian khung của GPUI), `cat` xong ≤ 3 s. Chờ người dùng kiểm tra.
-- [ ] `yes` 30 s với panel ẩn: RSS của app không tăng quá mức scrollback. Chờ người dùng kiểm tra.
-- [ ] Terminal ở prompt 10 s: CPU ~0 trong Activity Monitor. Chờ người dùng kiểm tra.
-- [ ] RAM cả app khi một terminal chạy Claude Code tăng ≤ 50 MB so với không có terminal. Chờ người dùng kiểm tra.
+- [ ] `cat` of a 100 MB file in the terminal while scrolling the editor next to it: editor frames ≤ 16 ms (GPUI frame time log), `cat` done ≤ 3 s. Waiting for user check.
+- [ ] `yes` for 30 s with the panel hidden: the app's RSS does not grow beyond the scrollback level. Waiting for user check.
+- [ ] Terminal at a prompt for 10 s: CPU ~0 in Activity Monitor. Waiting for user check.
+- [ ] Whole-app RAM with one terminal running Claude Code grows ≤ 50 MB compared with no terminal. Waiting for user check.
 
-### 2.2 Chương trình thật (spec §11)
+### 2.2 Real programs (spec §11)
 
-- [ ] Claude Code: khung viền, màu, cuộn khi đang chạy, ⇧Enter qua binding `sendSequence`, ⌘+click đường dẫn Claude Code in ra mở đúng file và dòng. Chờ người dùng kiểm tra.
-- [ ] Codex: vẽ và nhập đúng. Chờ người dùng kiểm tra.
-- [ ] vim: mouse mode, alt screen (thoát vim trả lại màn shell). Chờ người dùng kiểm tra.
-- [ ] htop: vẽ, màu, phím. Chờ người dùng kiểm tra.
-- [ ] Resize panel khi Claude Code đang vẽ: không vỡ khung, không panic. Chờ người dùng kiểm tra.
-- [ ] Gõ tiếng Việt bằng Telex trong zsh và trong Claude Code: chữ đang gõ hiện ở con trỏ, dấu đúng. Chờ người dùng kiểm tra.
-- [ ] Đổi theme khi terminal đang mở: màu đổi ngay. Chờ người dùng kiểm tra.
-- [ ] Dưới Lucerna Light, Neovim 0.10+ và Codex chọn kiểu sáng (OSC 11). Chờ người dùng kiểm tra.
-- [ ] Hai tab Claude Code: bấm đổi tab rồi gõ Telex ngay, chữ đang gõ hiện ở con trỏ. Chờ người dùng kiểm tra.
-- [ ] Chữ có dấu kết hợp, CJK và emoji hiện đúng ô sau thay đổi cách vẽ ở §1.2 (đường shape vẫn dùng cho chúng). Chờ người dùng kiểm tra.
+- [ ] Claude Code: border frames, colors, scrolling while running, ⇧Enter via the `sendSequence` binding, ⌘+click on a path Claude Code prints opens the right file and line. Waiting for user check.
+- [ ] Codex: draws and takes input correctly. Waiting for user check.
+- [ ] vim: mouse mode, alt screen (quitting vim returns the shell screen). Waiting for user check.
+- [ ] htop: drawing, colors, keys. Waiting for user check.
+- [ ] Resize the panel while Claude Code is drawing: frames not broken, no panic. Waiting for user check.
+- [ ] Typing Vietnamese with Telex in zsh and in Claude Code: the text being typed shows at the cursor, diacritics correct. Waiting for user check.
+- [ ] Change theme while the terminal is open: colors change immediately. Waiting for user check.
+- [ ] Under Lucerna Light, Neovim 0.10+ and Codex pick the light style (OSC 11). Waiting for user check.
+- [ ] Two Claude Code tabs: click to switch tabs then type Telex right away, the text being typed shows at the cursor. Waiting for user check.
+- [ ] Text with combining marks, CJK and emoji shows in the right cells after the drawing change in §1.2 (the shape path is still used for them). Waiting for user check.
 
-### 2.3 So giao diện với Zed (Task 13 bước 6)
+### 2.3 Compare the UI with Zed (Task 13 step 6)
 
-- [ ] Chiều cao thanh tab, nền và viền panel, sash, khoảng cách nút ＋ ⤢ ×. Chờ người dùng kiểm tra.
-- [ ] Trạng thái rỗng, trạng thái tiến trình đã thoát (`[Process exited with code N]`), tab có chuông hoặc mã khác 0. Chờ người dùng kiểm tra.
-- [ ] Con trỏ khung rỗng khi mất focus, lề trái một ô, thanh cuộn. Chờ người dùng kiểm tra.
+- [ ] Tab bar height, panel background and border, sash, spacing of the ＋ ⤢ × buttons. Waiting for user check.
+- [ ] Empty state, exited-process state (`[Process exited with code N]`), a tab with a bell or non-zero code. Waiting for user check.
+- [ ] Empty-outline cursor when focus is lost, left margin of one cell, scrollbar. Waiting for user check.
 
-## 3. Khác
+## 3. Other
 
-- Bảng màu ANSI mặc định của VS Code (light | dark) đã ghi vào research §1.5, đúng với `TerminalColors::fallback_ansi` trong `lucerna-theme`.
+- VS Code's default ANSI palette (light | dark) is recorded in research §1.5, matching `TerminalColors::fallback_ansi` in `lucerna-theme`.
 - `cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok`.

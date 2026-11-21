@@ -1,292 +1,292 @@
-# Terminal tích hợp — thiết kế
+# Integrated terminal — design
 
-Ngày 2026-11-13. Thuộc giai đoạn 5 của lộ trình (§1.3 trong `2026-11-08-lucerna-phase1-design.md`). Nghiên cứu nền: `docs/research/2026-11-13-terminal.md`.
+Date 2026-11-13. Part of phase 5 of the roadmap (§1.3 in `2026-11-08-lucerna-phase1-design.md`). Background research: `docs/research/2026-11-13-terminal.md`.
 
-## 1. Mục đích
+## 1. Purpose
 
-Người dùng Lucerna để agent CLI (Claude Code, Codex) viết code. Hiện họ phải chạy agent trong một app terminal riêng, rồi chuyển qua lại giữa hai cửa sổ để vừa xem agent làm vừa đọc file nó sửa. Terminal tích hợp đưa agent vào cùng cửa sổ: agent chạy cả buổi ở một panel cạnh code, và bấm vào đường dẫn agent in ra thì mở ngay file đó trong editor.
+Lucerna users let CLI agents (Claude Code, Codex) write the code. Today they have to run the agent in a separate terminal app and switch back and forth between two windows to both watch the agent work and read the files it edits. The integrated terminal brings the agent into the same window: the agent runs all session in a panel next to the code, and clicking a path the agent prints opens that file in the editor right away.
 
-**Tiêu chí thành công:** tác giả chạy Claude Code cả ngày trong panel terminal của Lucerna thay vì mở app terminal riêng. Agent vẽ đúng, gõ không trễ, và đọc code bên cạnh trong lúc agent đang in ra liên tục mà không thấy giật.
+**Success criterion:** the author runs Claude Code all day in Lucerna's terminal panel instead of opening a separate terminal app. The agent renders correctly, typing has no lag, and reading code next to it while the agent keeps printing shows no jank.
 
-### 1.1 Mục tiêu (MVP)
+### 1.1 Goals (MVP)
 
-- Panel terminal mặc định ở dưới, chuyển được sang phải, bật tắt bằng ⌃`.
-- Mở terminal ở thư mục gốc của workspace, chạy shell lấy từ `$SHELL`.
-- Nhiều terminal, mỗi terminal là một tab trong panel.
-- Màu lấy theo theme.
-- Chọn chữ, copy, paste, cuộn lại phần đã trôi qua.
-- Thay đổi số dòng và cột khi panel đổi kích thước.
-- ⌘+click vào URL hay đường dẫn file (kèm `:dòng:cột`) thì mở trong trình duyệt hoặc trong editor.
-- Chạy mượt các TUI nặng như Claude Code, Codex, vim, htop.
-- Gõ được tiếng Việt bằng bộ gõ (IME).
+- Terminal panel at the bottom by default, movable to the right, toggled with ⌃`.
+- Open the terminal in the workspace root, running the shell taken from `$SHELL`.
+- Multiple terminals, each one a tab in the panel.
+- Colors follow the theme.
+- Select text, copy, paste, scroll back through what has gone by.
+- Change the number of rows and columns when the panel is resized.
+- ⌘+click on a URL or file path (with `:line:col`) opens it in the browser or in the editor.
+- Smooth running of heavy TUIs such as Claude Code, Codex, vim, htop.
+- Vietnamese typing through an input method (IME).
 
-### 1.2 Ngoài MVP
+### 1.2 Outside the MVP
 
-- Shell integration (OSC 633, đánh dấu lệnh, cuộn theo lệnh).
-- Chia ô terminal (split).
-- Terminal làm tab ở vùng editor, kéo terminal giữa panel và vùng editor.
-- Tìm trong terminal (⌘F).
-- Giữ terminal qua lần mở lại app (persistent sessions).
-- Profile picker, đổi icon hay màu tab, đổi tên tab.
-- Panel bên trái, panel nổi.
-- Problems, Output và các view khác trong panel. Panel được dựng sao cho sau này gắn thêm được (§4.1), nhưng MVP chỉ có Terminal.
+- Shell integration (OSC 633, command marks, scroll by command).
+- Split terminal panes.
+- Terminal as a tab in the editor area, dragging a terminal between the panel and the editor area.
+- Search in the terminal (⌘F).
+- Keeping terminals across app restarts (persistent sessions).
+- Profile picker, changing the tab icon or color, renaming the tab.
+- Left panel, floating panel.
+- Problems, Output and other views in the panel. The panel is built so more can be attached later (§4.1), but the MVP has only Terminal.
 
-### 1.3 Không được làm (anti-goals)
+### 1.3 Must not do (anti-goals)
 
-- Không làm chậm editor. Một agent in liên tục ở terminal không được làm khung hình của editor vượt 16 ms.
-- Không tốn CPU khi đứng yên. Terminal không có dữ liệu mới thì không vẽ lại. Con trỏ mặc định không nhấp nháy.
-- Không có tính năng AI. Terminal chỉ là terminal.
-- Không chép code từ crate `terminal` hay `terminal_view` của Zed (GPL).
+- Do not slow down the editor. An agent printing continuously in the terminal must not push the editor's frame time past 16 ms.
+- Do not use CPU when idle. A terminal with no new data does not redraw. The cursor does not blink by default.
+- No AI features. The terminal is only a terminal.
+- Do not copy code from Zed's `terminal` or `terminal_view` crates (GPL).
 
-## 2. Ràng buộc
+## 2. Constraints
 
-- Chỉ `lucerna-workbench` được dùng gpui. Phần lõi terminal nằm ở crate mới không dùng gpui.
-- Giấy phép MIT OR Apache-2.0; `cargo deny check` phải qua. `alacritty_terminal` 0.26.0 đã được kiểm (research §4).
-- macOS trước. Linux và Windows phải chạy được mà không phải viết lại: không giả định macOS ngoài các chỗ ghi rõ là theo nền tảng.
-- Luồng UI không bao giờ chờ I/O. Đọc PTY và parse chạy ở luồng riêng.
-- Hành vi, lệnh, settings, phím theo VS Code; giao diện và hiệu năng theo Zed. Chỗ lệch ghi rõ lý do.
+- Only `lucerna-workbench` may use gpui. The terminal core lives in a new crate that does not use gpui.
+- License MIT OR Apache-2.0; `cargo deny check` must pass. `alacritty_terminal` 0.26.0 has been checked (research §4).
+- macOS first. Linux and Windows must work without a rewrite: do not assume macOS except where explicitly marked as platform-specific.
+- The UI thread never waits on I/O. PTY reading and parsing run on their own thread.
+- Behavior, commands, settings and keys follow VS Code; UI and performance follow Zed. Where they differ, the reason is stated.
 
-## 3. Các hướng đã cân nhắc
+## 3. Approaches considered
 
-| Hướng | Được | Mất |
+| Approach | Gains | Loses |
 |---|---|---|
-| **1. `alacritty_terminal` + phần vẽ GPUI tự viết** (đã chọn) | Bộ giả lập Zed đã dùng thật với Claude Code và vim; có ConPTY cho Windows; Apache-2.0; binary tăng ~290 KB; 7 crate mới | Tự viết phần vẽ lưới ô và nhập liệu |
-| 2. `wezterm-term` + `portable-pty` | Bộ giả lập tốt, MIT | Không có trên crates.io, phải thêm nguồn git vào `deny.toml`; cây dependency nặng; chưa có editor GPUI nào dùng để học |
-| 3. `vt100` + `portable-pty` | Nhẹ | Thiếu reflow khi resize, chế độ chuột và alt screen chưa chắc; rủi ro vẽ sai TUI |
+| **1. `alacritty_terminal` + a self-written GPUI renderer** (chosen) | Emulator that Zed already uses for real with Claude Code and vim; has ConPTY for Windows; Apache-2.0; binary grows ~290 KB; 7 new crates | Must write the cell-grid rendering and input ourselves |
+| 2. `wezterm-term` + `portable-pty` | Good emulator, MIT | Not on crates.io, a git source must be added to `deny.toml`; heavy dependency tree; no GPUI editor uses it yet to learn from |
+| 3. `vt100` + `portable-pty` | Light | No reflow on resize, mouse modes and alt screen uncertain; risk of drawing TUIs wrong |
 
-Người dùng chọn hướng 1.
+The user chose approach 1.
 
-**Vị trí panel**, người dùng chọn: mặc định ở dưới, chuyển được sang phải. Lý do: agent chạy cả buổi; panel dưới trên laptop chỉ ~15–20 dòng, còn đặt bên phải agent có một cột cao hết màn hình mà code vẫn hiện. Hai phương án bị loại: chỉ ở dưới có nút phóng to (phóng to thì che code); terminal làm tab editor (đã để ngoài MVP, kéo theo sửa editor group).
+**Panel position**, chosen by the user: bottom by default, movable to the right. Reason: the agent runs all session; a bottom panel on a laptop is only ~15–20 rows, while with the panel on the right the agent gets one column as tall as the screen and the code is still visible. Two options were rejected: bottom only with a maximize button (maximizing covers the code); terminal as an editor tab (left outside the MVP, it drags in editor group changes).
 
-## 4. Giao diện
+## 4. UI
 
-Theo Zed (`TerminalPanel` ở revision `b5cd310`, research §2.4).
+Follows Zed (`TerminalPanel` at revision `b5cd310`, research §2.4).
 
 ### 4.1 Panel
 
 ```
-Vị trí dưới (mặc định):
+Bottom position (default):
 ┌ title bar ───────────────────────────────────────────────┐
-├ sidebar ┬ vùng editor ───────────────────────────────────┤
+├ sidebar ┬ editor area ───────────────────────────────────┤
 │         │                                                 │
 │         ├═════════════ sash 6 px ═════════════════════════┤
-│         │ ▣ zsh  ▣ claude ×                     ＋  ⤢  × │ ← thanh tab
+│         │ ▣ zsh  ▣ claude ×                     ＋  ⤢  × │ ← tab bar
 │         │ $ claude                                        │
 │         │ ╭─────────────────────────────╮                 │
-│         │ │ ✻ Welcome to Claude Code    │                 │ ← thân terminal
+│         │ │ ✻ Welcome to Claude Code    │                 │ ← terminal body
 │         │ ╰─────────────────────────────╯                 │
 ├ status bar: [📁][🔍][⊞][▣] …                              ┤
 └──────────────────────────────────────────────────────────┘
 
-Vị trí phải:
-┌ sidebar ┬ vùng editor ─────────┬║┬ ▣ claude ×   ＋ ⤢ × ┐
+Right position:
+┌ sidebar ┬ editor area ─────────┬║┬ ▣ claude ×   ＋ ⤢ × ┐
 │         │                      │║│ $ claude            │
 │         │                      │║│ …                   │
 └─────────┴──────────────────────┴║┴─────────────────────┘
 ```
 
-- Panel ở dưới chiếm chiều ngang của **vùng editor**, không lấn sang sidebar (giống Zed khi dock dưới). Panel ở phải chiếm toàn bộ chiều cao giữa title bar và status bar.
-- Kích thước mặc định: cao 320 px khi ở dưới, rộng 640 px khi ở phải (như Zed). Kéo sash để đổi; tối thiểu 4 dòng hoặc 20 cột, tối đa để lại cho vùng editor ít nhất 120 px. Kích thước của từng vị trí, vị trí hiện tại và trạng thái ẩn/hiện được lưu trong `WorkspaceState` như `sidebar_width`.
-- Nền panel `panel.background`; viền 1 px `border` ở cạnh giáp vùng editor. Sash dùng lại cách làm sash của sidebar (`layout/sidebar.rs`), tách thành một hàm dùng chung trong `ui.rs` cho cả hai hướng.
-- Panel viết dưới dạng một khung chung (`layout/panel.rs`): vị trí, kích thước, sash, ẩn/hiện, phóng to. Terminal là nội dung duy nhất trong MVP. Không dựng hệ "view container" tổng quát như VS Code.
-- **Phóng to** (`workbench.action.toggleMaximizedPanel`, nút ⤢): panel chiếm toàn bộ vùng editor; bấm lần nữa trả về kích thước cũ.
+- A bottom panel takes the width of the **editor area**, not spilling over the sidebar (like Zed with the bottom dock). A right panel takes the full height between the title bar and the status bar.
+- Default size: 320 px high at the bottom, 640 px wide on the right (as in Zed). Drag the sash to change; minimum 4 rows or 20 columns, maximum leaves the editor area at least 120 px. The size for each position, the current position and the shown/hidden state are saved in `WorkspaceState` like `sidebar_width`.
+- Panel background `panel.background`; 1 px `border` on the edge next to the editor area. The sash reuses the sidebar's sash approach (`layout/sidebar.rs`), split into a function shared in `ui.rs` for both orientations.
+- The panel is written as a shared frame (`layout/panel.rs`): position, size, sash, show/hide, maximize. Terminal is the only content in the MVP. No general "view container" system like VS Code's is built.
+- **Maximize** (`workbench.action.toggleMaximizedPanel`, the ⤢ button): the panel takes the whole editor area; pressing again restores the old size.
 
-### 4.2 Thanh tab trong panel
+### 4.2 Tab bar in the panel
 
-- Thanh tab **luôn hiện**, kể cả khi chỉ có một terminal (như Zed; VS Code chỉ hiện danh sách tab bên phải khi có từ hai terminal). Chiều cao, nền `tab_bar.background`, màu tab active/inactive và viền dưới **giống hệt thanh tab của vùng editor**. Tách phần vẽ tab đang nằm trong `editor_groups/view.rs` thành component dùng chung trong `ui.rs`, rồi dùng ở cả hai nơi.
-- Mỗi tab: icon `TERMINAL` (đã có trong `icons.rs`), tên, nút × khi hover hoặc khi active. Tên tab theo §6.6 (ví dụ `zsh`, `claude`, `vim`), cắt bớt bằng `…` khi dài hơn 24 ký tự.
-- Tab có chuông (bell) hoặc tiến trình đã thoát với mã khác 0 thì tên đổi màu (`warning` / `error`).
-- Bên phải thanh tab: `＋` (terminal mới), `⤢` (phóng to/thu nhỏ), `×` (ẩn panel; không giết terminal). Dùng `bar_icon_button` có sẵn. Khác Zed: Zed chỉ hiện nút khi pane có focus; Lucerna luôn hiện, vì chỉ có ba nút và không có split.
-- Click giữa vào tab đóng terminal. Kéo tab để sắp lại thứ tự.
+- The tab bar is **always shown**, even with a single terminal (like Zed; VS Code only shows the tab list on the right when there are two or more terminals). Height, background `tab_bar.background`, active/inactive tab colors and bottom border are **identical to the editor area's tab bar**. Split the tab drawing now in `editor_groups/view.rs` into a shared component in `ui.rs`, then use it in both places.
+- Each tab: the `TERMINAL` icon (already in `icons.rs`), the name, an × button on hover or when active. The tab name follows §6.6 (for example `zsh`, `claude`, `vim`), truncated with `…` when longer than 24 characters.
+- A tab with a bell or a process that exited with a non-zero code changes the name color (`warning` / `error`).
+- On the right of the tab bar: `＋` (new terminal), `⤢` (maximize/restore), `×` (hide the panel; does not kill terminals). Use the existing `bar_icon_button`. Different from Zed: Zed only shows the buttons when the pane has focus; Lucerna always shows them, because there are only three buttons and no split.
+- Middle-click on a tab closes the terminal. Drag a tab to reorder.
 
-### 4.3 Thân terminal
+### 4.3 Terminal body
 
-- Nền `terminal.background`. Lề trái một ô, như Zed.
-- Thanh cuộn dọc dùng `scrollbar_thumb`, chỉ hiện khi đang cuộn hoặc hover, như editor.
-- Mất focus thì con trỏ khối thành khung rỗng (`cursorStyleInactive: outline`).
+- Background `terminal.background`. Left margin of one cell, like Zed.
+- The vertical scrollbar uses `scrollbar_thumb`, shown only while scrolling or on hover, like the editor.
+- When focus is lost, the block cursor becomes an empty outline (`cursorStyleInactive: outline`).
 
-### 4.4 Nút ở status bar
+### 4.4 Status bar button
 
-Thêm nút terminal vào cụm `panel_toggles` ở đầu trái status bar, sau Extensions. Icon `TERMINAL`, tooltip "Terminal (⌃`)", sáng lên khi panel đang hiện. Bấm thì chạy `workbench.action.terminal.toggleTerminal`.
+Add a terminal button to the `panel_toggles` group at the left end of the status bar, after Extensions. Icon `TERMINAL`, tooltip "Terminal (⌃`)", lit while the panel is shown. Clicking runs `workbench.action.terminal.toggleTerminal`.
 
-## 5. Kiến trúc
+## 5. Architecture
 
-### 5.1 Crate `lucerna-terminal` (mới, không dùng gpui)
+### 5.1 Crate `lucerna-terminal` (new, no gpui)
 
-Phụ thuộc `alacritty_terminal = "0.26"`. Mọi kiểu của alacritty bị giấu sau crate này; workbench chỉ thấy kiểu của Lucerna. Gồm:
+Depends on `alacritty_terminal = "0.26"`. All of alacritty's types are hidden behind this crate; the workbench only sees Lucerna's types. It contains:
 
-- **`Terminal`**: một phiên terminal. Giữ `Arc<FairMutex<Term<_>>>`, `Notifier` để ghi xuống PTY, và hàng đợi thao tác từ UI. API công khai (tên chỉ là gợi ý):
-  - `spawn(TerminalOptions) -> Result<Terminal>`: `TerminalOptions` gồm shell, args, cwd, env, số dòng/cột, kích thước ô, số dòng scrollback.
-  - `input(&[u8])`, `paste(&str)` (tự bọc bracketed paste khi app bật mode đó, lọc ký tự ESC trong nội dung dán).
-  - `resize(rows, cols, cell_w, cell_h)`: chỉ ghi khi khác lần trước; resize liên tiếp gộp lại.
-  - `scroll(Scroll)`, `select_start/update/end(point, kind)`, `selection_text()`, `clear()` (xóa scrollback và màn hình, giữ dòng prompt), `select_all()`.
-  - `snapshot() -> Snapshot`: lấy lock **một lần**, áp hàng đợi thao tác, chép các ô **đang hiển thị** cùng con trỏ, vùng chọn, mode (alt screen, mouse mode, bracketed paste, app cursor), vị trí cuộn, tổng số dòng.
-  - `mouse_report(event) -> Option<Vec<u8>>`, `key_to_bytes(key, mods, mode) -> Option<Vec<u8>>`: mã hóa phím và chuột theo mode hiện tại. Hàm thuần, test được.
-  - `foreground_process() -> Option<ProcessInfo { name, cwd }>`: xem §6.6.
-- **Luồng sự kiện.** `EventLoop` của alacritty chạy trên luồng riêng, đọc và parse PTY (mỗi lần giữ lock parse tối đa 64 KB, có sẵn trong alacritty). Listener gửi sự kiện vào một channel. Phía nhận gom theo cửa sổ **4 ms**: sự kiện đầu tiên xử lý ngay, các `Wakeup` gộp thành một, tối đa 100 sự kiện một lô. Byte thô không đi qua channel. Kết quả trả cho workbench là `TerminalEvent`: `Wakeup`, `Title(String)`, `Bell`, `Exited(Option<i32>)`, `ClipboardStore(String)`.
-  - `PtyWrite` (trả lời truy vấn của app, ví dụ báo vị trí con trỏ) ghi thẳng xuống PTY theo đúng thứ tự.
-  - `ClipboardLoad` (OSC 52 đọc clipboard) bị **từ chối**: app trong terminal không được đọc clipboard. `ClipboardStore` (OSC 52 ghi) được cho phép, vì Claude Code và vim dùng nó để copy qua SSH.
-- **Gộp run** (`runs.rs`): hàm thuần nhận một dòng ô của snapshot, trả về danh sách `TextRun { col_start, text, cells, style }` và `BgRect { col_start, cols, color }`. Ô liền nhau cùng font, màu chữ, màu nền, gạch chân, gạch ngang gộp thành một run; nền liền nhau cùng màu gộp thành một hình chữ nhật. Bỏ ô trống không có nền, bỏ ô đệm của ký tự rộng, nối ký tự zero-width vào ô trước. Ký tự khối U+2580–U+259F trả về dạng hình chữ nhật thay vì chữ.
-- **Màu** (`color.rs`): đổi màu ô (tên ANSI, chỉ số 0–255, truecolor) sang RGBA theo `TerminalPalette` (16 màu theme + foreground/background/cursor/selection). Chỉ số 16–231 là khối màu xterm, 232–255 là dải xám. Có hàm độ tương phản tối thiểu (WCAG, §7).
-- **Dò link** (`links.rs`): hàm thuần trên một dòng logic (nối các dòng bị wrap). Thứ tự: OSC 8, URL (`http`, `https`, `file`, `mailto`), rồi đường dẫn có hoặc không có đuôi vị trí. Đuôi nhận: `:L`, `:L:C`, `(L,C)`, `(L)`, `, line L`, `", line L"` (traceback Python). Có ngân sách thời gian 1 ms mỗi lần dò.
+- **`Terminal`**: one terminal session. Holds `Arc<FairMutex<Term<_>>>`, a `Notifier` for writing to the PTY, and a queue of operations from the UI. Public API (names are only suggestions):
+  - `spawn(TerminalOptions) -> Result<Terminal>`: `TerminalOptions` includes shell, args, cwd, env, rows/columns, cell size, scrollback line count.
+  - `input(&[u8])`, `paste(&str)` (wraps in bracketed paste automatically when the app enabled that mode, filters ESC characters in the pasted content).
+  - `resize(rows, cols, cell_w, cell_h)`: writes only when different from last time; consecutive resizes are coalesced.
+  - `scroll(Scroll)`, `select_start/update/end(point, kind)`, `selection_text()`, `clear()` (clears scrollback and screen, keeps the prompt line), `select_all()`.
+  - `snapshot() -> Snapshot`: takes the lock **once**, applies the operation queue, copies the **visible** cells along with the cursor, selection, mode (alt screen, mouse mode, bracketed paste, app cursor), scroll position, total line count.
+  - `mouse_report(event) -> Option<Vec<u8>>`, `key_to_bytes(key, mods, mode) -> Option<Vec<u8>>`: encode keys and mouse by the current mode. Pure functions, testable.
+  - `foreground_process() -> Option<ProcessInfo { name, cwd }>`: see §6.6.
+- **Event thread.** alacritty's `EventLoop` runs on its own thread, reading and parsing the PTY (each lock hold parses at most 64 KB, built into alacritty). The listener sends events into a channel. The receiving side batches in a **4 ms** window: the first event is handled immediately, `Wakeup`s are merged into one, at most 100 events per batch. Raw bytes do not go through the channel. The result handed to the workbench is `TerminalEvent`: `Wakeup`, `Title(String)`, `Bell`, `Exited(Option<i32>)`, `ClipboardStore(String)`.
+  - `PtyWrite` (replies to app queries, for example reporting the cursor position) is written straight to the PTY in order.
+  - `ClipboardLoad` (OSC 52 read of the clipboard) is **rejected**: apps in the terminal must not read the clipboard. `ClipboardStore` (OSC 52 write) is allowed, because Claude Code and vim use it to copy over SSH.
+- **Run merging** (`runs.rs`): a pure function that takes one row of snapshot cells and returns a list of `TextRun { col_start, text, cells, style }` and `BgRect { col_start, cols, color }`. Adjacent cells with the same font, text color, background color, underline, strikethrough merge into one run; adjacent backgrounds of the same color merge into one rectangle. Empty cells without a background are dropped, the padding cell of a wide character is dropped, zero-width characters are attached to the previous cell. Block characters U+2580–U+259F are returned as rectangles instead of text.
+- **Color** (`color.rs`): converts cell colors (ANSI names, indexes 0–255, truecolor) to RGBA by `TerminalPalette` (16 theme colors + foreground/background/cursor/selection). Indexes 16–231 are the xterm color cube, 232–255 the gray ramp. Has a minimum contrast function (WCAG, §7).
+- **Link detection** (`links.rs`): a pure function on one logical line (wrapped lines joined). Order: OSC 8, URL (`http`, `https`, `file`, `mailto`), then a path with or without a position suffix. Accepted suffixes: `:L`, `:L:C`, `(L,C)`, `(L)`, `, line L`, `", line L"` (Python traceback). Has a time budget of 1 ms per detection.
 
-### 5.2 Trong `lucerna-workbench`
+### 5.2 In `lucerna-workbench`
 
-Module mới `terminal/`:
+New module `terminal/`:
 
-- `TerminalPanel` (Entity): danh sách `TerminalTab`, tab active, gọi khung panel §4.1.
-- `TerminalView` (Entity, Focusable): một terminal. Giữ `lucerna_terminal::Terminal`, snapshot cuối, trạng thái chuột, link đang hover. Nhận `TerminalEvent` qua một task nền; `Wakeup` thì `cx.notify()`, nên chỉ vẽ lại khi có dữ liệu mới.
-- `TerminalElement` (Element): prepaint đo ô, gọi `resize` nếu số dòng/cột đổi, lấy `snapshot()`, gọi gộp run cho các dòng nhìn thấy; paint vẽ theo thứ tự: nền, vùng chọn, chữ, ký tự khối, gạch chân link đang hover, con trỏ, chữ đang soạn của IME.
-- Lệnh đăng ký vào `CommandRegistry` (§8).
-- `lucerna-theme`: thêm `TerminalColors` vào `Theme`, đọc khóa theme Zed (§7).
+- `TerminalPanel` (Entity): the list of `TerminalTab`, the active tab, calls the panel frame of §4.1.
+- `TerminalView` (Entity, Focusable): one terminal. Holds `lucerna_terminal::Terminal`, the last snapshot, mouse state, the link being hovered. Receives `TerminalEvent` through a background task; on `Wakeup` it calls `cx.notify()`, so it redraws only when there is new data.
+- `TerminalElement` (Element): prepaint measures the cell, calls `resize` if rows/columns changed, takes `snapshot()`, calls run merging for the visible rows; paint draws in this order: background, selection, text, block characters, underline of the hovered link, cursor, IME composing text.
+- Commands registered in `CommandRegistry` (§8).
+- `lucerna-theme`: add `TerminalColors` to `Theme`, reading Zed theme keys (§7).
 
-### 5.3 Vì sao như vậy
+### 5.3 Why this way
 
-Tách crate giúp test lõi (phím → byte, gộp run, dò link, màu) mà không cần GPUI, và giữ đúng quy tắc chỉ workbench dùng gpui. Lớp adapter học từ Zed để sau này đổi bộ giả lập hoặc lên bản alacritty mới chỉ phải sửa một crate.
+Splitting out a crate lets us test the core (key → bytes, run merging, link detection, color) without GPUI, and keeps the rule that only the workbench uses gpui. The adapter layer, learned from Zed, means that later swapping the emulator or moving to a new alacritty version only touches one crate.
 
-## 6. Hành vi
+## 6. Behavior
 
-### 6.1 Mở và đóng
+### 6.1 Open and close
 
-- ⌃` (`toggleTerminal`): panel ẩn thì hiện và focus terminal active, chưa có terminal thì tạo một cái. Panel hiện mà focus đang ở chỗ khác thì focus vào terminal. Focus đang ở terminal thì ẩn panel và trả focus về editor. Như VS Code.
-- ⌃⇧` (`new`): tạo terminal mới, hiện panel, focus nó.
-- Ẩn panel không giết terminal; tiến trình vẫn chạy.
-- **Tiến trình thoát** (theo VS Code): mã 0 thì đóng tab. Mã khác 0 hoặc bị tín hiệu giết thì giữ tab, in thêm dòng `[Process exited with code N]` (màu `text_muted`), tên tab đổi màu `error`. Gõ phím bất kỳ vào tab đó thì đóng nó.
-- Đóng tab cuối cùng thì ẩn panel (`terminal.integrated.hideOnLastClosed`, mặc định true).
-- `kill` (và × trên tab) gửi SIGHUP cho nhóm tiến trình rồi đóng tab, không hỏi (`confirmOnKill` của VS Code mặc định chỉ hỏi với terminal ở vùng editor).
-- Đóng cửa sổ hoặc thoát app khi còn terminal đang chạy: **không hỏi** (`terminal.integrated.confirmOnExit` mặc định `never`, như VS Code). Hỗ trợ giá trị `always` và `hasChildProcesses`.
-- Terminal không được giữ qua lần mở lại app. Trạng thái panel (hiện/ẩn, vị trí, kích thước) thì được giữ. Nếu panel đang hiện lúc đóng, lần mở sau hiện panel với một terminal mới.
+- ⌃` (`toggleTerminal`): if the panel is hidden, show it and focus the active terminal; create one if there is none. If the panel is shown but focus is elsewhere, focus the terminal. If focus is in the terminal, hide the panel and return focus to the editor. Like VS Code.
+- ⌃⇧` (`new`): create a new terminal, show the panel, focus it.
+- Hiding the panel does not kill terminals; processes keep running.
+- **Process exit** (following VS Code): code 0 closes the tab. A non-zero code or being killed by a signal keeps the tab, prints an extra line `[Process exited with code N]` (color `text_muted`), and the tab name changes to the `error` color. Pressing any key in that tab closes it.
+- Closing the last tab hides the panel (`terminal.integrated.hideOnLastClosed`, default true).
+- `kill` (and × on the tab) sends SIGHUP to the process group then closes the tab, without asking (VS Code's `confirmOnKill` by default only asks for terminals in the editor area).
+- Closing the window or quitting the app while terminals are still running: **no prompt** (`terminal.integrated.confirmOnExit` default `never`, like VS Code). The values `always` and `hasChildProcesses` are supported.
+- Terminals are not kept across app restarts. The panel state (shown/hidden, position, size) is kept. If the panel was shown when closing, the next launch shows the panel with a new terminal.
 
-### 6.2 Shell, thư mục, môi trường
+### 6.2 Shell, directory, environment
 
-- **Shell:** `terminal.integrated.defaultProfile.<os>` trỏ tới một mục trong `terminal.integrated.profiles.<os>` (`path`, `args`, `env`). Không đặt thì dùng `$SHELL`; không có `$SHELL` thì `/bin/zsh` trên macOS, `/bin/sh` trên Linux, `powershell.exe` trên Windows.
-- **Login shell trên macOS:** khi dùng shell mặc định, thêm `-l` (zsh nhận `-l`; VS Code dùng `-l`). App mở từ Finder có `PATH` tối thiểu; login shell nạp `PATH` của người dùng (Homebrew, nvm, rustup), nhờ vậy `claude` chạy được. Profile tự đặt `args` thì dùng đúng `args` đó. Linux và Windows không thêm.
-- **Thư mục:** `terminal.integrated.cwd` nếu có (tuyệt đối, hoặc tương đối theo gốc workspace); không thì gốc workspace. Ở chế độ mở một file lẻ thì thư mục chứa file đó. Thư mục không tồn tại thì rơi về thư mục home và in một dòng cảnh báo.
-- **Môi trường:** env của tiến trình Lucerna, rồi `terminal.integrated.env.<os>`, rồi `env` của profile; giá trị `null` xóa biến. Luôn đặt:
+- **Shell:** `terminal.integrated.defaultProfile.<os>` points to an entry in `terminal.integrated.profiles.<os>` (`path`, `args`, `env`). If unset, use `$SHELL`; with no `$SHELL`, `/bin/zsh` on macOS, `/bin/sh` on Linux, `powershell.exe` on Windows.
+- **Login shell on macOS:** when using the default shell, add `-l` (zsh accepts `-l`; VS Code uses `-l`). An app launched from Finder has a minimal `PATH`; the login shell loads the user's `PATH` (Homebrew, nvm, rustup), which lets `claude` run. A profile that sets its own `args` uses exactly those `args`. Linux and Windows do not add it.
+- **Directory:** `terminal.integrated.cwd` if set (absolute, or relative to the workspace root); otherwise the workspace root. In single-file mode, the folder containing that file. A directory that does not exist falls back to the home directory and prints a warning line.
+- **Environment:** the Lucerna process's env, then `terminal.integrated.env.<os>`, then the profile's `env`; a `null` value removes the variable. Always set:
   - `TERM=xterm-256color`, `COLORTERM=truecolor`
-  - `TERM_PROGRAM=lucerna`, `TERM_PROGRAM_VERSION=<phiên bản>`
-  - `LANG=en_US.UTF-8` nếu `LANG` chưa có hoặc không phải UTF-8 (`detectLocale: auto` của VS Code; app GUI trên macOS thường thiếu `LANG`, khiến tiếng Việt vỡ).
-- Không có `inheritEnv` trong MVP (luôn kế thừa).
+  - `TERM_PROGRAM=lucerna`, `TERM_PROGRAM_VERSION=<version>`
+  - `LANG=en_US.UTF-8` if `LANG` is missing or not UTF-8 (VS Code's `detectLocale: auto`; GUI apps on macOS often lack `LANG`, which breaks Vietnamese).
+- No `inheritEnv` in the MVP (always inherits).
 
 ### 6.3 Restricted Mode
 
-**Quyết định: terminal chạy cả trong thư mục chưa được tin.** Người dùng đã chọn.
+**Decision: the terminal also runs in untrusted folders.** The user chose this.
 
-- VS Code chặn: mở terminal trong Restricted Mode hiện hộp thoại trust, bấm Cancel thì không mở. Có `terminal.integrated.allowInUntrustedWorkspace` (mặc định false) để bỏ kiểm tra. Zed không chặn terminal mở tay.
-- Lucerna theo Zed, **lệch khỏi VS Code**. Lý do: người dùng mở terminal để chạy agent, mà agent tự chạy code trong repo. Hỏi trust lúc mở terminal không bảo vệ thêm được gì, chỉ thêm một bước bấm cho việc làm nhiều nhất trong ngày.
-- Vẫn giữ phần an toàn của cả hai bên: khi thư mục chưa được tin, các setting `terminal.integrated.cwd`, `env.*`, `profiles.*`, `defaultProfile.*` **ở lớp Workspace bị bỏ qua**, vì một repo lạ có thể dùng chúng để trỏ shell sang file chạy độc hại. Đọc bằng hàm bỏ lớp Workspace có sẵn của settings store (`store.rs`). Giá trị ở lớp User vẫn áp dụng.
-- Không thêm `allowInUntrustedWorkspace`, vì không có gì để cho phép.
-- Mở terminal không bật hộp thoại trust, và không tính là "lần đầu cần trust" của language server.
+- VS Code blocks: opening a terminal in Restricted Mode shows a trust dialog, and pressing Cancel does not open it. There is `terminal.integrated.allowInUntrustedWorkspace` (default false) to skip the check. Zed does not block a manually opened terminal.
+- Lucerna follows Zed, **deviating from VS Code**. Reason: users open the terminal to run an agent, and the agent runs code in the repo by itself. Asking for trust when opening a terminal protects nothing extra, it only adds a click to the most frequent task of the day.
+- The safety parts of both sides are still kept: when the folder is untrusted, the settings `terminal.integrated.cwd`, `env.*`, `profiles.*`, `defaultProfile.*` **at the Workspace layer are ignored**, because a foreign repo could use them to point the shell at a malicious executable. Read through the settings store's existing function that skips the Workspace layer (`store.rs`). Values at the User layer still apply.
+- `allowInUntrustedWorkspace` is not added, because there is nothing to allow.
+- Opening a terminal does not raise a trust dialog, and does not count as the language server's "first time needing trust".
 
-### 6.4 Bàn phím
+### 6.4 Keyboard
 
-Khi focus ở terminal, mỗi phím đi qua `dispatch_key` của workbench như bình thường:
+When focus is in the terminal, each key goes through the workbench's `dispatch_key` as usual:
 
-1. Vim mode **không** nhận phím khi focus ở terminal.
-2. Keymap được giải với context `terminalFocus` (cộng `terminalTextSelected`, `terminalAltBufferActive` khi đúng). Nếu ra một lệnh **và** lệnh đó nằm trong danh sách "bỏ qua shell", workbench chạy lệnh đó.
-3. Còn lại, phím được mã hóa theo mode của terminal (app cursor, app keypad, phím chức năng, modifier kiểu xterm `CSI 1;m`) và gửi xuống PTY.
+1. Vim mode does **not** receive keys when focus is in the terminal.
+2. The keymap is resolved with context `terminalFocus` (plus `terminalTextSelected`, `terminalAltBufferActive` when true). If it yields a command **and** that command is in the "skip shell" list, the workbench runs that command.
+3. Otherwise, the key is encoded by the terminal's mode (app cursor, app keypad, function keys, xterm-style modifiers `CSI 1;m`) and sent to the PTY.
 
-Danh sách bỏ qua shell = danh sách mặc định §8.1, cộng `terminal.integrated.commandsToSkipShell` (thêm ID, hoặc bỏ bằng tiền tố `-`), như VS Code. Phím ⌃ và ⌥ đi xuống shell trừ khi khớp lệnh trong danh sách (⌃`, ⌃⇧`). Chord: `allowChords` mặc định true, như VS Code.
+Skip-shell list = the default list in §8.1, plus `terminal.integrated.commandsToSkipShell` (add IDs, or remove with the `-` prefix), like VS Code. ⌃ and ⌥ keys go down to the shell unless they match a command in the list (⌃`, ⌃⇧`). Chords: `allowChords` default true, like VS Code.
 
-**Riêng phím có ⌘ trên macOS:** shell không nhận được ⌘, nên phím có ⌘ **không bao giờ** đi xuống PTY, kể cả khi lệnh không nằm trong danh sách bỏ qua shell. Nếu nó khớp một lệnh (theo `when`) thì chạy lệnh; không thì bỏ. Tiền tố `-` trong `commandsToSkipShell` chỉ tác dụng với phím không có ⌘. Hệ quả, theo VS Code:
-- ⌘W chạy `workbench.action.closeActiveEditor` (keybinding không có `when`): đóng tab editor đang active, **không** đóng terminal. Như VS Code với terminal ở panel. Giết nhầm agent tệ hơn đóng nhầm một file mở lại được.
-- ⌘S, ⌘\, ⌘P… chạy như khi focus ở editor.
-- ⌘= / ⌘- (`editor.action.fontZoomIn/Out`) chỉ đổi chữ editor, không đổi chữ terminal, như VS Code. Zoom riêng cho terminal để sau.
+**Keys with ⌘ on macOS specifically:** the shell cannot receive ⌘, so a key with ⌘ **never** goes down to the PTY, even when the command is not in the skip-shell list. If it matches a command (by `when`) the command runs; otherwise it is dropped. The `-` prefix in `commandsToSkipShell` only affects keys without ⌘. Consequences, following VS Code:
+- ⌘W runs `workbench.action.closeActiveEditor` (the keybinding has no `when`): it closes the active editor tab, and does **not** close the terminal. Like VS Code with the terminal in the panel. Accidentally killing the agent is worse than accidentally closing a file that can be reopened.
+- ⌘S, ⌘\, ⌘P… run as when focus is in the editor.
+- ⌘= / ⌘- (`editor.action.fontZoomIn/Out`) only change the editor text, not the terminal text, like VS Code. Separate zoom for the terminal comes later.
 
-**Focus:** panel có focus handle riêng, **nằm ngoài** cây `editor_focus`, để `editorFocus` sai khi focus ở terminal. Nhờ vậy vim (`editorFocus && !textInputFocus`) và các lệnh chỉ cho editor (⌘C → `clipboardCopyAction`) không bắt phím của terminal.
+**Focus:** the panel has its own focus handle, **outside** the `editor_focus` tree, so `editorFocus` is false when focus is in the terminal. That way vim (`editorFocus && !textInputFocus`) and editor-only commands (⌘C → `clipboardCopyAction`) do not capture the terminal's keys.
 
-- **Option:** `terminal.integrated.macOptionIsMeta` mặc định false (như VS Code). False thì ⌥ tạo ký tự theo bàn phím macOS; true thì ⌥+phím gửi `ESC` + phím.
-- **Phím tắt sửa dòng của Zed** (chỉ macOS): ⌘← gửi `^A`, ⌘→ gửi `^E`, ⌘⌫ gửi `^U`, ⌥← gửi `ESC b`, ⌥→ gửi `ESC f`. VS Code không có mặc định này nhưng người dùng macOS quen từ Terminal.app/iTerm. Viết dưới dạng keybinding `sendSequence` trong `default-keybindings.json` với `when: terminalFocus && !terminalAltBufferActive`, để người dùng bỏ được. Ở alt screen (vim, htop, Claude Code ở chế độ toàn màn hình) chúng không chạy: ⌘ bị bỏ, ⌥ mã hóa bình thường xuống app.
-- **IME:** `TerminalView` cài `InputHandler` của GPUI. Chữ đang soạn vẽ tại con trỏ, gạch chân; khi chốt thì gửi chuỗi UTF-8 xuống PTY. Vị trí ô con trỏ được báo cho IME để khung chọn chữ hiện đúng chỗ. Bắt buộc cho bộ gõ tiếng Việt.
+- **Option:** `terminal.integrated.macOptionIsMeta` default false (like VS Code). When false, ⌥ produces characters per the macOS keyboard; when true, ⌥+key sends `ESC` + the key.
+- **Zed's line-editing shortcuts** (macOS only): ⌘← sends `^A`, ⌘→ sends `^E`, ⌘⌫ sends `^U`, ⌥← sends `ESC b`, ⌥→ sends `ESC f`. VS Code does not have these by default but macOS users are used to them from Terminal.app/iTerm. Written as `sendSequence` keybindings in `default-keybindings.json` with `when: terminalFocus && !terminalAltBufferActive`, so users can remove them. In the alt screen (vim, htop, Claude Code in full-screen mode) they do not run: ⌘ is dropped, ⌥ is encoded normally down to the app.
+- **IME:** `TerminalView` installs GPUI's `InputHandler`. The composing text is drawn at the cursor, underlined; on commit the UTF-8 string is sent to the PTY. The cursor cell position is reported to the IME so the candidate window appears in the right place. Required for Vietnamese input methods.
 
-### 6.5 Chuột, chọn, copy, paste, cuộn
+### 6.5 Mouse, selection, copy, paste, scroll
 
-- **Chọn:** kéo để chọn (ngưỡng 2 px), double-click chọn từ (theo `terminal.integrated.wordSeparators`), triple-click chọn dòng logic, ⇧+click mở rộng vùng chọn. ⌥+kéo chọn hình chữ nhật.
-- Khi app bật mouse mode (vim, htop, Claude Code), click và kéo được báo xuống app. Giữ ⇧ thì chọn chữ như bình thường (như Zed); `macOptionClickForcesSelection` để ⌥ cũng ép chọn (như VS Code, mặc định false).
-- **Copy:** ⌘C khi có vùng chọn (`terminalTextSelected`); không có vùng chọn thì ⌘C không làm gì (⌃C vẫn là ngắt). Vùng chọn được giữ sau khi copy. `copyOnSelection` mặc định false. Linux: ghi thêm primary selection.
-- **Paste:** ⌘V; nhiều dòng thì không cảnh báo nếu app bật bracketed paste, có cảnh báo một lần nếu không (`enableMultiLinePasteWarning: auto`).
-- **Chuột phải:** `rightClickBehavior` mặc định macOS là `selectWord`. MVP hỗ trợ `selectWord`, `copyPaste`, `paste`, `nothing`, `default`. Chưa có context menu nên `default` hoạt động như `selectWord`.
-- **Cuộn:** lăn chuột cuộn scrollback theo `mouseWheelScrollSensitivity`, ⌥ cuộn nhanh theo `fastScrollSensitivity`. Ở alt screen: app bật mouse mode thì báo cuộn xuống app; không thì gửi phím ↑/↓ (alternate scroll). Gõ phím thì nhảy về đáy. Có dữ liệu mới trong lúc đang cuộn lên thì giữ nguyên chỗ đang xem.
-- `scrollUp/Down`, `scrollUpPage/DownPage`, `scrollToTop/Bottom` chỉ chạy ở màn chính, như VS Code.
+- **Select:** drag to select (2 px threshold), double-click selects a word (by `terminal.integrated.wordSeparators`), triple-click selects a logical line, ⇧+click extends the selection. ⌥+drag selects a rectangle.
+- When the app enables mouse mode (vim, htop, Claude Code), click and drag are reported to the app. Holding ⇧ selects text as normal (like Zed); `macOptionClickForcesSelection` makes ⌥ also force selection (like VS Code, default false).
+- **Copy:** ⌘C when there is a selection (`terminalTextSelected`); with no selection ⌘C does nothing (⌃C is still interrupt). The selection is kept after copying. `copyOnSelection` default false. Linux: also writes the primary selection.
+- **Paste:** ⌘V; multi-line paste gives no warning if the app enabled bracketed paste, and warns once if not (`enableMultiLinePasteWarning: auto`).
+- **Right click:** `rightClickBehavior` default on macOS is `selectWord`. The MVP supports `selectWord`, `copyPaste`, `paste`, `nothing`, `default`. There is no context menu yet, so `default` behaves like `selectWord`.
+- **Scroll:** the mouse wheel scrolls the scrollback by `mouseWheelScrollSensitivity`, ⌥ scrolls fast by `fastScrollSensitivity`. In the alt screen: if the app enabled mouse mode, scrolling is reported to the app; if not, sends ↑/↓ keys (alternate scroll). Typing a key jumps to the bottom. If new data arrives while scrolled up, the viewed position stays put.
+- `scrollUp/Down`, `scrollUpPage/DownPage`, `scrollToTop/Bottom` only work on the main screen, like VS Code.
 
-### 6.6 Tên tab và thư mục hiện tại
+### 6.6 Tab name and current directory
 
-- Mỗi lần nhận `Wakeup` (tối đa một lần mỗi 500 ms, ở luồng nền), đọc tiến trình foreground của PTY: `tcgetpgrp` trên fd của PTY, rồi tên và cwd của tiến trình đó (macOS: `proc_pidinfo`; Linux: `/proc/<pid>/{comm,cwd}`; Windows: để sau). Không dùng crate `sysinfo` cho riêng việc này. Hàm nằm trong `lucerna-terminal`, có phần theo nền tảng.
-- **Tên tab**, theo thứ tự:
-  1. Tiêu đề OSC 0/2 nếu tiến trình foreground **hiện tại** đã đặt (Claude Code đặt tiêu đề kiểu `✳ <việc đang làm>`). Khi tiến trình foreground đổi, tiêu đề cũ bị bỏ, để tab không giữ tên của lệnh đã thoát. Shell tự đặt tiêu đề (oh-my-zsh…) thì dùng luôn.
-  2. Tên tiến trình foreground. Nếu đó là trình thông dịch (`node`, `bun`, `deno`, `python`, `python3`, `ruby`) thì lấy tên file của đối số script đầu tiên trong argv (Claude Code và Codex cài qua npm chạy dưới `node`, nên tab hiện `claude` thay vì `node`). Đọc argv: macOS `sysctl KERN_PROCARGS2`; Linux `/proc/<pid>/cmdline`.
+- On each `Wakeup` (at most once per 500 ms, on a background thread), read the PTY's foreground process: `tcgetpgrp` on the PTY's fd, then that process's name and cwd (macOS: `proc_pidinfo`; Linux: `/proc/<pid>/{comm,cwd}`; Windows: later). The `sysinfo` crate is not used for just this. The function lives in `lucerna-terminal`, with a platform-specific part.
+- **Tab name**, in order:
+  1. The OSC 0/2 title if the **current** foreground process has set one (Claude Code sets titles like `✳ <current task>`). When the foreground process changes, the old title is dropped, so the tab does not keep the name of a command that has exited. If the shell sets the title itself (oh-my-zsh…), use it as is.
+  2. The foreground process name. If it is an interpreter (`node`, `bun`, `deno`, `python`, `python3`, `ruby`), take the file name of the first script argument in argv (Claude Code and Codex installed through npm run under `node`, so the tab shows `claude` instead of `node`). Reading argv: macOS `sysctl KERN_PROCARGS2`; Linux `/proc/<pid>/cmdline`.
   3. `Terminal`.
-  - Tooltip của tab ghi tên tiến trình và cwd.
-- cwd hiện tại dùng để giải link tương đối (§6.7).
+  - The tab tooltip shows the process name and cwd.
+- The current cwd is used to resolve relative links (§6.7).
 
-### 6.7 Link
+### 6.7 Links
 
-Theo VS Code về cách mở, theo Zed về cách dò.
+Following VS Code for how to open, following Zed for how to detect.
 
-- Giữ ⌘ (Linux, Windows: ⌃) và rê chuột: link dưới chuột được gạch chân, con trỏ chuột thành bàn tay, tooltip ghi đích và "⌘+click để mở". Dò chỉ chạy khi đang giữ ⌘, tối đa một lần mỗi 100 ms hoặc mỗi 5 px.
+- Hold ⌘ (Linux, Windows: ⌃) and hover: the link under the mouse is underlined, the mouse cursor becomes a hand, the tooltip shows the destination and "⌘+click to open". Detection only runs while ⌘ is held, at most once per 100 ms or per 5 px.
 - ⌘+click:
-  - **URL:** mở bằng trình duyệt mặc định nếu scheme thuộc `terminal.integrated.allowedLinkSchemes` (mặc định `http`, `https`, `mailto`, `file`). Scheme khác thì không mở. VS Code hỏi rồi thêm scheme vào setting; MVP bỏ hộp thoại đó.
-  - **Đường dẫn:** giải theo thứ tự, dừng ở cái đầu tiên tồn tại (kiểm `stat` ở luồng nền):
-    1. tuyệt đối, hoặc `~/…`;
-    2. tương đối theo cwd hiện tại của terminal (§6.6);
-    3. tương đối theo cwd lúc mở terminal;
-    4. tương đối theo gốc workspace;
-    5. bỏ tiền tố `a/` hoặc `b/` (đầu ra `git diff`) rồi thử lại 2–4.
-  - File: mở trong editor qua `open_path_at`, đặt con trỏ ở dòng/cột nếu có. File ngoài workspace vẫn mở.
-  - Thư mục trong workspace: reveal trong Explorer. Thư mục ngoài workspace: không làm gì.
-  - Không tìm thấy: không có link (không gạch chân). MVP không có fallback "tìm trong workspace" của VS Code.
-- OSC 8 cũng cần ⌘+click như mọi link khác (VS Code), không mở bằng click thường (khác Zed), để click trong Claude Code không vô tình mở trình duyệt.
-- `terminal.integrated.enableFileLinks`: `on` (mặc định) hoặc `off`.
+  - **URL:** open in the default browser if the scheme is in `terminal.integrated.allowedLinkSchemes` (default `http`, `https`, `mailto`, `file`). Other schemes are not opened. VS Code asks then adds the scheme to the setting; the MVP drops that dialog.
+  - **Path:** resolve in order, stopping at the first that exists (`stat` check on a background thread):
+    1. absolute, or `~/…`;
+    2. relative to the terminal's current cwd (§6.6);
+    3. relative to the cwd when the terminal was opened;
+    4. relative to the workspace root;
+    5. strip the `a/` or `b/` prefix (`git diff` output) then retry 2–4.
+  - File: open in the editor via `open_path_at`, placing the cursor at the line/column if present. A file outside the workspace still opens.
+  - Directory in the workspace: reveal in the Explorer. Directory outside the workspace: do nothing.
+  - Not found: no link (no underline). The MVP has no VS Code "search in workspace" fallback.
+- OSC 8 also needs ⌘+click like every other link (VS Code), not opening on a plain click (different from Zed), so that clicks inside Claude Code do not accidentally open a browser.
+- `terminal.integrated.enableFileLinks`: `on` (default) or `off`.
 
-### 6.8 Chuông
+### 6.8 Bell
 
-`terminal.integrated.enableBell` mặc định false. Bật thì tab đổi màu `warning` tới khi gõ phím vào tab đó. Không phát âm thanh.
+`terminal.integrated.enableBell` default false. When on, the tab changes to the `warning` color until a key is pressed in that tab. No sound is played.
 
-## 7. Màu và font
+## 7. Color and font
 
-### 7.1 Khóa theme
+### 7.1 Theme keys
 
-Theme của Lucerna đến từ extension Zed, nên đọc **khóa theme Zed**:
+Lucerna's themes come from Zed extensions, so it reads the **Zed theme keys**:
 
-| Khóa Zed | Dùng cho | Khi thiếu |
+| Zed key | Used for | When missing |
 |---|---|---|
-| `terminal.background` | nền | `editor.background` |
-| `terminal.foreground` | chữ mặc định | `editor.foreground` |
-| `terminal.bright_foreground`, `terminal.dim_foreground` | chữ đậm/mờ mặc định | `terminal.foreground` |
-| `terminal.ansi.{black,red,green,yellow,blue,magenta,cyan,white}` | màu 0–7 | bảng mặc định của VS Code (dark/light theo `appearance`), research §1.5 |
-| `terminal.ansi.bright_*` | màu 8–15 | như trên |
-| `terminal.ansi.dim_*` | chữ mờ có màu | màu thường với alpha 0.7 |
-| `players[0].cursor` | con trỏ | `cursor` của UI |
-| `players[0].selection` | vùng chọn | `selection` của UI |
+| `terminal.background` | background | `editor.background` |
+| `terminal.foreground` | default text | `editor.foreground` |
+| `terminal.bright_foreground`, `terminal.dim_foreground` | default bold/dim text | `terminal.foreground` |
+| `terminal.ansi.{black,red,green,yellow,blue,magenta,cyan,white}` | colors 0–7 | VS Code's default table (dark/light by `appearance`), research §1.5 |
+| `terminal.ansi.bright_*` | colors 8–15 | same as above |
+| `terminal.ansi.dim_*` | dim colored text | the normal color with alpha 0.7 |
+| `players[0].cursor` | cursor | the UI's `cursor` |
+| `players[0].selection` | selection | the UI's `selection` |
 
-Màu vẽ đến từ theme đang chọn và đổi ngay khi đổi theme.
+Drawn colors come from the selected theme and change immediately when the theme changes.
 
-### 7.2 Độ tương phản tối thiểu
+### 7.2 Minimum contrast
 
-`terminal.integrated.minimumContrastRatio` mặc định 4.5 (WCAG, như VS Code; 1 là tắt). Chỉ áp cho màu đến từ theme (16 màu ANSI và màu mặc định), **không** áp cho chỉ số 16–255 và truecolor (app đã chọn chính xác), và không áp cho ký tự khối. Như Zed. Kết quả cache theo cặp (fg, bg).
+`terminal.integrated.minimumContrastRatio` default 4.5 (WCAG, like VS Code; 1 turns it off). Applies only to colors coming from the theme (the 16 ANSI colors and the default colors), **not** to indexes 16–255 and truecolor (the app chose them exactly), and not to block characters. Like Zed. Results are cached per (fg, bg) pair.
 
 ### 7.3 Font
 
-| Setting | Mặc định | Ghi chú |
+| Setting | Default | Notes |
 |---|---|---|
-| `terminal.integrated.fontFamily` | rỗng, tức `editor.fontFamily` | |
-| `terminal.integrated.fontSize` | rỗng, tức `editor.fontSize` | Lệch VS Code (12 trên macOS): để terminal và editor khớp nhau như Zed |
-| `terminal.integrated.lineHeight` | 1.2 | Hệ số. VS Code 1, Zed 1.3; 1 làm khung box-drawing của Claude Code dính sát, 1.3 hao dòng trên panel dưới |
+| `terminal.integrated.fontFamily` | empty, i.e. `editor.fontFamily` | |
+| `terminal.integrated.fontSize` | empty, i.e. `editor.fontSize` | Deviates from VS Code (12 on macOS): so the terminal and editor match like Zed |
+| `terminal.integrated.lineHeight` | 1.2 | A multiplier. VS Code 1, Zed 1.3; 1 makes Claude Code's box-drawing frames touch tightly, 1.3 wastes rows on a bottom panel |
 | `terminal.integrated.letterSpacing` | 0 | |
 | `terminal.integrated.fontWeight` / `fontWeightBold` | `normal` / `bold` | |
 | `terminal.integrated.drawBoldTextInBrightColors` | true | |
 | `terminal.integrated.cursorStyle` | `block` | `line`, `underline` |
 | `terminal.integrated.cursorBlinking` | false | |
 
-Tắt ligature. Độ rộng ô là advance của `m`. Chiều cao terminal được làm tròn thành số dòng nguyên; phần dư đặt ở trên khi đang bám đáy, ở dưới khi không.
+Ligatures off. The cell width is the advance of `m`. The terminal height is rounded to a whole number of rows; the remainder goes on top when stuck to the bottom, at the bottom when not.
 
-## 8. Lệnh, phím, settings
+## 8. Commands, keys, settings
 
-### 8.1 Lệnh và phím mặc định (macOS)
+### 8.1 Default commands and keys (macOS)
 
-Mọi lệnh dưới đây nằm trong danh sách bỏ qua shell mặc định.
+Every command below is in the default skip-shell list.
 
-| Lệnh | Phím | when |
+| Command | Key | when |
 |---|---|---|
 | `workbench.action.terminal.toggleTerminal` | ⌃` | |
 | `workbench.action.terminal.new` | ⌃⇧` | |
@@ -299,93 +299,93 @@ Mọi lệnh dưới đây nằm trong danh sách bỏ qua shell mặc định.
 | `workbench.action.terminal.selectAll` | ⌘A | `terminalFocus` |
 | `workbench.action.terminal.clearSelection` | Esc | `terminalFocus && terminalTextSelected` |
 | `workbench.action.terminal.scrollUp` / `scrollDown` | ⌘⌥PageUp / ⌘⌥PageDown | `terminalFocus && !terminalAltBufferActive` |
-| `workbench.action.terminal.scrollUpPage` / `scrollDownPage` | PageUp / PageDown | như trên |
-| `workbench.action.terminal.scrollToTop` / `scrollToBottom` | ⌘Home / ⌘End | như trên |
+| `workbench.action.terminal.scrollUpPage` / `scrollDownPage` | PageUp / PageDown | same as above |
+| `workbench.action.terminal.scrollToTop` / `scrollToBottom` | ⌘Home / ⌘End | same as above |
 | `workbench.action.terminal.sendSequence` | (args `{ "text": "…" }`) | |
 | `workbench.action.togglePanel` | ⌘J | |
 | `workbench.action.toggleMaximizedPanel` | | |
 | `workbench.action.positionPanelBottom` / `positionPanelRight` | | |
 
-Ngoài ra là các phím ⌘←, ⌘→, ⌘⌫, ⌥←, ⌥→ dạng `sendSequence` ở §6.4.
+In addition there are the ⌘←, ⌘→, ⌘⌫, ⌥←, ⌥→ keys in `sendSequence` form in §6.4.
 
-**Linux và Windows:** thêm ⌃⇧C / ⌃⇧V cho copy/paste như VS Code; ⌃` giữ nguyên.
+**Linux and Windows:** add ⌃⇧C / ⌃⇧V for copy/paste like VS Code; ⌃` stays the same.
 
-**Ghi chú cho Claude Code:** lệnh `/terminal-setup` của Claude Code thêm vào keybinding của VS Code một mục ⇧Enter → `sendSequence`. Có `sendSequence` thì người dùng Lucerna làm được điều tương tự trong `keybindings.json`.
+**Note for Claude Code:** Claude Code's `/terminal-setup` command adds to VS Code's keybindings an entry ⇧Enter → `sendSequence`. With `sendSequence`, Lucerna users can do the same in `keybindings.json`.
 
-Danh sách bỏ qua shell mặc định còn gồm các lệnh workbench không phải terminal: `workbench.action.quickOpen`, `workbench.action.showCommands`, `workbench.action.findInFiles`, `workbench.action.toggleSidebarVisibility`, `workbench.view.explorer`, `workbench.view.extensions`, `workbench.action.focusFirstEditorGroup`…`Eighth`, `workbench.action.quit`, `workbench.action.gotoLine` (VS Code cũng có các lệnh tương đương trong `DEFAULT_COMMANDS_TO_SKIP_SHELL`).
+The default skip-shell list also includes non-terminal workbench commands: `workbench.action.quickOpen`, `workbench.action.showCommands`, `workbench.action.findInFiles`, `workbench.action.toggleSidebarVisibility`, `workbench.view.explorer`, `workbench.view.extensions`, `workbench.action.focusFirstEditorGroup`…`Eighth`, `workbench.action.quit`, `workbench.action.gotoLine` (VS Code also has equivalent commands in `DEFAULT_COMMANDS_TO_SKIP_SHELL`).
 
-### 8.2 Settings mới
+### 8.2 New settings
 
-Ngoài font (§7.3): `defaultProfile.{osx,linux,windows}`, `profiles.{osx,linux,windows}`, `cwd`, `env.{osx,linux,windows}`, `scrollback`, `copyOnSelection`, `rightClickBehavior`, `macOptionIsMeta`, `macOptionClickForcesSelection`, `minimumContrastRatio`, `confirmOnExit`, `hideOnLastClosed`, `enableBell`, `enableFileLinks`, `allowedLinkSchemes`, `wordSeparators`, `commandsToSkipShell`, `allowChords`, `mouseWheelScrollSensitivity`, `fastScrollSensitivity`, `enableMultiLinePasteWarning`, `cursorStyleInactive`, `detectLocale` — tất cả dưới tiền tố `terminal.integrated.`, giá trị mặc định như VS Code trừ chỗ ghi khác ở đây. Thêm `workbench.panel.defaultLocation` (`bottom` | `right`, mặc định `bottom`).
+Besides the font settings (§7.3): `defaultProfile.{osx,linux,windows}`, `profiles.{osx,linux,windows}`, `cwd`, `env.{osx,linux,windows}`, `scrollback`, `copyOnSelection`, `rightClickBehavior`, `macOptionIsMeta`, `macOptionClickForcesSelection`, `minimumContrastRatio`, `confirmOnExit`, `hideOnLastClosed`, `enableBell`, `enableFileLinks`, `allowedLinkSchemes`, `wordSeparators`, `commandsToSkipShell`, `allowChords`, `mouseWheelScrollSensitivity`, `fastScrollSensitivity`, `enableMultiLinePasteWarning`, `cursorStyleInactive`, `detectLocale` — all under the prefix `terminal.integrated.`, with default values like VS Code except where noted otherwise here. Add `workbench.panel.defaultLocation` (`bottom` | `right`, default `bottom`).
 
-Đổi setting font, màu, scrollback áp ngay cho terminal đang mở. Đổi shell, cwd, env chỉ áp cho terminal mở sau.
+Changing font, color, scrollback settings applies immediately to open terminals. Changing shell, cwd, env only applies to terminals opened afterwards.
 
-## 9. Hiệu năng
+## 9. Performance
 
-### 9.1 Vẽ
+### 9.1 Drawing
 
-- **Theo dòng, gộp run:** mỗi dòng nhìn thấy cho ra các run chữ và hình chữ nhật nền như §5.1. Mỗi run được shape một lần bằng `shape_line` với độ rộng ô cố định để glyph khớp lưới.
-- **Chỉ vẽ lại khi có dữ liệu mới:** `TerminalView` chỉ `notify` khi nhận `Wakeup` (đã gộp 4 ms), khi người dùng thao tác (chọn, cuộn, hover link), khi focus đổi, hoặc khi đổi kích thước. Terminal đứng yên thì không có khung hình nào, CPU ~0.
-- **Không bao giờ duyệt scrollback khi vẽ.** Snapshot chỉ chứa phần đang hiển thị.
-- Panel ẩn: không vẽ, nhưng luồng PTY vẫn đọc và parse để tiến trình không bị chặn.
-- **Bước sau nếu đo thấy chậm:** alacritty có damage tracking theo dòng. Nếu prepaint của một terminal 200×60 vượt 2 ms, cache kết quả shape theo dòng và chỉ shape lại dòng bị damage. Không làm trong MVP nếu số đo đạt.
+- **Per row, merged runs:** each visible row yields text runs and background rectangles as in §5.1. Each run is shaped once with `shape_line` using a fixed cell width so glyphs fit the grid.
+- **Redraw only on new data:** `TerminalView` only calls `notify` on `Wakeup` (already merged over 4 ms), on user actions (select, scroll, link hover), on focus change, or on resize. An idle terminal produces no frames, CPU ~0.
+- **Never walk the scrollback while drawing.** The snapshot only contains the visible part.
+- Hidden panel: no drawing, but the PTY thread still reads and parses so the process is not blocked.
+- **Next step if measurement shows it is slow:** alacritty has per-row damage tracking. If the prepaint of a 200×60 terminal exceeds 2 ms, cache the shape results per row and only reshape damaged rows. Not done in the MVP if the numbers pass.
 
-### 9.2 Ngưỡng
+### 9.2 Thresholds
 
-| Đo | Ngưỡng |
+| Measure | Threshold |
 |---|---|
-| Từ lúc nhấn phím tới khi ký tự hiện (shell echo) | ≤ 1 khung hình sau khi PTY trả byte; tổng ≤ 16 ms ở 60 Hz trên M1 |
-| Prepaint + paint một terminal 200 cột × 60 dòng đầy chữ có màu | ≤ 4 ms trên M1, bản release |
-| `cat` file 100 MB vào terminal | UI không đứng; editor bên cạnh vẫn cuộn được, khung hình ≤ 16 ms; terminal xong trong ≤ 3 s |
-| Terminal đứng yên | 0 khung hình mỗi giây |
-| RAM scrollback | `scrollback` mặc định **10 000 dòng** (VS Code 1000, Zed 10 000). Ước tính tối đa ~30 MB mỗi terminal ở 120 cột (ô alacritty ~24 byte; dòng chỉ được cấp khi được dùng). Trần cứng 100 000 dòng: setting lớn hơn bị kẹp lại |
-| RAM cả app khi mở 1 terminal chạy Claude Code | tăng ≤ 50 MB so với khi không có terminal |
-| Binary release | tăng ≤ 1,5 MB (đo: alacritty + PTY ~290 KB, phần còn lại cho workbench) |
+| From key press to the character appearing (shell echo) | ≤ 1 frame after the PTY returns bytes; total ≤ 16 ms at 60 Hz on M1 |
+| Prepaint + paint of a 200-column × 60-row terminal full of colored text | ≤ 4 ms on M1, release build |
+| `cat` of a 100 MB file into the terminal | UI does not freeze; the editor next to it still scrolls, frames ≤ 16 ms; terminal finishes in ≤ 3 s |
+| Idle terminal | 0 frames per second |
+| Scrollback RAM | `scrollback` default **10,000 lines** (VS Code 1000, Zed 10,000). Estimated max ~30 MB per terminal at 120 columns (an alacritty cell is ~24 bytes; rows are only allocated when used). Hard cap 100,000 lines: a larger setting is clamped |
+| Whole-app RAM with 1 terminal running Claude Code | grows ≤ 50 MB compared with no terminal |
+| Release binary | grows ≤ 1.5 MB (measured: alacritty + PTY ~290 KB, the rest for the workbench) |
 
-**Lệch VS Code ở scrollback:** VS Code mặc định 1000 dòng. Đầu ra một phiên agent dài hơn nhiều, 1000 dòng làm mất phần người dùng cần cuộn lại xem. Lucerna lấy mặc định 10 000 của Zed.
+**Deviation from VS Code on scrollback:** VS Code defaults to 1000 lines. The output of an agent session is much longer, and 1000 lines loses the part the user needs to scroll back to. Lucerna takes Zed's default of 10,000.
 
-### 9.3 Luồng
+### 9.3 Threads
 
-- Luồng PTY: đọc, parse, giữ lock tối đa 64 KB mỗi lần (alacritty). Không bao giờ chạm GPUI.
-- Luồng UI: lấy lock một lần mỗi khung trong `snapshot()`, giữ ngắn. Không đọc file, không `stat` (giải link chạy nền).
-- Đọc tiến trình foreground: luồng nền, có giới hạn tần suất.
+- PTY thread: read, parse, hold the lock at most 64 KB at a time (alacritty). Never touches GPUI.
+- UI thread: takes the lock once per frame in `snapshot()`, held briefly. No file reads, no `stat` (link resolution runs in the background).
+- Foreground process reading: background thread, rate limited.
 
-## 10. Nền tảng
+## 10. Platforms
 
-- **macOS:** mục tiêu chính. Login shell §6.2.
-- **Linux:** chạy được: PTY của alacritty, `/proc` cho tiến trình foreground, primary selection, ⌃⇧C/⌃⇧V.
-- **Windows:** ConPTY qua alacritty; shell mặc định `powershell.exe`; tên tiến trình foreground để sau (tên tab dùng tên shell). Không test trên Windows trong MVP, nhưng code không được giả định Unix ngoài các chỗ `#[cfg(unix)]` rõ ràng.
-- `deny.toml`: khi bắt đầu build cho Linux/Windows, thêm target vào `[graph] targets`. Spec này không đổi file đó.
+- **macOS:** the main target. Login shell §6.2.
+- **Linux:** runs: alacritty's PTY, `/proc` for the foreground process, primary selection, ⌃⇧C/⌃⇧V.
+- **Windows:** ConPTY through alacritty; default shell `powershell.exe`; foreground process name comes later (the tab name uses the shell name). Not tested on Windows in the MVP, but code must not assume Unix except in explicit `#[cfg(unix)]` places.
+- `deny.toml`: when starting builds for Linux/Windows, add targets to `[graph] targets`. This spec does not change that file.
 
-## 11. Kiểm thử
+## 11. Testing
 
-- **`lucerna-terminal` (unit, không cần GPUI):** mã hóa phím theo mode (app cursor, modifier, phím chức năng, ⌥ là Meta hay không); mã hóa chuột (SGR, normal); gộp run (cùng kiểu gộp, khác kiểu tách, ký tự rộng, zero-width, ký tự khối, nền liền nhau); màu (bảng 256, truecolor, độ tương phản, không áp cho 16–255); dò link (URL, `path:L:C`, `(L,C)`, traceback Python, tiền tố git, link bị wrap qua hai dòng, ngân sách thời gian); snapshot sau khi feed chuỗi byte (con trỏ, alt screen, vùng chọn); env và args khi spawn (login shell, `LANG`, `TERM_PROGRAM`, bỏ lớp Workspace khi chưa tin).
-- **Spawn thật** (test tích hợp, Unix): mở `/bin/sh -c 'printf hi'`, đợi `Exited(Some(0))`, snapshot có `hi`. Resize đổi `stty size`.
-- **`lucerna-workbench` (gpui test):** phím có ⌘ không bao giờ vào PTY, ⌘W khi focus ở terminal đóng editor chứ không đóng terminal; ⌃` bật tắt và chuyển focus đúng ba trường hợp; tab mới, đóng tab, đóng tab cuối thì ẩn panel; phím trong danh sách bỏ qua shell chạy lệnh, phím khác vào PTY; vim không nhận phím khi focus ở terminal; đổi vị trí panel; kích thước được lưu; tiến trình thoát mã 0 đóng tab, mã khác giữ tab.
-- **Thủ công trước khi coi là xong** (đặt cạnh Zed, design-principles §1.1): Claude Code (vẽ khung, màu, cuộn khi đang chạy, ⇧Enter qua `sendSequence`), Codex, vim (mouse mode, alt screen), htop, `cat` file lớn, resize panel khi Claude Code đang vẽ, gõ tiếng Việt bằng bộ gõ Telex trong shell và trong Claude Code, ⌘+click đường dẫn mà Claude Code in ra, đổi theme khi terminal đang mở. So khoảng cách, chiều cao thanh tab, màu nền, viền với Zed.
-- Đo các ngưỡng §9.2 và ghi số vào ledger của plan.
+- **`lucerna-terminal` (unit, no GPUI needed):** key encoding by mode (app cursor, modifiers, function keys, whether ⌥ is Meta); mouse encoding (SGR, normal); run merging (same style merges, different style splits, wide characters, zero-width, block characters, adjacent backgrounds); color (256 table, truecolor, contrast, not applied to 16–255); link detection (URL, `path:L:C`, `(L,C)`, Python traceback, git prefix, a link wrapped across two lines, time budget); snapshot after feeding a byte string (cursor, alt screen, selection); env and args on spawn (login shell, `LANG`, `TERM_PROGRAM`, dropping the Workspace layer when untrusted).
+- **Real spawn** (integration test, Unix): open `/bin/sh -c 'printf hi'`, wait for `Exited(Some(0))`, the snapshot has `hi`. Resize changes `stty size`.
+- **`lucerna-workbench` (gpui test):** keys with ⌘ never reach the PTY, ⌘W with focus in the terminal closes the editor not the terminal; ⌃` toggles and moves focus correctly in the three cases; new tab, close tab, closing the last tab hides the panel; keys in the skip-shell list run the command, other keys go to the PTY; vim does not receive keys when focus is in the terminal; changing the panel position; the size is saved; a process exiting with code 0 closes the tab, a non-zero code keeps the tab.
+- **Manual before calling it done** (side by side with Zed, design-principles §1.1): Claude Code (frame drawing, colors, scrolling while running, ⇧Enter via `sendSequence`), Codex, vim (mouse mode, alt screen), htop, `cat` of a large file, resizing the panel while Claude Code is drawing, typing Vietnamese with the Telex input method in the shell and in Claude Code, ⌘+click on a path Claude Code prints, changing theme while the terminal is open. Compare spacing, tab bar height, background colors, borders against Zed.
+- Measure the §9.2 thresholds and record the numbers in the plan's ledger.
 
-## 12. Thứ tự làm (gợi ý cho plan)
+## 12. Order of work (suggestion for the plan)
 
-1. Crate `lucerna-terminal`: spawn, luồng sự kiện, snapshot, mã hóa phím/chuột, gộp run, màu. Test unit.
+1. Crate `lucerna-terminal`: spawn, event thread, snapshot, key/mouse encoding, run merging, color. Unit tests.
 2. `lucerna-theme`: `TerminalColors`.
-3. Khung panel (`layout/panel.rs`), sash dùng chung, tách component tab, nút status bar, lưu trạng thái.
-4. `TerminalView` + `TerminalElement`: vẽ, resize, focus, phím, IME.
-5. Chọn, copy, paste, cuộn, chuột.
-6. Link.
-7. Settings, keybindings, Restricted Mode, tên tab.
-8. Đo hiệu năng, review giao diện cạnh Zed.
+3. Panel frame (`layout/panel.rs`), shared sash, split out the tab component, status bar button, state saving.
+4. `TerminalView` + `TerminalElement`: drawing, resize, focus, keys, IME.
+5. Select, copy, paste, scroll, mouse.
+6. Links.
+7. Settings, keybindings, Restricted Mode, tab name.
+8. Measure performance, review the UI next to Zed.
 
-## 13. Để lại cho người làm
+## 13. Left to the implementer
 
-- Tên kiểu và hàm cụ thể trong `lucerna-terminal`.
-- Cách chia file trong module `terminal/`.
-- Chi tiết mã hóa phím (theo xterm; alacritty có sẵn bảng cho vài trường hợp, phần còn lại tự viết dựa trên tài liệu xterm ctlseqs, không chép từ Zed).
-- Giá trị chính xác của regex đường dẫn, miễn qua các test ở §11.
+- Concrete type and function names in `lucerna-terminal`.
+- How files are split in the `terminal/` module.
+- Details of key encoding (follow xterm; alacritty has a ready table for a few cases, the rest is written from the xterm ctlseqs docs, not copied from Zed).
+- The exact value of the path regex, as long as it passes the tests in §11.
 
-## 14. Tham khảo
+## 14. References
 
-- `docs/research/2026-11-13-terminal.md`: VS Code (lệnh, settings, link, trust, env) và Zed (kiến trúc, cách vẽ, giao diện, hiệu năng) ở revision `b5cd310`, kèm kiểm tra giấy phép.
-- Zed: `crates/terminal`, `crates/terminal_view` (GPL, chỉ học thiết kế).
-- VS Code: `src/vs/workbench/contrib/terminal/`, `terminalContrib/links/`, tài liệu `docs/terminal/*`, `docs/editor/workspace-trust`.
+- `docs/research/2026-11-13-terminal.md`: VS Code (commands, settings, links, trust, env) and Zed (architecture, drawing, UI, performance) at revision `b5cd310`, with the license check.
+- Zed: `crates/terminal`, `crates/terminal_view` (GPL, learn the design only).
+- VS Code: `src/vs/workbench/contrib/terminal/`, `terminalContrib/links/`, the docs `docs/terminal/*`, `docs/editor/workspace-trust`.
 - xterm control sequences: <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html>.
