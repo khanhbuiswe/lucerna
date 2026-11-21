@@ -1,42 +1,42 @@
-# Thanh cuộn dùng chuột: VS Code và Zed
+# Mouse-driven scrollbar: VS Code and Zed
 
-Tra ngày 2026-11-14. VS Code ở nhánh `main` (MIT). Zed ở nhánh `main`, crate `ui` (GPL): chỉ học hành vi, không chép code.
+Looked up on 2026-11-14. VS Code at branch `main` (MIT). Zed at branch `main`, crate `ui` (GPL): only the behavior is studied, no code is copied.
 
 ## VS Code
 
-Nguồn: `src/vs/base/browser/ui/scrollbar/abstractScrollbar.ts`, `scrollbarState.ts`, `src/vs/editor/common/config/editorOptions.ts`.
+Sources: `src/vs/base/browser/ui/scrollbar/abstractScrollbar.ts`, `scrollbarState.ts`, `src/vs/editor/common/config/editorOptions.ts`.
 
-- **Kéo thumb (slider).** Lúc nhấn, VS Code lưu vị trí chuột và một bản sao trạng thái thanh cuộn. Mỗi lần chuột di chuyển, độ lệch so với điểm nhấn được cộng vào vị trí slider ban đầu (`getDesiredScrollPositionFromDelta`). Nhờ vậy điểm nắm luôn nằm dưới con trỏ, và sai số không cộng dồn.
-  - Chỉ trên Windows: kéo lệch ra ngang quá 140 px (`POINTER_DRAG_RESET_DISTANCE`) thì cuộn về chỗ cũ. macOS và Linux không có.
-- **Bấm rãnh.**
-  - `editor.scrollbar.scrollByPage` mặc định `false`: nhảy tới chỗ bấm, slider căn giữa vào điểm bấm (`getDesiredScrollPositionFromOffset` trừ nửa chiều cao slider).
-  - Khi bật `true`: bấm trên slider thì lên một trang, dưới slider thì xuống một trang (`...FromOffsetPaged`).
-  - Sau cú bấm rãnh, nếu giữ chuột thì kéo tiếp được, vì `_sliderPointerDown` được gọi luôn.
-  - **Không có** hành vi đảo khi giữ Shift trong code hiện tại.
-- **Rê chuột.** Chỉ đổi màu bằng CSS (`scrollbarSlider.hoverBackground`; khi kéo thì `scrollbarSlider.activeBackground`, qua class `active`). Kích thước không đổi.
-- Slider ngắn nhất 20 px (`MINIMUM_SLIDER_SIZE`).
+- **Dragging the thumb (slider).** On mouse down, VS Code stores the mouse position and a copy of the scrollbar state. On every mouse move, the offset from the press point is added to the original slider position (`getDesiredScrollPositionFromDelta`). This keeps the grab point always under the cursor, and the error does not accumulate.
+  - Windows only: dragging sideways more than 140 px (`POINTER_DRAG_RESET_DISTANCE`) scrolls back to the original spot. macOS and Linux do not have this.
+- **Clicking the track.**
+  - `editor.scrollbar.scrollByPage` defaults to `false`: jump to the click spot, with the slider centered on the click point (`getDesiredScrollPositionFromOffset` subtracts half the slider height).
+  - When set to `true`: clicking above the slider goes up one page, below the slider goes down one page (`...FromOffsetPaged`).
+  - After a track click, if the mouse is held you can keep dragging, because `_sliderPointerDown` is called right away.
+  - There is **no** inverted behavior when holding Shift in the current code.
+- **Hover.** Only the color changes, via CSS (`scrollbarSlider.hoverBackground`; while dragging, `scrollbarSlider.activeBackground`, through the `active` class). The size does not change.
+- The slider is at least 20 px (`MINIMUM_SLIDER_SIZE`).
 
 ## Zed
 
-Nguồn: `crates/ui/src/components/scrollbar.rs`.
+Source: `crates/ui/src/components/scrollbar.rs`.
 
-- **Ba trạng thái thumb:** Inactive, Hover, Dragging. Hover và Dragging chỉ đổi màu, dùng màu hover và màu active riêng; thumb không rộng ra.
-- **Bấm rãnh:** thumb căn giữa vào điểm bấm, kẹp trong hai đầu rãnh. Không lật trang.
-- **Kéo:** lưu chỗ nắm bên trong thumb, rồi giữ chỗ đó dưới con trỏ.
-- **Khi kéo:** chỉ notify entity trạng thái của thanh cuộn (và entity cha nếu có đăng ký). Chuột bị capture suốt lúc kéo, con trỏ là mũi tên.
-- **Kích thước:** thumb thường rộng 6 px, đệm 4 px mỗi bên; thumb editor rộng 15 px. Thumb ngắn nhất 25 px.
-- **Tự ẩn:** ẩn sau 1 giây không dùng, fade 400 ms. Lucerna chưa làm phần này.
+- **Three thumb states:** Inactive, Hover, Dragging. Hover and Dragging only change the color, using separate hover and active colors; the thumb does not widen.
+- **Clicking the track:** the thumb is centered on the click point, clamped between the two ends of the track. No page flipping.
+- **Dragging:** stores the grab point inside the thumb, then keeps that spot under the cursor.
+- **While dragging:** only notifies the scrollbar's state entity (and the parent entity if one is registered). The mouse is captured the whole time, the cursor is an arrow.
+- **Size:** the normal thumb is 6 px wide, with 4 px of padding on each side; the editor thumb is 15 px wide. The shortest thumb is 25 px.
+- **Auto-hide:** hides after 1 second of no use, 400 ms fade. Lucerna has not done this part yet.
 
-## Lucerna chọn gì
+## What Lucerna chooses
 
-- **Hành vi theo VS Code:**
-  - kéo giữ điểm nắm;
-  - bấm rãnh thì nhảy tới chỗ bấm, có setting `editor.scrollbar.scrollByPage`;
-  - giữ chuột sau khi bấm rãnh thì kéo tiếp được;
-  - không có Shift;
-  - không có reset 140 px, vì macOS là nền tảng chính và Zed cũng không có.
-- **Giao diện theo Zed:**
-  - thumb 6 px như hiện tại;
-  - vùng nhận chuột rộng 12 px;
-  - đổi màu khi rê và khi kéo, theo key theme của Zed là `scrollbar.thumb.hover_background` và `scrollbar.thumb.active_background`;
-  - một component thanh cuộn dùng chung giữa editor và danh sách, như component `Scrollbar` của Zed.
+- **Behavior follows VS Code:**
+  - dragging keeps the grab point;
+  - clicking the track jumps to the click spot, with the setting `editor.scrollbar.scrollByPage`;
+  - holding the mouse after a track click lets you keep dragging;
+  - no Shift behavior;
+  - no 140 px reset, because macOS is the primary platform and Zed does not have it either.
+- **Look follows Zed:**
+  - 6 px thumb as now;
+  - 12 px wide mouse hit area;
+  - color change on hover and on drag, using Zed's theme keys `scrollbar.thumb.hover_background` and `scrollbar.thumb.active_background`;
+  - one scrollbar component shared between the editor and lists, like Zed's `Scrollbar` component.

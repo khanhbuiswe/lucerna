@@ -1,71 +1,71 @@
-# Chuyển nhánh: VS Code và Zed làm thế nào
+# Switching branches: how VS Code and Zed do it
 
-Tra cứu cho tính năng bấm tên nhánh trên thanh tiêu đề để chuyển nhánh. Spec: `docs/superpowers/specs/2026-11-15-git-branch-switch-design.md`.
+Research for the feature of clicking the branch name in the title bar to switch branches. Spec: `docs/superpowers/specs/2026-11-15-git-branch-switch-design.md`.
 
-Nguồn:
-- VS Code: `microsoft/vscode` nhánh `main`, giấy phép MIT. Đọc `extensions/git/src/{commands,statusbar,repository,git}.ts`, `package.json` và `package.nls.json`.
-- Zed: revision `b5cd310` mà Lucerna đang pin, giấy phép GPL. Chỉ học thiết kế, không chép code. Đọc `crates/git_ui/src/branch_picker.rs` và `crates/git/src/repository.rs`.
+Sources:
+- VS Code: `microsoft/vscode` branch `main`, MIT license. Read `extensions/git/src/{commands,statusbar,repository,git}.ts`, `package.json` and `package.nls.json`.
+- Zed: revision `b5cd310`, which Lucerna pins, GPL license. Only the design is studied, no code is copied. Read `crates/git_ui/src/branch_picker.rs` and `crates/git/src/repository.rs`.
 
-## 1. Cách mở
+## 1. How it opens
 
 | | VS Code | Zed |
 |---|---|---|
-| Từ đâu | bấm mục nhánh trên status bar, hoặc lệnh `git.checkout` "Git: Checkout to..." | bấm nút tên nhánh trên title bar; lệnh `git::Branch` |
-| Dạng | Quick Pick ở giữa phía trên | popover gắn ngay dưới nút tên nhánh (`GitBranchSelector`) |
-| Phím mặc định | không có | không có cho lệnh mở |
+| From where | clicking the branch entry on the status bar, or the command `git.checkout` "Git: Checkout to..." | clicking the branch name button on the title bar; the command `git::Branch` |
+| Form | a Quick Pick at the top center | a popover attached right under the branch name button (`GitBranchSelector`) |
+| Default key | none | none for the open command |
 
-## 2. Danh sách
+## 2. The list
 
 - **VS Code:**
-  - Placeholder là "Select a branch or tag to checkout".
-  - Khi ô lọc còn trống, ba mục đứng đầu: "+ Create new branch...", "+ Create new branch from...", "Checkout detached...".
-  - Sau đó là các nhóm "branches", "remote branches", "tags", theo thứ tự của `git.checkoutType`.
-  - Sắp theo ngày commit giảm dần (`git.branchSortOrder`).
-  - Mỗi dòng gồm: nhãn; mô tả `N↓ M↑` kèm ngày tương đối; dòng chi tiết `tác giả • hash • tiêu đề` (`git.showReferenceDetails`).
-  - Lọc mờ (fuzzy) theo nhãn và mô tả. Không hiện `origin/HEAD`.
+  - The placeholder is "Select a branch or tag to checkout".
+  - While the filter box is empty, the top three entries are: "+ Create new branch...", "+ Create new branch from...", "Checkout detached...".
+  - After that come the groups "branches", "remote branches", "tags", in the order of `git.checkoutType`.
+  - Sorted by commit date descending (`git.branchSortOrder`).
+  - Each row has: a label; a description `N↓ M↑` with a relative date; a detail line `author • hash • subject` (`git.showReferenceDetails`).
+  - Fuzzy filtering on the label and description. `origin/HEAD` is not shown.
 - **Zed:**
-  - Placeholder là "Switch or type to create a branch…".
-  - Liệt kê nhánh local và remote. Có bộ lọc All / Local / Remote.
-  - Nhánh hiện tại được ưu tiên đứng đầu. Mỗi dòng hiện tên nhánh, tiêu đề commit và thời gian.
-  - Gõ một tên chưa có thì hiện dòng tạo nhánh.
-  - Giữ một phím bổ trợ để xóa nhánh.
+  - The placeholder is "Switch or type to create a branch…".
+  - Lists local and remote branches. Has an All / Local / Remote filter.
+  - The current branch is prioritized at the top. Each row shows the branch name, the commit subject and the time.
+  - Typing a name that does not exist yet shows a create-branch row.
+  - Holding a modifier key deletes a branch.
 
-## 3. Chuyển nhánh khi có thay đổi chưa commit
-
-- **VS Code:**
-  - Chạy `git checkout -q <ref>`. Thay đổi không đụng nhau được git tự mang sang nhánh mới.
-  - Nếu stderr có "commit your changes or stash them", hiện hộp thoại "Your local changes would be overwritten by checkout." với ba nút:
-    - **Stash & Checkout**: stash, gồm cả file chưa theo dõi;
-    - **Migrate Changes**: stash, chuyển nhánh, rồi pop;
-    - **Force Checkout**: xóa sạch rồi chuyển.
-  - `git.autoStash` không áp dụng cho checkout.
-- **Zed:** `change_branch` chạy `git checkout <tên>`. Lỗi được hiện nguyên văn trong hộp thoại "Failed to change branch". Không có stash.
-
-## 4. Nhánh remote
-
-Cả hai đều làm giống nhau:
-- Đã có nhánh local cùng tên: chuyển sang nhánh đó. Zed còn đặt lại upstream.
-- Chưa có: tạo nhánh local theo dõi nhánh remote. VS Code dùng `checkout --track`, Zed dùng `branch --track` rồi `checkout`.
-
-## 5. Tạo nhánh
+## 3. Switching branches with uncommitted changes
 
 - **VS Code:**
-  - Ô nhập có prompt "Please provide a new branch name". Giá trị ban đầu lấy từ `git.branchPrefix`.
-  - Khoảng trắng và ký tự không hợp lệ được thay bằng `git.branchWhitespaceChar` (mặc định `-`).
-  - Báo "Branch "x" already exists" khi trùng tên. Kiểm tra theo `git.branchValidationRegex`.
-  - Tạo xong thì chuyển sang luôn (`checkout -b`).
-- **Zed:** gõ tên rồi Enter thì chạy `git switch -c <tên>` từ HEAD. Phím phụ thì tạo từ nhánh mặc định.
+  - Runs `git checkout -q <ref>`. Changes that do not conflict are carried over to the new branch by git itself.
+  - If stderr contains "commit your changes or stash them", a dialog "Your local changes would be overwritten by checkout." appears with three buttons:
+    - **Stash & Checkout**: stash, including untracked files;
+    - **Migrate Changes**: stash, switch branch, then pop;
+    - **Force Checkout**: discard everything, then switch.
+  - `git.autoStash` does not apply to checkout.
+- **Zed:** `change_branch` runs `git checkout <name>`. The error is shown verbatim in a "Failed to change branch" dialog. No stash.
 
-## 6. Restricted Mode và hook
+## 4. Remote branches
 
-- VS Code tắt toàn bộ extension git khi workspace chưa tin cậy.
-- Zed chạy git, nhưng tắt hook ở thư mục chưa tin cậy. Ở thư mục đã tin cậy thì hook chạy bình thường.
+Both do the same thing:
+- A local branch with the same name exists: switch to it. Zed also resets the upstream.
+- Does not exist: create a local branch tracking the remote branch. VS Code uses `checkout --track`, Zed uses `branch --track` then `checkout`.
 
-## 7. Lucerna chọn gì
+## 5. Creating a branch
 
-Người dùng duyệt ngày 2026-11-15:
-- **Mở và hiển thị:** popover dưới tên nhánh trên thanh tiêu đề, theo Zed. Lệnh và ID lấy theo VS Code (`git.checkout`).
-- **Thay đổi chưa commit:** để git tự quyết, như Zed. Lucerna chỉ chặn trước khi còn file chưa lưu.
-- **Tạo nhánh:** có, từ HEAD.
-- **Nhánh remote:** tạo nhánh local theo dõi nó.
-- **Phạm vi bản này:** không có tag, detached HEAD, stash hay xóa nhánh.
+- **VS Code:**
+  - The input box has the prompt "Please provide a new branch name". The initial value comes from `git.branchPrefix`.
+  - Whitespace and invalid characters are replaced with `git.branchWhitespaceChar` (default `-`).
+  - Reports "Branch "x" already exists" on a duplicate name. Validated per `git.branchValidationRegex`.
+  - After creating, it switches right away (`checkout -b`).
+- **Zed:** typing a name then Enter runs `git switch -c <name>` from HEAD. The secondary key creates from the default branch.
+
+## 6. Restricted Mode and hooks
+
+- VS Code disables the whole git extension when the workspace is untrusted.
+- Zed runs git, but disables hooks in an untrusted directory. In a trusted directory hooks run normally.
+
+## 7. What Lucerna chooses
+
+Approved by the user on 2026-11-15:
+- **Opening and display:** a popover under the branch name on the title bar, following Zed. Commands and IDs follow VS Code (`git.checkout`).
+- **Uncommitted changes:** let git decide, like Zed. Lucerna only blocks beforehand when there are still unsaved files.
+- **Creating a branch:** yes, from HEAD.
+- **Remote branches:** create a local branch tracking it.
+- **Scope of this version:** no tags, detached HEAD, stash or branch deletion.

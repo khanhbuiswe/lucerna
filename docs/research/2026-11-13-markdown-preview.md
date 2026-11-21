@@ -1,189 +1,189 @@
-# Nghiên cứu: Markdown preview
+# Research: Markdown preview
 
-Ngày 2026-11-13. Nguồn:
-- VS Code: `microsoft/vscode` nhánh `main` (commit `08e8bbf`, 2026-11-13), thư mục `extensions/markdown-language-features/` (`package.json`, `package.nls.json`, `src/preview/*.ts`, `src/markdownEngine.ts`, `src/commands/*.ts`, `src/util/resources.ts`, `preview-src/*.ts`).
-- Zed: revision GPUI đang pin `b5cd310b3b54dfc659fcc06453e6358843dfe216` (2026-11-07), các crate `markdown_preview`, `markdown`, `mermaid_render`, `gpui`, `zed/src/zed/quick_action_bar/preview.rs`, `assets/keymaps/default-macos.json`, `assets/settings/default.json`. Zed phần lớn là GPL: chỉ ghi lại thiết kế, không chép code.
+Date 2026-11-13. Sources:
+- VS Code: `microsoft/vscode` branch `main` (commit `08e8bbf`, 2026-11-13), folder `extensions/markdown-language-features/` (`package.json`, `package.nls.json`, `src/preview/*.ts`, `src/markdownEngine.ts`, `src/commands/*.ts`, `src/util/resources.ts`, `preview-src/*.ts`).
+- Zed: the pinned GPUI revision `b5cd310b3b54dfc659fcc06453e6358843dfe216` (2026-11-07), crates `markdown_preview`, `markdown`, `mermaid_render`, `gpui`, `zed/src/zed/quick_action_bar/preview.rs`, `assets/keymaps/default-macos.json`, `assets/settings/default.json`. Zed is mostly GPL: only the design is recorded, no code is copied.
 
 ## 1. VS Code
 
-### 1.1 Lệnh, phím, menu
-Lệnh (`package.json` → `contributes.commands`, cài trong `src/commands/`):
+### 1.1 Commands, keys, menus
+Commands (`package.json` → `contributes.commands`, implemented in `src/commands/`):
 
-| Lệnh | Tiêu đề | Ghi chú |
+| Command | Title | Notes |
 |---|---|---|
-| `markdown.showPreview` | Open Preview | mở preview trong cùng nhóm editor |
-| `markdown.showPreviewToSide` | Open Preview to the Side | mở ở nhóm bên cạnh, focus giữ ở editor |
-| `markdown.showLockedPreviewToSide` | Open Locked Preview to the Side | preview khoá vào file này |
-| `markdown.showSource` | Show Source | từ preview quay về editor nguồn |
+| `markdown.showPreview` | Open Preview | opens the preview in the same editor group |
+| `markdown.showPreviewToSide` | Open Preview to the Side | opens in the adjacent group, focus stays in the editor |
+| `markdown.showLockedPreviewToSide` | Open Locked Preview to the Side | preview locked to this file |
+| `markdown.showSource` | Show Source | from the preview back to the source editor |
 | `markdown.preview.refresh` | Refresh Preview | |
 | `markdown.preview.toggleLock` | Toggle Preview Locking | |
 | `markdown.showPreviewSecuritySelector` | Change Preview Security Settings | |
-| `markdown.reopenAsPreview` / `markdown.reopenAsSource` | Open as Preview / Open as Source | dùng `reopenActiveEditorWith` |
-| `markdown.togglePreview` | Toggle Preview | thay tab nguồn bằng preview hoặc ngược lại, **trong cùng tab** |
+| `markdown.reopenAsPreview` / `markdown.reopenAsSource` | Open as Preview / Open as Source | use `reopenActiveEditorWith` |
+| `markdown.togglePreview` | Toggle Preview | replaces the source tab with the preview or vice versa, **in the same tab** |
 
-Phím (mới nhất trên `main`):
+Keys (latest on `main`):
 - `cmd+k v` (`ctrl+k v`) → `markdown.showPreviewToSide`, `when`: `editorFocus && editorLangId =~ /^(markdown|prompt|instructions|chatagent|skill)$/ && !notebookEditorFocused`.
-- `cmd+shift+v` (`ctrl+shift+v`) → **`markdown.togglePreview`** (bản cũ là `markdown.showPreview`), `when`: `!terminalFocus && ((editorFocus && resourceLangId =~ markdown… ) || activeCustomEditorId == 'vscode.markdown.preview.editor')`. Tức là ⌘⇧V bấm trong editor thì chuyển sang preview, bấm trong preview thì về nguồn.
+- `cmd+shift+v` (`ctrl+shift+v`) → **`markdown.togglePreview`** (the old version was `markdown.showPreview`), `when`: `!terminalFocus && ((editorFocus && resourceLangId =~ markdown… ) || activeCustomEditorId == 'vscode.markdown.preview.editor')`. That is, pressing ⌘⇧V in the editor switches to the preview, and pressing it in the preview goes back to the source.
 
-Menu:
-- `editor/title`, group `navigation@1`: nút `markdown.showPreviewToSide` (icon `$(open-preview)`), `alt` = `markdown.showPreview` (giữ Alt khi bấm thì mở tại chỗ). Chỉ hiện với editor markdown.
-- `editor/title` khi preview active: `markdown.showSource` (icon `$(file-code)`), và trong menu "…" (group `1_markdown`): Refresh, Toggle Lock, Security.
-- `explorer/context` và `editor/title/context`: Open Preview.
+Menus:
+- `editor/title`, group `navigation@1`: the `markdown.showPreviewToSide` button (icon `$(open-preview)`), `alt` = `markdown.showPreview` (holding Alt when clicking opens in place). Shown only for markdown editors.
+- `editor/title` when the preview is active: `markdown.showSource` (icon `$(file-code)`), and in the "…" menu (group `1_markdown`): Refresh, Toggle Lock, Security.
+- `explorer/context` and `editor/title/context`: Open Preview.
 
-### 1.2 Preview là gì
-- Preview là **webview** (`markdown.preview`), HTML do markdown-it render rồi gửi vào webview; script `preview-src/index.ts` chạy trong webview lo cuộn, click, link.
-- Có thêm **custom editor** `vscode.markdown.preview.editor` (`contributes.customEditors`, priority `option` cho `*.md, *.markdown, …`). Vì là custom editor nên dùng được "Reopen Editor With…" và `workbench.editorAssociations` (vd. `{"*.md": "vscode.markdown.preview.editor"}` để mở md thẳng ra preview). Loại này là **static preview** (`StaticMarkdownPreview`), luôn gắn với một file.
-- `src/preview/previewManager.ts`: preview mở bằng lệnh là **dynamic preview**. Nếu không khoá, nó **đi theo editor markdown đang active** (`onDidChangeActiveTextEditor` → `update(uri, dòng đang thấy)`). Preview khoá (`locked`) giữ nguyên file. Toggle Lock chuyển qua lại; tiêu đề tab đổi thành "[Preview] x.md" khi khoá.
-- Mở lại preview của cùng file trong cùng cột thì dùng lại preview cũ (`matchesResource(resource, column, locked)`).
+### 1.2 What the preview is
+- The preview is a **webview** (`markdown.preview`), the HTML is rendered by markdown-it and sent into the webview; the script `preview-src/index.ts` runs in the webview and handles scrolling, clicks, links.
+- There is also a **custom editor** `vscode.markdown.preview.editor` (`contributes.customEditors`, priority `option` for `*.md, *.markdown, …`). Because it is a custom editor, "Reopen Editor With…" and `workbench.editorAssociations` work with it (e.g. `{"*.md": "vscode.markdown.preview.editor"}` to open md straight into the preview). This kind is a **static preview** (`StaticMarkdownPreview`), always tied to one file.
+- `src/preview/previewManager.ts`: a preview opened by command is a **dynamic preview**. If not locked, it **follows the active markdown editor** (`onDidChangeActiveTextEditor` → `update(uri, line currently visible)`). A locked preview (`locked`) keeps its file. Toggle Lock switches back and forth; the tab title becomes "[Preview] x.md" when locked.
+- Reopening a preview of the same file in the same column reuses the old preview (`matchesResource(resource, column, locked)`).
 
-### 1.3 Cập nhật nội dung
+### 1.3 Content updates
 `src/preview/preview.ts`:
-- Lắng nghe `workspace.onDidChangeTextDocument` (gõ phím, chưa cần lưu) và `onDidOpenTextDocument`.
-- Có `FileSystemWatcher` trên file nguồn; chỉ dùng khi VS Code **không** đang mở document đó (tránh refresh đôi). Vậy thay đổi trên đĩa (vd. agent ghi file) cũng được cập nhật.
-- `refresh()`: **lần đầu render ngay**, các lần sau gộp bằng timer **300 ms** (`#delay = 300`). Không phải debounce kiểu "đợi ngừng gõ" mà là throttle: lần gọi đầu đặt timer, các lần trong 300 ms bỏ qua.
-- Ảnh cục bộ cũng có watcher riêng (`#updateImageWatchers`): ảnh đổi trên đĩa → refresh.
-- Khi webview ẩn mà HTML đã cũ, render lại lúc hiện ra.
-- Webview cập nhật bằng cách diff DOM (giữ ảnh đã tải), không thay cả trang.
+- Listens to `workspace.onDidChangeTextDocument` (typing, no need to save) and `onDidOpenTextDocument`.
+- Has a `FileSystemWatcher` on the source file; used only when VS Code is **not** holding that document open (to avoid a double refresh). So changes on disk (e.g. the agent writing the file) are picked up too.
+- `refresh()`: **the first time it renders immediately**, later calls are batched by a **300 ms** timer (`#delay = 300`). It is not a "wait until typing stops" debounce but a throttle: the first call sets a timer, calls within 300 ms are ignored.
+- Local images also have their own watcher (`#updateImageWatchers`): an image changed on disk → refresh.
+- When the webview is hidden and its HTML is stale, it re-renders when shown.
+- The webview updates by diffing the DOM (keeping loaded images), not by replacing the whole page.
 
-### 1.4 Đồng bộ cuộn
-Cài đặt (`contributes.configuration`, mặc định trên `main`):
-- `markdown.preview.scrollPreviewWithEditor` (true): cuộn editor → preview cuộn theo.
-- `markdown.preview.scrollEditorWithPreview` (true): cuộn preview → editor cuộn theo.
-- `markdown.preview.markEditorSelection` (false trên `main`; bản cũ mặc định true): đánh dấu dòng có con trỏ trong preview (`activeLineMarker.ts`, thêm class lên phần tử).
-- `markdown.preview.doubleClickToSwitchToEditor` (false trên `main`): double-click trong preview → mở editor nguồn tại dòng đó (`didClick` → `showSource` + đặt selection + `revealRange(InCenterIfOutsideViewport)`).
+### 1.4 Scroll sync
+Settings (`contributes.configuration`, defaults on `main`):
+- `markdown.preview.scrollPreviewWithEditor` (true): scrolling the editor → the preview scrolls along.
+- `markdown.preview.scrollEditorWithPreview` (true): scrolling the preview → the editor scrolls along.
+- `markdown.preview.markEditorSelection` (false on `main`; the old version defaulted to true): marks the line with the cursor in the preview (`activeLineMarker.ts`, adds a class to the element).
+- `markdown.preview.doubleClickToSwitchToEditor` (false on `main`): double-click in the preview → opens the source editor at that line (`didClick` → `showSource` + set selection + `revealRange(InCenterIfOutsideViewport)`).
 
-Cách ánh xạ dòng:
-- `markdownEngine.ts` có plugin `pluginSourceMap`: mọi token block có `token.map` được gắn class `code-line` và `data-line="<dòng bắt đầu, 0-based>"`.
-- Webview (`preview-src/scroll-sync.ts`) dựng bảng `[phần tử, dòng]` từ mọi `.code-line` (bỏ `UL/OL` vì item con có cùng dòng; code fence tính thêm dòng kết thúc theo số `\n`). Bảng được cache theo version của document.
-- Editor → preview: `topmostLineMonitor.ts` nghe `onDidChangeTextEditorVisibleRanges` (throttle 50 ms), lấy dòng trên cùng (có phần lẻ), gửi vào webview. Webview tìm phần tử trước/sau dòng đó và **nội suy tuyến tính** theo `offsetTop` để ra vị trí cuộn. Chờ ảnh tải xong mới cuộn.
-- Preview → editor: sự kiện `scroll` (throttle 50 ms) → từ `scrollY` tìm hai phần tử kẹp quanh → nội suy ra dòng thực → `revealLine` → extension cuộn editor tới dòng đó (`scrollEditorToLine`, hỗ trợ dòng lẻ).
-- Chống vòng lặp: mỗi bên có cờ "đang cuộn do bên kia" (`#isScrolling` 200 ms ở extension; `scrollDisabledCount` 50 ms ở webview).
-- Dòng con trỏ (`onDidChangeTextEditorSelection`) được gửi riêng cho `markEditorSelection`.
+How lines are mapped:
+- `markdownEngine.ts` has the plugin `pluginSourceMap`: every block token with a `token.map` gets the class `code-line` and `data-line="<start line, 0-based>"`.
+- The webview (`preview-src/scroll-sync.ts`) builds a table of `[element, line]` from every `.code-line` (skipping `UL/OL` because child items have the same line; a code fence also counts the end line by the number of `\n`). The table is cached by the document version.
+- Editor → preview: `topmostLineMonitor.ts` listens to `onDidChangeTextEditorVisibleRanges` (throttle 50 ms), takes the top line (with a fractional part), and sends it into the webview. The webview finds the elements before/after that line and **linearly interpolates** by `offsetTop` to get the scroll position. It waits for images to finish loading before scrolling.
+- Preview → editor: the `scroll` event (throttle 50 ms) → from `scrollY` find the two elements bracketing it → interpolate the real line → `revealLine` → the extension scrolls the editor to that line (`scrollEditorToLine`, supports fractional lines).
+- Loop prevention: each side has an "is scrolling because of the other side" flag (`#isScrolling` 200 ms in the extension; `scrollDisabledCount` 50 ms in the webview).
+- The cursor line (`onDidChangeTextEditorSelection`) is sent separately for `markEditorSelection`.
 
-### 1.5 Render
-- markdown-it với `html: true`, highlight bằng highlight.js. Cài đặt: `markdown.preview.breaks` (false), `markdown.preview.linkify` (true, `fuzzyLink: false`), `markdown.preview.typographer` (false).
-- Kiểu chữ: `markdown.preview.fontFamily` (system-ui…), `markdown.preview.fontSize` (14), `markdown.preview.lineHeight` (1.6). `markdown.styles`: danh sách URL/đường dẫn CSS chèn thêm. Extension có thể góp CSS (`markdown.previewStyles`), script và plugin markdown-it (`markdown.markdownItPlugins`).
-- Bảng: markdown-it core có GFM table, strikethrough. **Task list không có trong core**: `- [ ]` hiện ra dưới dạng chữ; muốn checkbox phải cài extension (vd. "Markdown Checkboxes"), và checkbox đó không sửa được file. Mermaid, KaTeX cũng qua extension.
-- Front matter: `markdown.preview.frontMatter` = `hide | codeBlock | table` (mặc định `table`), có lệnh "Configure Frontmatter Visibility".
-- Heading có id (slug kiểu GitHub) để link `#anchor` hoạt động.
+### 1.5 Rendering
+- markdown-it with `html: true`, highlighting by highlight.js. Settings: `markdown.preview.breaks` (false), `markdown.preview.linkify` (true, `fuzzyLink: false`), `markdown.preview.typographer` (false).
+- Typography: `markdown.preview.fontFamily` (system-ui…), `markdown.preview.fontSize` (14), `markdown.preview.lineHeight` (1.6). `markdown.styles`: a list of extra CSS URLs/paths to inject. Extensions can contribute CSS (`markdown.previewStyles`), scripts and markdown-it plugins (`markdown.markdownItPlugins`).
+- Tables: markdown-it core has GFM tables, strikethrough. **Task lists are not in core**: `- [ ]` shows up as text; to get checkboxes you must install an extension (e.g. "Markdown Checkboxes"), and those checkboxes do not edit the file. Mermaid and KaTeX also come through extensions.
+- Front matter: `markdown.preview.frontMatter` = `hide | codeBlock | table` (default `table`), with a command "Configure Frontmatter Visibility".
+- Headings have ids (GitHub-style slugs) so `#anchor` links work.
 
-### 1.6 Ảnh và bảo mật
-- Đường dẫn ảnh tương đối được resolve theo thư mục chứa file md, rồi đổi sang URI của webview (`asWebviewUri`). `/abs` resolve theo gốc workspace.
-- `localResourceRoots` (`src/util/resources.ts`): nếu file thuộc workspace thì là **mọi thư mục workspace**; nếu không thì **thư mục chứa file**. Ảnh ngoài các gốc này không tải được.
-- CSP (`documentRenderer.ts`), bốn mức chọn qua "Change Preview Security Settings", lưu trong `globalState` theo từng workspace (không phải setting):
-  - **Strict** (mặc định): ảnh/media/font/style chỉ `self`, webview, `https:`, `data:`; script chỉ nonce của VS Code. Không chạy script trong tài liệu, không ảnh `http:`.
-  - Allow insecure local content: thêm `http://localhost:*`, `http://127.0.0.1:*`.
-  - Allow insecure content: thêm `http:`.
-  - Disable: tắt CSP, cho chạy script.
-- Khi nội dung bị chặn, preview hiện thanh "Some content has been disabled in this document", bấm vào mở bộ chọn mức bảo mật.
+### 1.6 Images and security
+- Relative image paths are resolved against the folder containing the md file, then turned into a webview URI (`asWebviewUri`). `/abs` resolves against the workspace root.
+- `localResourceRoots` (`src/util/resources.ts`): if the file belongs to the workspace it is **every workspace folder**; otherwise it is **the folder containing the file**. Images outside these roots cannot be loaded.
+- CSP (`documentRenderer.ts`), four levels chosen through "Change Preview Security Settings", stored in `globalState` per workspace (not a setting):
+  - **Strict** (default): images/media/fonts/styles only from `self`, the webview, `https:`, `data:`; scripts only with VS Code's nonce. No script runs in the document, no `http:` images.
+  - Allow insecure local content: adds `http://localhost:*`, `http://127.0.0.1:*`.
+  - Allow insecure content: adds `http:`.
+  - Disable: turns CSP off, lets scripts run.
+- When content is blocked, the preview shows a "Some content has been disabled in this document" bar, and clicking it opens the security level picker.
 
-### 1.7 Link
-- `http(s):`, `mailto:` mở bằng trình duyệt hệ thống. `#anchor` cuộn trong preview.
-- Link tương đối: webview gửi `openLink` về extension. `markdown.preview.openMarkdownLinks` = `inPreview` (mặc định) | `inEditor`: link tới file `.md` khác mở **trong preview** (dynamic preview chuyển sang file đó, cuộn tới fragment); file khác mở trong editor. Hỗ trợ `file.md#L10`.
+### 1.7 Links
+- `http(s):`, `mailto:` open in the system browser. `#anchor` scrolls within the preview.
+- Relative links: the webview sends `openLink` to the extension. `markdown.preview.openMarkdownLinks` = `inPreview` (default) | `inEditor`: a link to another `.md` file opens **in the preview** (the dynamic preview switches to that file, scrolling to the fragment); other files open in the editor. Supports `file.md#L10`.
 
 ### 1.8 HTML
-VS Code **không có preview HTML dựng sẵn**. Có Simple Browser (`simpleBrowser.show`, nhập URL) và extension Microsoft "Live Preview" (`ms-vscode.live-server`) chạy server cục bộ rồi mở trong Simple Browser.
+VS Code **has no built-in HTML preview**. It has Simple Browser (`simpleBrowser.show`, enter a URL) and Microsoft's "Live Preview" extension (`ms-vscode.live-server`) which runs a local server and then opens it in Simple Browser.
 
 ## 2. Zed
 
-### 2.1 Cấu trúc
-- Crate `markdown_preview` chỉ còn 3 file: `markdown_preview.rs` (khai báo action, `init`), `markdown_preview_settings.rs`, `markdown_preview_view.rs` (~5000 dòng, phần lớn là test). Parser và renderer **đã gộp vào crate dùng chung `markdown`** (`markdown.rs`, `parser.rs`, `html/`, `mermaid.rs`) — cũng là crate render hover, agent panel… Các file cũ `markdown_parser.rs`, `markdown_renderer.rs`, `markdown_elements.rs` không còn ở revision này.
-- `MarkdownPreviewView` là một workspace item (tab trong pane), serialize được (lưu đường dẫn file + mode trong DB, khôi phục khi mở lại).
+### 2.1 Structure
+- The crate `markdown_preview` is down to 3 files: `markdown_preview.rs` (action declarations, `init`), `markdown_preview_settings.rs`, `markdown_preview_view.rs` (~5000 lines, mostly tests). The parser and renderer **have been merged into the shared crate `markdown`** (`markdown.rs`, `parser.rs`, `html/`, `mermaid.rs`) — also the crate that renders hover, the agent panel… The old files `markdown_parser.rs`, `markdown_renderer.rs`, `markdown_elements.rs` are no longer at this revision.
+- `MarkdownPreviewView` is a workspace item (a tab in a pane), serializable (saves the file path + mode in the DB, restored on reopen).
 
-### 2.2 Action, phím, nút
-- `zed_actions::preview::markdown::{OpenPreview, OpenPreviewToTheSide}`; trong crate: `markdown::OpenFollowingPreview`, `CloseAndReturnToEditor`, `ScrollPageUp/Down`, `ScrollUp/Down`, `ScrollUpByItem/DownByItem`, `ScrollToTop/Bottom`.
-- Keymap macOS:
+### 2.2 Actions, keys, button
+- `zed_actions::preview::markdown::{OpenPreview, OpenPreviewToTheSide}`; in the crate: `markdown::OpenFollowingPreview`, `CloseAndReturnToEditor`, `ScrollPageUp/Down`, `ScrollUp/Down`, `ScrollUpByItem/DownByItem`, `ScrollToTop/Bottom`.
+- macOS keymap:
   - context `Editor && extension == md`: `cmd-k v` → `OpenPreviewToTheSide`, `cmd-shift-v` → `OpenPreview`.
-  - context `MarkdownPreview`: `pageup/pagedown`, `up/down`, `alt-up/alt-down` (theo khối), `cmd-up/cmd-down`, `cmd-shift-v` → `CloseAndReturnToEditor` (⌘⇧V thành phím bật/tắt, giống `togglePreview` của VS Code).
-- Nút: `quick_action_bar/preview.rs` thêm `IconButton` biểu tượng **Eye** trên toolbar của pane khi item là file md (cũng dùng cho SVG và CSV). Tooltip "Preview Markdown" kèm phím; bấm = `OpenPreview`, **Alt+click = mở ở split** (`OpenPreviewToTheSide`).
-- Menu chuột phải editor và menu tab có "Open Markdown Preview" (`editor/src/mouse_context_menu.rs`, `editor/src/items.rs`).
+  - context `MarkdownPreview`: `pageup/pagedown`, `up/down`, `alt-up/alt-down` (by block), `cmd-up/cmd-down`, `cmd-shift-v` → `CloseAndReturnToEditor` (⌘⇧V becomes a toggle key, like VS Code's `togglePreview`).
+- Button: `quick_action_bar/preview.rs` adds an `IconButton` with an **Eye** icon on the pane toolbar when the item is an md file (also used for SVG and CSV). Tooltip "Preview Markdown" with the key; clicking = `OpenPreview`, **Alt+click = open in a split** (`OpenPreviewToTheSide`).
+- The editor's right-click menu and the tab menu have "Open Markdown Preview" (`editor/src/mouse_context_menu.rs`, `editor/src/items.rs`).
 
-### 2.3 Chế độ
-- `MarkdownPreviewMode::Default`: gắn với một editor cụ thể (giống locked của VS Code).
-- `MarkdownPreviewMode::Follow` (`OpenFollowingPreview`): observe workspace, **đi theo editor markdown đang active** (giống dynamic preview).
-- `OpenPreview` thêm preview vào **cùng pane** (đã có thì kích hoạt lại). `OpenPreviewToTheSide` thêm vào pane kề (`adjacent_pane_of`, tạo split nếu chưa có), không focus preview mà **trả focus về editor**.
-- Setting `markdown_preview.open_markdown_files_in_preview` (false): mở file md là mở preview; nếu tab editor chưa sửa thì thay luôn tab đó.
-- Setting khác: `font_size`, `font_family`, `code_font_family`, `heading_font_weight` (600), `limit_content_width` (true) + `max_width` (800 px, căn giữa). Font size đổi được bằng phím zoom chung khi preview có focus. Có `markdown_preview_theme` trong theme settings (preview dùng theme khác editor).
+### 2.3 Modes
+- `MarkdownPreviewMode::Default`: tied to one specific editor (like VS Code's locked).
+- `MarkdownPreviewMode::Follow` (`OpenFollowingPreview`): observes the workspace and **follows the active markdown editor** (like the dynamic preview).
+- `OpenPreview` adds the preview to the **same pane** (re-activating it if it already exists). `OpenPreviewToTheSide` adds it to the adjacent pane (`adjacent_pane_of`, creating a split if there is none), without focusing the preview but **returning focus to the editor**.
+- Setting `markdown_preview.open_markdown_files_in_preview` (false): opening an md file opens the preview; if the editor tab has no unsaved changes, that tab is replaced.
+- Other settings: `font_size`, `font_family`, `code_font_family`, `heading_font_weight` (600), `limit_content_width` (true) + `max_width` (800 px, centered). Font size can be changed with the shared zoom keys when the preview has focus. There is a `markdown_preview_theme` in the theme settings (the preview uses a different theme than the editor).
 
-### 2.4 Cập nhật nội dung
-- Subscribe sự kiện editor: `Edited`, `BufferEdited`, `BuffersEdited`, `DirtyChanged` → cập nhật có debounce; `FileHandleChanged` (đổi tên/di chuyển) → cập nhật ngay, đổi thư mục gốc.
-- Debounce `REPARSE_DEBOUNCE = 200 ms`, kiểu "đã có task chờ thì bỏ qua" (giống throttle 300 ms của VS Code). Lần mở đầu không chờ.
-- Không watch file riêng: thay đổi trên đĩa đi qua buffer (buffer tự reload khi file ngoài đổi) → `BufferEdited`.
-- Lấy toàn bộ text của buffer → `Markdown::reset(source)`. Crate `markdown` **parse trên background thread** (`cx.background_spawn`), giữ kết quả cũ tới khi xong, rồi `notify`. Bỏ qua nếu source không đổi. Highlight code block dùng language registry (tree-sitter) của Zed.
+### 2.4 Content updates
+- Subscribes to editor events: `Edited`, `BufferEdited`, `BuffersEdited`, `DirtyChanged` → debounced update; `FileHandleChanged` (rename/move) → updates immediately, changing the root folder.
+- Debounce `REPARSE_DEBOUNCE = 200 ms`, of the "if a task is already waiting, skip" kind (like VS Code's 300 ms throttle). The first open does not wait.
+- No separate file watch: changes on disk go through the buffer (the buffer reloads itself when the file changes externally) → `BufferEdited`.
+- Takes the buffer's whole text → `Markdown::reset(source)`. The `markdown` crate **parses on a background thread** (`cx.background_spawn`), keeping the old result until done, then `notify`. Skipped if the source is unchanged. Code block highlighting uses Zed's language registry (tree-sitter).
 
-### 2.5 Render và cuộn
-- Render: một `div` `overflow_y_scroll` + `ScrollHandle`, chứa **một `MarkdownElement`** dựng toàn bộ tài liệu. **Không dùng `list`/`ListState` ảo hoá** ở revision này (bản cũ của crate từng dùng `list`). Có scrollbar riêng theo setting editor, padding, giới hạn bề rộng.
-- Có tìm kiếm trong preview (`SearchableItem`), chọn văn bản, menu chuột phải "Copy", "Copy as Markdown", "Copy Link".
+### 2.5 Rendering and scrolling
+- Rendering: a `div` with `overflow_y_scroll` + `ScrollHandle`, holding **one `MarkdownElement`** that builds the whole document. **It does not use a virtualized `list`/`ListState`** at this revision (an older version of the crate used `list`). It has its own scrollbar per the editor settings, padding, a width limit.
+- There is search in the preview (`SearchableItem`), text selection, a right-click menu with "Copy", "Copy as Markdown", "Copy Link".
 
-### 2.6 Đồng bộ với editor
-Zed **không đồng bộ theo vị trí cuộn**, mà theo **con trỏ** và **offset byte**:
-- Parser ghi lại `root_block_starts`: offset byte bắt đầu của từng khối gốc (đoạn, heading, list, bảng…).
-- Editor → preview: `EditorEvent::SelectionsChanged` → lấy offset của selection cuối → tìm khối gốc chứa offset đó → (1) đánh dấu khối active bằng **vạch bên trái** (`show_root_block_markers`, màu `border` cho khối active, `border_variant` cho khối khác), (2) nếu editor hoặc preview đang focus thì `request_autoscroll_to_source_index` cuộn preview tới khối đó (đợi parse xong nếu đang parse).
-- Preview → editor: **click một lần** vào khối (`on_source_click`) → đặt con trỏ editor tại offset nguồn của chỗ click, `Autoscroll::center`, không chuyển focus. Cuộn preview **không** cuộn editor.
-- `CloseAndReturnToEditor` đóng preview, focus editor.
+### 2.6 Sync with the editor
+Zed **does not sync by scroll position**, but by **cursor** and **byte offset**:
+- The parser records `root_block_starts`: the starting byte offset of each root block (paragraph, heading, list, table…).
+- Editor → preview: `EditorEvent::SelectionsChanged` → take the last selection's offset → find the root block containing that offset → (1) mark the active block with a **left bar** (`show_root_block_markers`, color `border` for the active block, `border_variant` for other blocks), (2) if the editor or the preview has focus, `request_autoscroll_to_source_index` scrolls the preview to that block (waiting for the parse to finish if one is running).
+- Preview → editor: **a single click** on a block (`on_source_click`) → place the editor cursor at the source offset of the click spot, `Autoscroll::center`, without moving focus. Scrolling the preview does **not** scroll the editor.
+- `CloseAndReturnToEditor` closes the preview and focuses the editor.
 
-### 2.7 Tính năng render
-- pulldown-cmark 0.13, `PARSE_OPTIONS` = `TABLES | FOOTNOTES | OLD_FOOTNOTES | STRIKETHROUGH | TASKLISTS | SMART_PUNCTUATION | HEADING_ATTRIBUTES | PLUSES_DELIMITED_METADATA_BLOCKS | GFM | SUPERSCRIPT | SUBSCRIPT`; thêm `YAML_STYLE_METADATA_BLOCKS` khi `render_metadata_blocks`. Cố ý không bật `MATH`, `DEFINITION_LIST`, `WIKILINKS` (có test buộc xem xét mỗi option mới).
-- Preview bật `MarkdownOptions { parse_html, render_mermaid_diagrams, parse_heading_slugs, render_metadata_blocks }`.
-- **Task list**: checkbox (`ui::Checkbox`) **bấm được**; callback thay đúng đoạn `[ ]` ↔ `[x]` trong buffer qua `editor.edit` (có kiểm tra text cũ), rồi refresh preview. Sửa vào buffer, chưa lưu file.
-- **Bảng**: có, kể cả căn lề.
-- **HTML trong markdown**: parse bằng `html5ever`, chỉ hỗ trợ một tập thẻ: `img` (src, alt, width, height), `p`, `h1–h6`, `ul/ol/li`, `blockquote`, `table/tr/th/td` (colspan, rowspan, align), `b/strong/i/em/del/ins/a`, một ít `style` (underline, italic, bold, text-align) và `align`. Không chạy script, không CSS tuỳ ý.
-- **Mermaid**: có, crate `mermaid_render` (dựa trên `merman`, xuất SVG rồi vẽ bằng svg renderer của gpui); có zoom.
-- **Front matter**: YAML `---` và `+++` render thành khối metadata.
-- Heading slug: link `#heading` cuộn tới heading.
-- Code block: highlight, nút Copy hiện khi hover.
+### 2.7 Rendering features
+- pulldown-cmark 0.13, `PARSE_OPTIONS` = `TABLES | FOOTNOTES | OLD_FOOTNOTES | STRIKETHROUGH | TASKLISTS | SMART_PUNCTUATION | HEADING_ATTRIBUTES | PLUSES_DELIMITED_METADATA_BLOCKS | GFM | SUPERSCRIPT | SUBSCRIPT`; adds `YAML_STYLE_METADATA_BLOCKS` when `render_metadata_blocks`. It deliberately does not enable `MATH`, `DEFINITION_LIST`, `WIKILINKS` (a test forces each new option to be considered).
+- The preview turns on `MarkdownOptions { parse_html, render_mermaid_diagrams, parse_heading_slugs, render_metadata_blocks }`.
+- **Task list**: the checkbox (`ui::Checkbox`) is **clickable**; the callback replaces exactly the `[ ]` ↔ `[x]` span in the buffer via `editor.edit` (with a check of the old text), then refreshes the preview. It edits the buffer, the file is not saved.
+- **Tables**: yes, including alignment.
+- **HTML in markdown**: parsed with `html5ever`, supporting only a set of tags: `img` (src, alt, width, height), `p`, `h1–h6`, `ul/ol/li`, `blockquote`, `table/tr/th/td` (colspan, rowspan, align), `b/strong/i/em/del/ins/a`, a bit of `style` (underline, italic, bold, text-align) and `align`. No script runs, no arbitrary CSS.
+- **Mermaid**: yes, the crate `mermaid_render` (based on `merman`, exports SVG then draws it with gpui's svg renderer); has zoom.
+- **Front matter**: YAML `---` and `+++` render as a metadata block.
+- Heading slug: a `#heading` link scrolls to the heading.
+- Code block: highlighting, a Copy button shown on hover.
 
-### 2.8 Ảnh và link
+### 2.8 Images and links
 - `image_resolver` (`resolve_preview_image`):
-  - `data:` → bỏ qua.
-  - `http(s)://` → `Resource::Uri` (gpui tải qua `cx.http_client()`).
-  - `/x` hoặc `\x` → tính từ gốc worktree đầu tiên; đường dẫn tương đối → từ thư mục của file md; chuẩn hoá `..` theo từ vựng. Có decode `%20`.
-  - Project remote (SSH) → `image_store::project_image_source` đọc qua project.
-  - Chỉ trả ảnh khi file tồn tại.
-- Dùng `RetainAllImageCache` gắn vào view để không tải lại ảnh mỗi frame.
-- Link click (`handle_url_click`): `#slug` cuộn trong preview; link tới file md khác mở **trong preview** (dùng lại preview đã có cho buffer đó), có `file.md#L10:5` → mở và đặt con trỏ; file khác mở trong editor (`open_url_or_file`); URL ngoài → trình duyệt. Hover link hiện URL ở góc dưới.
+  - `data:` → skipped.
+  - `http(s)://` → `Resource::Uri` (gpui loads it via `cx.http_client()`).
+  - `/x` or `\x` → computed from the first worktree root; a relative path → from the md file's folder; `..` is normalized lexically. `%20` is decoded.
+  - Remote project (SSH) → `image_store::project_image_source` reads through the project.
+  - Returns an image only when the file exists.
+- Uses a `RetainAllImageCache` attached to the view so images are not reloaded every frame.
+- Link click (`handle_url_click`): `#slug` scrolls within the preview; a link to another md file opens **in the preview** (reusing the preview that already exists for that buffer), with `file.md#L10:5` → open and place the cursor; other files open in the editor (`open_url_or_file`); external URLs → the browser. Hovering a link shows the URL in the bottom corner.
 
-### 2.9 HTML file
-Zed **không có preview HTML** (chỉ có preview cho Markdown, SVG, CSV/TSV — `svg_preview`, `tabular_data_preview`).
+### 2.9 HTML files
+Zed **has no HTML preview** (only previews for Markdown, SVG, CSV/TSV — `svg_preview`, `tabular_data_preview`).
 
-### 2.10 gpui: ảnh
-- `gpui/Cargo.toml` đã phụ thuộc `image`, `resvg`, `usvg`. Workspace bật `image` 0.25 với feature `bmp, dds, exr, ff, gif, hdr, ico, jpeg, png, pnm, qoi, rayon, tga, tiff, webp`; `resvg` 0.46 có `text, system-fonts, memmap-fonts, raster-images`.
-- `gpui::ImageFormat`: Png, Jpeg, Webp, Gif (động, `decode_gif_image`), Svg, Bmp, Tiff, Ico, Pnm. `img()` nhận `ImageSource::Resource(Path | Uri | Embedded)`, `Image`, `Render`, hoặc closure.
-- `Cargo.lock` của Lucerna đã có `image 0.25.10`, `resvg/usvg 0.46.0`, `pulldown-cmark 0.13.6` (đang dùng ở `crates/lucerna-workbench/src/markdown.rs` cho hover). Thêm ảnh cục bộ **không kéo thêm crate**. Ảnh `http(s)` cần một `HttpClient` cho gpui; Lucerna hiện chưa đặt cái nào, nên URL ngoài sẽ không tải được nếu không thêm.
+### 2.10 gpui: images
+- `gpui/Cargo.toml` already depends on `image`, `resvg`, `usvg`. The workspace enables `image` 0.25 with the features `bmp, dds, exr, ff, gif, hdr, ico, jpeg, png, pnm, qoi, rayon, tga, tiff, webp`; `resvg` 0.46 with `text, system-fonts, memmap-fonts, raster-images`.
+- `gpui::ImageFormat`: Png, Jpeg, Webp, Gif (animated, `decode_gif_image`), Svg, Bmp, Tiff, Ico, Pnm. `img()` accepts `ImageSource::Resource(Path | Uri | Embedded)`, `Image`, `Render`, or a closure.
+- Lucerna's `Cargo.lock` already has `image 0.25.10`, `resvg/usvg 0.46.0`, `pulldown-cmark 0.13.6` (already used in `crates/lucerna-workbench/src/markdown.rs` for hover). Adding local images **pulls in no extra crate**. `http(s)` images need an `HttpClient` for gpui; Lucerna has not set one yet, so external URLs will not load unless one is added.
 
-## 3. Giống và khác
+## 3. Similarities and differences
 
-| Mặt | VS Code | Zed |
+| Aspect | VS Code | Zed |
 |---|---|---|
-| Kỹ thuật render | webview HTML + markdown-it | phần tử GPUI gốc + pulldown-cmark |
-| Phím | ⌘⇧V toggle tại chỗ, ⌘K V bên cạnh | ⌘⇧V mở (trong preview: đóng, về editor), ⌘K V bên cạnh |
-| Nút | editor title, Alt = mở tại chỗ | toolbar pane (Eye), Alt = mở split |
-| Đi theo editor active | dynamic (mặc định) / locked | Default (khoá) / Follow (lệnh riêng) |
-| Mở md thẳng ra preview | `workbench.editorAssociations` | `open_markdown_files_in_preview` |
-| Cập nhật | throttle 300 ms, watcher file và ảnh | debounce 200 ms qua buffer, parse nền |
-| Đồng bộ | theo **vị trí cuộn** hai chiều, nội suy theo dòng | theo **con trỏ** (editor → preview) và **click** (preview → editor), theo offset |
-| Đánh dấu dòng | `markEditorSelection` (tắt mặc định) | vạch trái ở khối active (luôn bật) |
-| Task list | không có trong core | có, bấm được, sửa buffer |
-| Mermaid | qua extension | dựng sẵn |
-| HTML trong md | đầy đủ, chịu CSP | tập thẻ nhỏ |
-| Bảo mật | CSP 4 mức | không cần (không có script) |
-| Link `.md` | mở trong preview (`openMarkdownLinks`) | mở trong preview |
-| Front matter | hide / codeBlock / table | khối metadata |
-| Preview HTML | không (Simple Browser, Live Preview) | không |
+| Rendering technique | webview HTML + markdown-it | native GPUI elements + pulldown-cmark |
+| Keys | ⌘⇧V toggles in place, ⌘K V to the side | ⌘⇧V opens (in the preview: closes, back to the editor), ⌘K V to the side |
+| Button | editor title, Alt = open in place | pane toolbar (Eye), Alt = open in a split |
+| Follows the active editor | dynamic (default) / locked | Default (locked) / Follow (separate command) |
+| Open md straight into the preview | `workbench.editorAssociations` | `open_markdown_files_in_preview` |
+| Updates | 300 ms throttle, file and image watchers | 200 ms debounce through the buffer, background parse |
+| Sync | by **scroll position** both ways, interpolating by line | by **cursor** (editor → preview) and **click** (preview → editor), by offset |
+| Line marking | `markEditorSelection` (off by default) | left bar on the active block (always on) |
+| Task list | not in core | yes, clickable, edits the buffer |
+| Mermaid | via extension | built in |
+| HTML in md | full, subject to CSP | small tag set |
+| Security | CSP, 4 levels | not needed (no scripts) |
+| `.md` links | open in the preview (`openMarkdownLinks`) | open in the preview |
+| Front matter | hide / codeBlock / table | metadata block |
+| HTML preview | none (Simple Browser, Live Preview) | none |
 
-## 4. Gợi ý cho Lucerna
+## 4. Suggestions for Lucerna
 
-Theo `docs/design-principles.md`: hành vi, setting, lệnh, phím theo VS Code; UI và hiệu năng theo Zed.
+Following `docs/design-principles.md`: behavior, settings, commands, keys follow VS Code; UI and performance follow Zed.
 
-1. **Lệnh và phím (VS Code)**: `markdown.showPreview`, `markdown.showPreviewToSide`, `markdown.showLockedPreviewToSide`, `markdown.showSource`, `markdown.togglePreview`, `markdown.preview.toggleLock`, `markdown.preview.refresh`. ⌘⇧V = `togglePreview` (tại chỗ, bấm lại về nguồn — cả VS Code mới và Zed đều cho ⌘⇧V là phím bật/tắt). ⌘K V = to side, focus ở lại editor. `when` dựa trên ngôn ngữ markdown.
-2. **Dynamic/locked (VS Code)**: preview mở bằng lệnh đi theo editor md active; "Locked" giữ file. Bỏ qua security selector (không có script).
-3. **Nút (UI Zed)**: một icon Eye trên thanh của nhóm editor, chỉ hiện với file md; bấm = to side (như VS Code `navigation@1`), Alt = tại chỗ. Tab preview tên "Preview x.md". Dùng lại component của `ui.rs`.
-4. **Render (Zed)**: phần tử GPUI gốc, không webview. Mở rộng `crates/lucerna-workbench/src/markdown.rs` (đang có cho hover) thành renderer dùng chung cho hover và preview, như Zed gộp vào crate `markdown`. Parse trên background, giữ kết quả cũ tới khi xong, bỏ qua nếu text không đổi. Lưu offset/dòng bắt đầu của mỗi khối gốc khi parse (pulldown-cmark `into_offset_iter`).
-5. **Cập nhật**: nghe sự kiện sửa buffer, throttle khoảng 200–300 ms, lần đầu render ngay. Thay đổi trên đĩa nên đi qua buffer như Zed (cần kiểm tra luồng reload buffer khi file ngoài đổi của Lucerna phát sự kiện mà preview nghe được); quan trọng vì agent ghi file. Nếu preview mở khi không có buffer (locked, tab đã đóng) thì cần watcher file như VS Code.
-6. **Đồng bộ**: tối thiểu như Zed (con trỏ → cuộn preview tới khối + vạch trái; click khối → đặt con trỏ editor). Cài đặt `markdown.preview.scrollPreviewWithEditor` / `scrollEditorWithPreview` của VS Code thì cần ánh xạ dòng trên cùng ↔ khối và nội suy theo chiều cao khối đã layout; đáng làm ở bước sau, vì người dùng Lucerna chủ yếu **đọc** file agent viết (cuộn nhiều hơn gõ). `doubleClickToSwitchToEditor` dễ làm khi đã có ánh xạ.
-7. **Hiệu năng (Zed + hơn Zed)**: Zed dựng cả tài liệu trong một phần tử. Với file md dài (log, plan agent sinh ra), nên dùng `gpui::list` với mỗi khối gốc là một item để chỉ layout phần thấy được; `ListState` cũng có sẵn API cuộn tới item, khớp với ánh xạ khối.
-8. **Tính năng**: pulldown-cmark với TABLES, STRIKETHROUGH, TASKLISTS, FOOTNOTES, GFM (alert `> [!NOTE]`), HEADING_ATTRIBUTES, YAML metadata. `breaks`, `linkify`, `typographer` theo setting VS Code (`markdown.preview.*`; typographer ↔ `ENABLE_SMART_PUNCTUATION`, linkify phải tự làm hoặc dùng crate `linkify`, breaks = coi SoftBreak là HardBreak). Front matter theo `markdown.preview.frontMatter` (mặc định `table`, có thể hide). Task list: hiển thị checkbox; bấm để sửa buffer như Zed là điểm cộng nhỏ, có thể để sau. Mermaid, math, HTML thô: để ngoài phạm vi đầu; HTML inline chỉ hiện như text hoặc bỏ qua.
-9. **Ảnh**: `img()` của gpui đã đọc png/jpg/gif/webp/svg/bmp/tiff/ico, không thêm crate. Resolve: tương đối theo thư mục file md, `/x` theo gốc workspace, chuẩn hoá `..`, decode `%xx`; giới hạn trong thư mục workspace (giống `localResourceRoots`) hoặc thư mục chứa file nếu file ngoài workspace. Dùng `RetainAllImageCache` hoặc tương đương. Ảnh `http(s)` cần HttpClient: để sau, hiện alt text.
-10. **Link**: `#anchor` cuộn tới heading (cần slug kiểu GitHub); `.md` mở trong preview theo `markdown.preview.openMarkdownLinks` (mặc định `inPreview`); file khác mở editor; `#L10` đặt con trỏ; URL ngoài mở trình duyệt.
-11. **Setting kiểu chữ**: `markdown.preview.fontFamily`, `fontSize` (14), `lineHeight` (1.6) theo VS Code; thêm giới hạn bề rộng nội dung căn giữa như Zed (`max_width` 800) vì trông gọn hơn. `markdown.styles` (CSS) không áp dụng được.
-12. **HTML preview**: cả hai không có; Lucerna cũng không cần.
+1. **Commands and keys (VS Code)**: `markdown.showPreview`, `markdown.showPreviewToSide`, `markdown.showLockedPreviewToSide`, `markdown.showSource`, `markdown.togglePreview`, `markdown.preview.toggleLock`, `markdown.preview.refresh`. ⌘⇧V = `togglePreview` (in place, press again to go back to the source — both the new VS Code and Zed make ⌘⇧V the toggle key). ⌘K V = to the side, focus stays in the editor. `when` based on the markdown language.
+2. **Dynamic/locked (VS Code)**: a preview opened by command follows the active md editor; "Locked" keeps the file. Skip the security selector (there are no scripts).
+3. **Button (Zed UI)**: an Eye icon on the editor group's bar, shown only for md files; click = to the side (like VS Code `navigation@1`), Alt = in place. The preview tab is named "Preview x.md". Reuse components from `ui.rs`.
+4. **Rendering (Zed)**: native GPUI elements, no webview. Extend `crates/lucerna-workbench/src/markdown.rs` (which exists for hover) into a renderer shared by hover and preview, as Zed merged it into the `markdown` crate. Parse in the background, keep the old result until done, skip if the text is unchanged. Store the offset/start line of each root block while parsing (pulldown-cmark `into_offset_iter`).
+5. **Updates**: listen to buffer edit events, throttle about 200–300 ms, render immediately the first time. Changes on disk should go through the buffer as in Zed (need to check that Lucerna's buffer-reload flow on external file changes emits an event the preview can hear); this matters because the agent writes files. If the preview is open with no buffer (locked, tab closed) a file watcher is needed as in VS Code.
+6. **Sync**: at minimum like Zed (cursor → scroll the preview to the block + left bar; click on a block → place the editor cursor). VS Code's settings `markdown.preview.scrollPreviewWithEditor` / `scrollEditorWithPreview` need a mapping of top line ↔ block and interpolation by laid-out block height; worth doing in a later step, because Lucerna users mostly **read** files the agent wrote (more scrolling than typing). `doubleClickToSwitchToEditor` is easy once the mapping exists.
+7. **Performance (Zed + better than Zed)**: Zed builds the whole document in one element. For long md files (logs, agent-generated plans), use `gpui::list` with each root block as an item so only the visible part is laid out; `ListState` also has a ready API to scroll to an item, which fits the block mapping.
+8. **Features**: pulldown-cmark with TABLES, STRIKETHROUGH, TASKLISTS, FOOTNOTES, GFM (the `> [!NOTE]` alert), HEADING_ATTRIBUTES, YAML metadata. `breaks`, `linkify`, `typographer` follow the VS Code settings (`markdown.preview.*`; typographer ↔ `ENABLE_SMART_PUNCTUATION`, linkify has to be done by hand or with the `linkify` crate, breaks = treat SoftBreak as HardBreak). Front matter follows `markdown.preview.frontMatter` (default `table`, can be hidden). Task list: show checkboxes; clicking to edit the buffer like Zed is a small bonus that can wait. Mermaid, math, raw HTML: out of the first scope; inline HTML is shown only as text or ignored.
+9. **Images**: gpui's `img()` already reads png/jpg/gif/webp/svg/bmp/tiff/ico, no extra crate. Resolve: relative to the md file's folder, `/x` against the workspace root, normalize `..`, decode `%xx`; restricted to the workspace folder (like `localResourceRoots`) or the folder containing the file if the file is outside the workspace. Use `RetainAllImageCache` or an equivalent. `http(s)` images need an HttpClient: later, show the alt text for now.
+10. **Links**: `#anchor` scrolls to the heading (needs GitHub-style slugs); `.md` opens in the preview per `markdown.preview.openMarkdownLinks` (default `inPreview`); other files open in the editor; `#L10` places the cursor; external URLs open in the browser.
+11. **Typography settings**: `markdown.preview.fontFamily`, `fontSize` (14), `lineHeight` (1.6) following VS Code; add a centered content width limit like Zed (`max_width` 800) because it looks tidier. `markdown.styles` (CSS) does not apply.
+12. **HTML preview**: neither has one; Lucerna does not need one either.

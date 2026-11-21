@@ -1,46 +1,46 @@
-# Icon file có màu và icon trên tab: VS Code và Zed
+# Colored file icons and icons on tabs: VS Code and Zed
 
-Ngày: 2026-11-15. Phục vụ spec icon màu trong Explorer và icon file trên tab editor.
+Date: 2026-11-15. Supports the spec for colored icons in the Explorer and file icons on editor tabs.
 
 ## VS Code
 
-- **Icon theme mặc định là Seti** (`workbench.iconTheme: "vs-seti"`). VS Code có sẵn hai theme: Seti và Minimal; chọn `None` để tắt icon. Đổi theme bằng lệnh **Preferences: File Icon Theme** (`workbench.action.selectIconTheme`), có xem trước bằng phím mũi tên.
-- **Seti** nằm ở `microsoft/vscode/extensions/theme-seti` (MIT). Icon lấy từ [`jesseweed/seti-ui`](https://github.com/jesseweed/seti-ui) (MIT), đóng thành font `seti.woff`. File `vs-seti-icon-theme.json` có:
-  - 383 `iconDefinitions`, mỗi cái là một glyph (`fontCharacter`) và **một màu** (`fontColor`). Mỗi glyph có bản `_light` cho theme sáng; script của VS Code chỉ nhân mỗi kênh màu tối với 0,9 (ví dụ `_R` `#519aba`, `_R_light` `#498ba7`).
-  - Ánh xạ `fileExtensions` (238), `fileNames` (101), `languageIds` (83); khóa `light` ghi đè cho theme sáng.
-  - **Không có icon thư mục**: Explorer với Seti chỉ có chevron, thư mục không có icon (đúng như ảnh người dùng gửi).
-- Bản thân `seti-ui` có 169 SVG đơn sắc, viewBox `0 0 32 32`, tổng khoảng 175 KB. Màu theo loại file nằm ở `styles/components/icons/mapping.less` (`.icon-set(".ts", "typescript", @blue)`), dùng khoảng chục màu có tên (`@blue`, `@red`, `@green`, `@yellow`, `@orange`, `@purple`, `@pink`, `@white`, `@grey`…).
-- **Icon trên tab:** tab hiện icon của icon theme đang dùng. Setting `workbench.editor.showIcons` (mặc định `true`) bật/tắt icon trên tab. Breadcrumbs có `breadcrumbs.icons` riêng (Lucerna đã có).
+- **The default icon theme is Seti** (`workbench.iconTheme: "vs-seti"`). VS Code ships two themes: Seti and Minimal; choose `None` to turn icons off. Change the theme with the command **Preferences: File Icon Theme** (`workbench.action.selectIconTheme`), with a preview using the arrow keys.
+- **Seti** lives in `microsoft/vscode/extensions/theme-seti` (MIT). The icons come from [`jesseweed/seti-ui`](https://github.com/jesseweed/seti-ui) (MIT), packaged as the font `seti.woff`. The file `vs-seti-icon-theme.json` has:
+  - 383 `iconDefinitions`, each being a glyph (`fontCharacter`) and **a single color** (`fontColor`). Each glyph has a `_light` version for light themes; VS Code's script simply multiplies each channel of the dark color by 0.9 (for example `_R` `#519aba`, `_R_light` `#498ba7`).
+  - Mappings `fileExtensions` (238), `fileNames` (101), `languageIds` (83); the `light` key overrides for light themes.
+  - **No folder icons**: with Seti the Explorer has only chevrons, folders have no icon (exactly as in the screenshot the user sent).
+- `seti-ui` itself has 169 monochrome SVGs, viewBox `0 0 32 32`, about 175 KB in total. The color by file type is in `styles/components/icons/mapping.less` (`.icon-set(".ts", "typescript", @blue)`), using about a dozen named colors (`@blue`, `@red`, `@green`, `@yellow`, `@orange`, `@purple`, `@pink`, `@white`, `@grey`…).
+- **Icons on tabs:** a tab shows the icon from the icon theme in use. The setting `workbench.editor.showIcons` (default `true`) turns tab icons on/off. Breadcrumbs have their own `breadcrumbs.icons` (Lucerna already has it).
 
 ## Zed
 
-- **Icon theme mặc định là "Zed (Default)"**, setting `icon_theme` (chuỗi, hoặc object `mode`/`dark`/`light`). Icon mặc định **đơn sắc**, tô bằng màu `icon.muted` của theme. Ai muốn màu thì cài extension, ví dụ "Colored Zed Icons Theme", Material Icon Theme, Catppuccin Icons.
-- Icon theme từ extension theo schema `icon_themes/v0.3.0` (`file_stems`, `file_suffixes`, `file_icons`, `directory_icons`, `named_directory_icons`, `chevron_icons`). Icon SVG từ file ngoài được vẽ dạng ảnh nên **giữ màu gốc** (Zed #23195 thêm Icon từ file ngoài).
-- **Icon trên tab:** `tabs.file_icons`, mặc định `false`. `tabs.git_status` (mặc định `false`) tô màu tên tab theo git. `tabs.show_diagnostics` chỉ chạy khi `file_icons` bật. Project panel có `file_icons` và `folder_icons` (mặc định `true`).
-- Icon tab nằm bên trái tên, cùng cỡ với icon trong project panel, cách tên một khoảng nhỏ.
+- **The default icon theme is "Zed (Default)"**, setting `icon_theme` (a string, or an object `mode`/`dark`/`light`). The default icons are **monochrome**, tinted with the theme's `icon.muted` color. Anyone who wants color installs an extension, for example "Colored Zed Icons Theme", Material Icon Theme, Catppuccin Icons.
+- Icon themes from extensions follow the schema `icon_themes/v0.3.0` (`file_stems`, `file_suffixes`, `file_icons`, `directory_icons`, `named_directory_icons`, `chevron_icons`). SVG icons from external files are drawn as images, so they **keep their original color** (Zed #23195 added icons from external files).
+- **Icons on tabs:** `tabs.file_icons`, default `false`. `tabs.git_status` (default `false`) colors the tab name by git. `tabs.show_diagnostics` works only when `file_icons` is on. The project panel has `file_icons` and `folder_icons` (default `true`).
+- A tab icon sits to the left of the name, the same size as the icons in the project panel, with a small gap from the name.
 
-## Giống và khác
+## Similarities and differences
 
 | | VS Code | Zed |
 |---|---|---|
-| Theme mặc định | Seti, có màu theo loại file | Zed (Default), đơn sắc |
-| Icon thư mục | Seti: không có | Có (folder/folder-open) |
-| Icon trên tab | Bật mặc định, `workbench.editor.showIcons` | Tắt mặc định, `tabs.file_icons` |
-| Theme sáng/tối | Seti có bộ màu `light` riêng | `icon_theme` object `light`/`dark` |
+| Default theme | Seti, colored by file type | Zed (Default), monochrome |
+| Folder icons | Seti: none | Yes (folder/folder-open) |
+| Icons on tabs | On by default, `workbench.editor.showIcons` | Off by default, `tabs.file_icons` |
+| Light/dark themes | Seti has its own `light` color set | `icon_theme` object `light`/`dark` |
 
-## Lucerna hiện tại
+## Lucerna today
 
-- `lucerna-theme/src/icon_theme.rs`: theme dựng sẵn "Lucide" (đơn sắc, 10 loại: code, json, markdown, config, shell, image, lock, git, license, default) và icon theme từ extension Zed (`IconThemeRegistry`, `ResolvedIcons`). Theme extension thiếu icon thì rơi về Lucide.
-- `workbench/src/ui.rs::file_icon_sized`: icon Lucide vẽ bằng `svg()` (GPUI dùng alpha làm mặt nạ rồi tô `text_color`), icon extension vẽ bằng `img()` nên giữ màu.
-- Explorer tô mọi icon Lucide bằng `ui.icon_muted`.
-- Tab (`editor_groups/view.rs`): tab đặc biệt (Search, Extensions, Git…) đã có icon 14 px; tab file (`TabItem::File`) chưa có. `ui::tab` đã có ô `icon`.
+- `lucerna-theme/src/icon_theme.rs`: a built-in theme "Lucide" (monochrome, 10 kinds: code, json, markdown, config, shell, image, lock, git, license, default) and icon themes from Zed extensions (`IconThemeRegistry`, `ResolvedIcons`). An extension theme missing an icon falls back to Lucide.
+- `workbench/src/ui.rs::file_icon_sized`: Lucide icons are drawn with `svg()` (GPUI uses the alpha as a mask, then tints with `text_color`), extension icons are drawn with `img()` so they keep their color.
+- The Explorer tints every Lucide icon with `ui.icon_muted`.
+- Tabs (`editor_groups/view.rs`): special tabs (Search, Extensions, Git…) already have a 14 px icon; file tabs (`TabItem::File`) do not yet. `ui::tab` already has an `icon` slot.
 
-## Lucerna chọn gì
+## What Lucerna chooses
 
-- Icon theme dựng sẵn **Seti** làm mặc định (`workbench.iconTheme: "Seti"`, nhận cả `"vs-seti"`). Dữ liệu sinh bằng `scripts/gen-seti.py` từ seti-ui `2d6c5e68` và VS Code (mapping, `languageIds` đổi thành tên file, mẫu tên và đuôi file). Thư mục và chevron vẫn dùng Lucide.
-- Màu theme tối giống VS Code. Màu theme sáng làm đậm đến tương phản ≥ 3:1 với `#ffffff`.
-- Tab file và tab diff có icon. `workbench.editor.showIcons` (mặc định `true`) tắt mọi icon trên tab.
-- Ảnh trước/sau: `docs/research/file-icons-screenshots/`.
+- The built-in icon theme **Seti** as the default (`workbench.iconTheme: "Seti"`, also accepting `"vs-seti"`). The data is generated by `scripts/gen-seti.py` from seti-ui `2d6c5e68` and VS Code (the mapping, with `languageIds` converted to file names, file-name and extension patterns). Folders and chevrons still use Lucide.
+- Dark theme colors are the same as VS Code. Light theme colors are darkened to a contrast of ≥ 3:1 against `#ffffff`.
+- File tabs and diff tabs have icons. `workbench.editor.showIcons` (default `true`) turns off all tab icons.
+- Before/after screenshots: `docs/research/file-icons-screenshots/`.
 
 
-Xem spec `docs/superpowers/specs/2026-11-15-file-icons-design.md`. Theo nguyên tắc: setting và hành vi theo VS Code (`workbench.editor.showIcons`, mặc định bật), giao diện theo Zed (vị trí, cỡ icon, khoảng cách). Riêng màu icon mặc định thì lệch khỏi Zed theo yêu cầu người dùng.
+See the spec `docs/superpowers/specs/2026-11-15-file-icons-design.md`. By principle: settings and behavior follow VS Code (`workbench.editor.showIcons`, on by default), the look follows Zed (position, icon size, spacing). Only the default icon color deviates from Zed, at the user's request.
