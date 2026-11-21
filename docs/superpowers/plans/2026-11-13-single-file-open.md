@@ -1,48 +1,48 @@
-# Mở file lẻ như Zed — Implementation Plan
+# Open a lone file like Zed — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Mở một file lẻ thì chỉ có file đó: không quét thư mục cha, không mở cả repo git.
+**Goal:** Opening a lone file shows only that file: no scan of the parent folder, no opening the whole git repo.
 
-**Architecture:** `resolve_target` luôn trả chế độ một file (R27, đã có) cho một file. Workbench ở chế độ một file hiện tên file trên thanh tiêu đề và không vẽ dòng gốc (thư mục) trong sidebar, nên sidebar chỉ còn dòng của file.
+**Architecture:** `resolve_target` always returns single-file mode (R27, already present) for a file. A Workbench in single-file mode shows the file name in the title bar and does not draw the root (folder) row in the sidebar, so the sidebar has only the file's row.
 
-**Tech Stack:** Rust, GPUI (chỉ trong `lucerna-workbench`).
+**Tech Stack:** Rust, GPUI (only in `lucerna-workbench`).
 
 **Spec:** `docs/superpowers/specs/2026-11-13-single-file-open-design.md`
 
 ## Global Constraints
 
 - Cargo: `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"`.
-- Trước mỗi build/test: `scripts/prune-target.sh`; nếu có `target/release` và không có cargo khác chạy (`pgrep -x cargo`), xoá nó.
-- Chỉ `lucerna-workbench` dùng gpui. Không giả định riêng macOS.
-- Commit theo đường dẫn cụ thể (`git commit -- <paths>`), trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Không rebase main; kiểm tra `.git/MERGE_HEAD` trước khi commit.
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` phải sạch.
+- Before every build/test: `scripts/prune-target.sh`; if `target/release` exists and no other cargo is running (`pgrep -x cargo`), delete it.
+- Only `lucerna-workbench` uses gpui. No macOS-only assumptions.
+- Commit by explicit path (`git commit -- <paths>`), trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never rebase main; check `.git/MERGE_HEAD` before committing.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` must be clean.
 
 ## Review Focus
 
-- File trong repo git (kể cả git worktree có file `.git`) mở lẻ, không mở repo — Task 1 có test.
-- File trong thư mục thường như `~/Downloads` mở lẻ — Task 1 có test.
-- Mở thư mục (kể cả `$HOME`, thư mục có `.git`) vẫn mở như folder — Task 1 có test.
-- Mở thư mục ở chế độ folder vẫn có dòng gốc và tiêu đề là tên thư mục — Task 2 test hiện có `root_row_replaces_uppercase_header` giữ nguyên.
-- Đường dẫn file là symlink: gốc là thư mục cha của đường dẫn đã canonicalize (hành vi hiện tại, không đổi) — không thêm test.
+- A file in a git repo (including a git worktree with a `.git` file) opens alone, not the repo — Task 1 has tests.
+- A file in a plain folder such as `~/Downloads` opens alone — Task 1 has tests.
+- Opening a folder (including `$HOME`, a folder with `.git`) still opens it as a folder — Task 1 has tests.
+- Opening a folder in folder mode still has the root row and the title is the folder name — the existing Task 2 test `root_row_replaces_uppercase_header` stays unchanged.
+- File path is a symlink: the root is the parent folder of the canonicalized path (current behavior, unchanged) — no test added.
 
-**Ghi chú lệch spec (quyết định khi lập kế hoạch):** spec nói "dòng gốc sidebar hiện tên file". Vì worktree một file đã có dòng của file, dòng gốc mang tên file sẽ lặp tên hai lần; Zed chỉ hiện một dòng. Kế hoạch bỏ dòng gốc ở chế độ một file. Spec được sửa theo trong Task 2.
+**Note on deviation from the spec (decided while planning):** the spec says "the sidebar root row shows the file name". Since the one-file worktree already has the file's row, a root row named after the file would repeat the name twice; Zed shows only one row. The plan drops the root row in single-file mode. The spec is amended accordingly in Task 2.
 
 ---
 
-### Task 1: `resolve_target` luôn mở file lẻ
+### Task 1: `resolve_target` always opens a lone file
 
 **Files:**
-- Modify: `crates/lucerna/src/target.rs` (doc của `Target::file`, `resolve_target_with_home`)
+- Modify: `crates/lucerna/src/target.rs` (doc of `Target::file`, `resolve_target_with_home`)
 - Test: `crates/lucerna/tests/cli.rs`
 
 **Interfaces:**
-- Produces: `resolve_target_with_home(path, home) -> Result<Target, String>`: với file trả `Target { root: <thư mục cha canonical>, file: Some(<file canonical>), single_file: true }`. Chữ ký giữ nguyên; tham số `home` không còn dùng cho file (giữ để không đổi API công khai; đổi tên thành `_home` nếu clippy báo).
-- `Target::file` không còn được dùng trong crate: xoá nó nếu không còn nơi nào gọi (`grep -rn "Target::file" crates`).
+- Produces: `resolve_target_with_home(path, home) -> Result<Target, String>`: for a file returns `Target { root: <canonical parent folder>, file: Some(<canonical file>), single_file: true }`. The signature stays the same; the `home` parameter is no longer used for files (kept so the public API does not change; rename to `_home` if clippy complains).
+- `Target::file` is no longer used in the crate: delete it if nothing calls it any more (`grep -rn "Target::file" crates`).
 
-- [ ] **Step 1: Sửa test trong `crates/lucerna/tests/cli.rs`**
+- [ ] **Step 1: Change the tests in `crates/lucerna/tests/cli.rs`**
 
-Thay ba test `resolve_file_in_git_repo_uses_repo_root`, `resolve_file_in_git_worktree_uses_dir_with_git_file`, `resolve_file_outside_git_uses_parent` và `resolve_loose_file_in_home_is_single_file` bằng:
+Replace the three tests `resolve_file_in_git_repo_uses_repo_root`, `resolve_file_in_git_worktree_uses_dir_with_git_file`, `resolve_file_outside_git_uses_parent` and `resolve_loose_file_in_home_is_single_file` with:
 
 ```rust
 /// A file opens alone, as in Zed: its folder is never scanned.
@@ -80,18 +80,18 @@ fn resolve_folders_stay_folders() {
 }
 ```
 
-Giữ lại phần dựng thư mục tạm của các test cũ cho từng trường hợp.
+Keep the temp-folder setup of the old tests for each case.
 
-- [ ] **Step 2: Chạy test, xác nhận ba test file thất bại**
+- [ ] **Step 2: Run the tests, confirm the three file tests fail**
 
 Run: `cargo test -p lucerna --test cli resolve_`
-Expected: FAIL ở `resolve_file_in_git_repo_opens_alone`, `resolve_file_in_git_worktree_opens_alone`, `resolve_file_in_plain_folder_opens_alone` (`single_file: false`).
+Expected: FAIL in `resolve_file_in_git_repo_opens_alone`, `resolve_file_in_git_worktree_opens_alone`, `resolve_file_in_plain_folder_opens_alone` (`single_file: false`).
 
-- [ ] **Step 3: Sửa `resolve_target_with_home`**
+- [ ] **Step 3: Change `resolve_target_with_home`**
 
-Với file: bỏ tìm `.git` và điều kiện `$HOME`/`/`; trả `single_file: true`, `root` = thư mục cha. Cập nhật doc comment (bỏ "nearest ancestor holding `.git`", nêu: một file luôn mở lẻ như Zed và VS Code; xem spec). Sửa doc của trường `Target::single_file` cho khớp.
+For a file: drop the `.git` search and the `$HOME`/`/` condition; return `single_file: true`, `root` = parent folder. Update the doc comment (drop "nearest ancestor holding `.git`", say: a file always opens alone, like Zed and VS Code; see the spec). Update the doc of the `Target::single_file` field to match.
 
-- [ ] **Step 4: Chạy test**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p lucerna`
 Expected: PASS.
@@ -102,19 +102,19 @@ Expected: PASS.
 git commit -m "feat: open a lone file alone, never its folder or repo" -- crates/lucerna/src/target.rs crates/lucerna/tests/cli.rs
 ```
 
-### Task 2: Tiêu đề và sidebar ở chế độ một file
+### Task 2: Title and sidebar in single-file mode
 
 **Files:**
-- Modify: `crates/lucerna-workbench/src/workbench.rs` (`root_name`, chỗ tạo `ExplorerView` quanh dòng 447)
-- Modify: `crates/lucerna-workbench/src/explorer/view.rs` (`ExplorerView::new`, vẽ dòng gốc quanh dòng 306)
-- Modify: `docs/superpowers/specs/2026-11-13-single-file-open-design.md` (dòng "Sidebar")
+- Modify: `crates/lucerna-workbench/src/workbench.rs` (`root_name`, where `ExplorerView` is created around line 447)
+- Modify: `crates/lucerna-workbench/src/explorer/view.rs` (`ExplorerView::new`, drawing the root row around line 306)
+- Modify: `docs/superpowers/specs/2026-11-13-single-file-open-design.md` ("Sidebar" line)
 - Test: `crates/lucerna-workbench/tests/explorer_view.rs`
 
 **Interfaces:**
-- Consumes: `Workbench::single_file(root, &file, data_dir, window, cx)` (có sẵn).
-- Produces: `ExplorerView::new(root: PathBuf, single_file: bool, snapshot, workbench, editor_groups, cx)`; `Workbench::root_name()` trả tên file ở chế độ một file.
+- Consumes: `Workbench::single_file(root, &file, data_dir, window, cx)` (already exists).
+- Produces: `ExplorerView::new(root: PathBuf, single_file: bool, snapshot, workbench, editor_groups, cx)`; `Workbench::root_name()` returns the file name in single-file mode.
 
-- [ ] **Step 1: Viết test trong `tests/explorer_view.rs`**
+- [ ] **Step 1: Write the test in `tests/explorer_view.rs`**
 
 ```rust
 #[gpui::test]
@@ -128,23 +128,23 @@ fn single_file_shows_only_the_file(cx: &mut TestAppContext) {
 }
 ```
 
-Mở cửa sổ như `open_files.rs:210` làm (`cx.add_window_view(... Workbench::single_file(root, &file, None, window, cx))`), rồi vẽ một frame (`cx.run_until_parked()`).
+Open the window the way `open_files.rs:210` does (`cx.add_window_view(... Workbench::single_file(root, &file, None, window, cx))`), then draw one frame (`cx.run_until_parked()`).
 
-- [ ] **Step 2: Chạy test, xác nhận thất bại**
+- [ ] **Step 2: Run the test, confirm it fails**
 
 Run: `cargo test -p lucerna-workbench --test explorer_view single_file_shows_only_the_file`
-Expected: FAIL ở `explorer-root` (dòng gốc vẫn được vẽ).
+Expected: FAIL at `explorer-root` (the root row is still drawn).
 
-- [ ] **Step 3: Sửa mã**
+- [ ] **Step 3: Change the code**
 
-- `ExplorerView` nhận `single_file: bool`; khi `true` không vẽ phần tử `explorer-root`.
-- `Workbench::root_name()`: khi `self.single_file` là `Some(file)`, trả `file.file_name()`.
-- Sửa dòng "Sidebar" trong spec: ở chế độ một file không có dòng gốc, sidebar chỉ có dòng của file; thanh tiêu đề hiện tên file.
+- `ExplorerView` takes `single_file: bool`; when `true` it does not draw the `explorer-root` element.
+- `Workbench::root_name()`: when `self.single_file` is `Some(file)`, return `file.file_name()`.
+- Amend the "Sidebar" line in the spec: in single-file mode there is no root row, the sidebar has only the file's row; the title bar shows the file name.
 
-- [ ] **Step 4: Chạy toàn bộ test workbench và kiểm tra**
+- [ ] **Step 4: Run all workbench tests and checks**
 
 Run: `cargo test -p lucerna-workbench && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings`
-Expected: tất cả PASS, không cảnh báo. `root_row_replaces_uppercase_header` vẫn qua.
+Expected: all PASS, no warnings. `root_row_replaces_uppercase_header` still passes.
 
 - [ ] **Step 5: Commit**
 

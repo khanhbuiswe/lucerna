@@ -1,282 +1,282 @@
-# Một tiến trình, nhiều cửa sổ — Implementation Plan
+# One process, many windows — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Mọi cửa sổ Lucerna chạy trong một tiến trình `luc` (Dock một icon), mỗi cửa sổ vẫn có settings workspace, trust, terminal, language server riêng.
+**Goal:** Every Lucerna window runs in one `luc` process (one Dock icon), and each window still has its own workspace settings, trust, terminal and language server.
 
-**Architecture:** `AppState.settings` chỉ còn lớp default và user; mỗi `Workbench` sở hữu một entity `WindowSettings` giữ lớp workspace và truyền handle xuống entity con. Một `Router` global giữ danh sách cửa sổ, mọi đường mở (CLI socket, Finder, menu, Welcome, restore) đi qua một hàm `router::open`. `luc` giành Unix socket trong thư mục data: giành được thì là app (mặc định tách khỏi terminal), không thì gửi đường dẫn cho app đang chạy.
+**Architecture:** `AppState.settings` keeps only the default and user layers; each `Workbench` owns a `WindowSettings` entity holding the workspace layer and passes the handle down to child entities. A global `Router` holds the list of windows, and every open path (CLI socket, Finder, menu, Welcome, restore) goes through one function, `router::open`. `luc` claims a Unix socket in the data folder: if it wins, it is the app (detached from the terminal by default); if not, it sends the path to the running app.
 
-**Tech Stack:** Rust, GPUI (`b5cd310`), `std::os::unix::net`, `libc` (đã có trong `crates/lucerna`), Python stdlib cho bench.
+**Tech Stack:** Rust, GPUI (`b5cd310`), `std::os::unix::net`, `libc` (already in `crates/lucerna`), Python stdlib for the bench.
 
-**Spec:** `docs/superpowers/specs/2026-11-15-multi-window-design.md` (đọc kèm; mã quyết định M1–M18 và mục § dưới đây trỏ vào spec). Nghiên cứu: `docs/research/2026-11-15-multi-window.md`.
+**Spec:** `docs/superpowers/specs/2026-11-15-multi-window-design.md` (read alongside; the decision codes M1–M18 and the § references below point into the spec). Research: `docs/research/2026-11-15-multi-window.md`.
 
 ## Global Constraints
 
-- Nói chuyện với người dùng bằng tiếng Việt; code, comment, commit message bằng tiếng Anh như repo.
-- `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"` trước cargo. Chạy `scripts/prune-target.sh` trước mỗi lần build/test. Không đặt `CARGO_TARGET_DIR`, không `--target-dir`. Giữ một profile trên đĩa (xoá `target/release` trước khi test debug, và ngược lại; không xoá khi `pgrep -x cargo` thấy cargo của session khác). Đĩa trống không dưới ~1.2 GB.
-- Chỉ `lucerna-workbench` dùng GPUI. Không giả định macOS ngoài code nền tảng (`#[cfg(unix)]` cho socket; Windows để sau).
-- Luồng UI không chờ I/O, trừ lần đọc đầu `.lucerna/settings.json` khi tạo workbench (như hôm nay `watch_config` đọc đồng bộ).
-- Không chép code Zed (GPL). VS Code (MIT) tham khảo được, ghi nguồn nếu dùng lại.
-- `cargo deny check` phải qua; `cargo clippy --workspace --all-targets -- -D warnings` và `cargo fmt --check` qua sau mỗi task.
-- Commit: stage theo đường dẫn cụ thể, commit với `-- <paths>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Không merge, không push, không rebase.
-- Tên khóa và giá trị từ spec: `window.restoreWindows` mặc định `"all"`, nhận `"preserve" | "all" | "folders" | "one" | "none"`; lệnh `workbench.action.newWindow`, phím `cmd+shift+n` (macOS) / `ctrl+shift+n` (khác); file `<data dir>/windows.json`; socket `<data dir>/luc-<CARGO_PKG_VERSION>.sock`, thêm `-dev` khi `debug_assertions`; cờ ẩn `--foreground`.
+- Talk to the user in Vietnamese; code, comments and commit messages in English, like the repo.
+- `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"` before cargo. Run `scripts/prune-target.sh` before every build/test. Do not set `CARGO_TARGET_DIR`, no `--target-dir`. Keep one profile on disk (delete `target/release` before a debug test, and vice versa; do not delete when `pgrep -x cargo` shows another session's cargo). Free disk space not below ~1.2 GB.
+- Only `lucerna-workbench` uses GPUI. No macOS assumptions outside platform code (`#[cfg(unix)]` for the socket; Windows comes later).
+- The UI thread does not wait on I/O, except the first read of `.lucerna/settings.json` when creating a workbench (as today `watch_config` reads synchronously).
+- Do not copy Zed code (GPL). VS Code (MIT) may be used as a reference, cite the source if reused.
+- `cargo deny check` must pass; `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` pass after every task.
+- Commit: stage by explicit path, commit with `-- <paths>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No merging, no pushing, no rebasing.
+- Key names and values from the spec: `window.restoreWindows` defaults to `"all"`, accepts `"preserve" | "all" | "folders" | "one" | "none"`; command `workbench.action.newWindow`, key `cmd+shift+n` (macOS) / `ctrl+shift+n` (others); file `<data dir>/windows.json`; socket `<data dir>/luc-<CARGO_PKG_VERSION>.sock`, with `-dev` added under `debug_assertions`; hidden flag `--foreground`.
 
 ## Review Focus
 
-1. **Một entity con quên nhận `WindowSettings` và đọc settings user thay vì workspace** — người dùng đặt `editor.tabSize` trong `.lucerna/settings.json` mà một view (minimap, terminal, explorer) không theo. Test: Task 6 `window_settings_reach_every_reader` đặt một khóa workspace cho từng nhóm (editor, terminal, explorer, search, lsp, vim) và kiểm từng nơi đọc.
-2. **Thư mục có symlink hoặc chữ hoa/thường khác** — `luc ./proj` và Finder mở `/Users/x/Proj` phải focus cùng một cửa sổ. Test: Task 7 `choose_focuses_canonical_root` (đường dẫn đã canonical ở `router::open`; test GPUI mở qua symlink).
-3. **Đóng cửa sổ trong lúc hộp hỏi lưu của ⌘Q đang mở ở cửa sổ khác** — không panic, không thoát khi chưa ai đồng ý. Test: Task 9 `quit_survives_window_closed_during_prompt`.
-4. **`luc` gọi liên tiếp nhanh khi app chưa chạy** (`luc a & luc b`) — chỉ một tiến trình app, cả hai thư mục mở. Test: Task 11 `claim_second_caller_becomes_client` (unit, socket tạm) và mục chạy tay.
-5. **`windows.json` hỏng hoặc từ phiên bản lạ** — khởi động như danh sách rỗng, không panic, ghi đè bằng bản đúng ở lần ghi sau. Test: Task 10 `session_load_corrupt_is_empty`.
+1. **A child entity forgets to receive `WindowSettings` and reads the user settings instead of the workspace** — the user sets `editor.tabSize` in `.lucerna/settings.json` and a view (minimap, terminal, explorer) does not follow. Test: Task 6 `window_settings_reach_every_reader` sets a workspace key for each group (editor, terminal, explorer, search, lsp, vim) and checks every reader.
+2. **A folder with a symlink or different letter case** — `luc ./proj` and Finder opening `/Users/x/Proj` must focus the same window. Test: Task 7 `choose_focuses_canonical_root` (the path is already canonical at `router::open`; a GPUI test opens through a symlink).
+3. **Closing a window while ⌘Q's save prompt is open in another window** — no panic, no quitting before anyone agrees. Test: Task 9 `quit_survives_window_closed_during_prompt`.
+4. **`luc` called twice in quick succession when the app is not running yet** (`luc a & luc b`) — only one app process, both folders open. Test: Task 11 `claim_second_caller_becomes_client` (unit, temp socket) and the manual run.
+5. **`windows.json` corrupt or from an unknown version** — start as an empty list, no panic, overwrite with a correct file on the next write. Test: Task 10 `session_load_corrupt_is_empty`.
 
 ---
 
 ## File Structure
 
-| File | Trách nhiệm |
+| File | Responsibility |
 |---|---|
-| `crates/lucerna-settings/src/store.rs` | `WorkspaceLayer`, `SettingsView`, bỏ `Layer::Workspace` |
-| `crates/lucerna-settings/src/scope.rs` (mới) | `is_app_scope(key)` |
-| `crates/lucerna-workbench/src/window_settings.rs` (mới) | entity `WindowSettings`: lớp workspace, watcher `.lucerna`, lỗi, registry ngôn ngữ cửa sổ |
-| `crates/lucerna-workbench/src/config_files.rs` | chỉ còn thư mục user |
-| `crates/lucerna-workbench/src/window_choice.rs` (mới, thay `open_requests.rs`) | hàm thuần chọn cửa sổ (§6.3), `file_paths(urls)` |
-| `crates/lucerna-workbench/src/router.rs` (mới, tách từ `app.rs`) | `Router` global, `open`, danh sách cửa sổ, `last_active`, hàng đợi restore |
-| `crates/lucerna-workbench/src/session.rs` (mới) | `windows.json`: đọc, ghi, lọc theo `window.restoreWindows` |
-| `crates/lucerna-workbench/src/cli_socket.rs` (mới) | giao thức, `claim`, `send`, `serve` |
-| `crates/lucerna-workbench/src/app.rs` | `run`, `start`, khởi động, `QuitMode`, `on_reopen` |
-| `crates/lucerna-workbench/src/process.rs` | **xoá** |
-| `crates/lucerna-workbench/src/open_requests.rs` | **xoá** (thay bởi `window_choice.rs`) |
-| `crates/lucerna/src/main.rs`, `crates/lucerna/src/launch.rs` (mới) | giành socket, client, tách khỏi terminal, `--foreground` |
-| `bench/compare/multiwindow.py` (mới) + test | đo nhiều cửa sổ |
-| `crates/lucerna-workbench/tests/multi_window.rs` (mới) | test GPUI nhiều cửa sổ |
+| `crates/lucerna-settings/src/store.rs` | `WorkspaceLayer`, `SettingsView`, remove `Layer::Workspace` |
+| `crates/lucerna-settings/src/scope.rs` (new) | `is_app_scope(key)` |
+| `crates/lucerna-workbench/src/window_settings.rs` (new) | `WindowSettings` entity: workspace layer, `.lucerna` watcher, errors, the window's language registry |
+| `crates/lucerna-workbench/src/config_files.rs` | only the user folder is left |
+| `crates/lucerna-workbench/src/window_choice.rs` (new, replaces `open_requests.rs`) | pure window-choice function (§6.3), `file_paths(urls)` |
+| `crates/lucerna-workbench/src/router.rs` (new, split from `app.rs`) | global `Router`, `open`, window list, `last_active`, restore queue |
+| `crates/lucerna-workbench/src/session.rs` (new) | `windows.json`: read, write, filter by `window.restoreWindows` |
+| `crates/lucerna-workbench/src/cli_socket.rs` (new) | protocol, `claim`, `send`, `serve` |
+| `crates/lucerna-workbench/src/app.rs` | `run`, `start`, startup, `QuitMode`, `on_reopen` |
+| `crates/lucerna-workbench/src/process.rs` | **delete** |
+| `crates/lucerna-workbench/src/open_requests.rs` | **delete** (replaced by `window_choice.rs`) |
+| `crates/lucerna/src/main.rs`, `crates/lucerna/src/launch.rs` (new) | claim the socket, client, detach from the terminal, `--foreground` |
+| `bench/compare/multiwindow.py` (new) + tests | measure many windows |
+| `crates/lucerna-workbench/tests/multi_window.rs` (new) | GPUI multi-window tests |
 
 ---
 
-### Task 1: Đo mốc trước khi chuyển
+### Task 1: Measure a baseline before the switch
 
 **Files:**
 - Create: `bench/compare/multiwindow.py`, `bench/compare/tests/test_multiwindow.py`
-- Modify: `bench/compare/README.md` (mục mới), `docs/benchmarks.md` (mục "Nhiều cửa sổ")
+- Modify: `bench/compare/README.md` (new section), `docs/benchmarks.md` (section "Multiple windows")
 
 **Interfaces:**
-- Produces: `python3 -I bench/compare/multiwindow.py --windows 1,2,3 --out <json>` và `--mode before|after`. Task 13 chạy lại với `--mode after`.
+- Produces: `python3 -I bench/compare/multiwindow.py --windows 1,2,3 --out <json>` and `--mode before|after`. Task 13 reruns it with `--mode after`.
 
-Đo ba số (§7.1) trên bản release dựng từ commit gốc nhánh (`git merge-base multi-window main`, hiện `2a9c1e3` + commit docs), `HOME` riêng như `editors.launch`:
-- `ram_mb[n]`: tổng `footprint` (dùng parser có sẵn trong `metrics.py`) của mọi tiến trình `luc` thuộc phiên bench sau khi mở n cửa sổ trên n repo khác nhau và đợi `wait_quiet`. Mode `before`: mỗi cửa sổ là một lần chạy `luc <repo>`. Mode `after`: lần đầu `luc --foreground <repo1>`, sau đó `luc <repoK>` (client).
-- `second_window_ms`: từ lúc gọi lệnh mở cửa sổ thứ hai tới khung hình đầu có nội dung của cửa sổ đó (`bench-helper watch ... coverage`, như `startup_ms`).
-- `drop_pct_while_busy`: tỷ lệ khung hình rớt khi cuộn cửa sổ A (`bench-helper scroll`) trong lúc B mở một repo lớn (repo lớn của bench), so với khi B đứng yên. Hai cửa sổ cùng pid: đặt khung cửa sổ A (`frame`) lớn hơn B để helper chọn A. Nếu helper vẫn không phân biệt được, thêm `--window-index` vào `bench-helper` (Swift) và ghi trong README.
+Measure three numbers (§7.1) on a release build made from the branch's base commit (`git merge-base multi-window main`, currently `2a9c1e3` + the docs commit), with a separate `HOME` like `editors.launch`:
+- `ram_mb[n]`: the sum of `footprint` (use the parser already in `metrics.py`) over every `luc` process in the bench session after opening n windows on n different repos and waiting for `wait_quiet`. Mode `before`: each window is a separate `luc <repo>` run. Mode `after`: first `luc --foreground <repo1>`, then `luc <repoK>` (client).
+- `second_window_ms`: from the moment the command to open the second window is issued to the first frame with content in that window (`bench-helper watch ... coverage`, like `startup_ms`).
+- `drop_pct_while_busy`: the fraction of dropped frames when scrolling window A (`bench-helper scroll`) while B opens a large repo (the bench's large repo), compared to when B is idle. Two windows with the same pid: make window A's `frame` larger than B's so the helper picks A. If the helper still cannot tell them apart, add `--window-index` to `bench-helper` (Swift) and note it in the README.
 
-- [ ] **Step 1: Test phần thuần** (`test_multiwindow.py`): `summarize(rounds)` trả median/min/max cho từng chỉ số; `luc_commands("after", repos)` trả `[[bin, "--foreground", r1], [bin, r2], ...]`, `"before"` trả `[[bin, r1], [bin, r2], ...]`.
-- [ ] **Step 2:** `python3 -m unittest discover -s bench/compare/tests -v` → FAIL (module chưa có).
-- [ ] **Step 3:** Viết `multiwindow.py` (dùng lại `editors`, `metrics`, `env` có sẵn; 5 vòng mỗi chỉ số).
-- [ ] **Step 4:** Unit test PASS.
-- [ ] **Step 5:** Dựng release ở commit gốc (`scripts/bundle-app.sh`, theo quy tắc một profile), chạy `--mode before`, ghi JSON vào `bench/compare/results/multiwindow-before.json` và bảng vào `docs/benchmarks.md` mục "Nhiều cửa sổ — trước". Nếu không có quyền Screen Recording/Accessibility thì dừng và báo người dùng (chỉ RAM chạy được không cần quyền màn hình).
+- [ ] **Step 1: Test the pure part** (`test_multiwindow.py`): `summarize(rounds)` returns median/min/max for each metric; `luc_commands("after", repos)` returns `[[bin, "--foreground", r1], [bin, r2], ...]`, `"before"` returns `[[bin, r1], [bin, r2], ...]`.
+- [ ] **Step 2:** `python3 -m unittest discover -s bench/compare/tests -v` → FAIL (module does not exist yet).
+- [ ] **Step 3:** Write `multiwindow.py` (reuse the existing `editors`, `metrics`, `env`; 5 rounds per metric).
+- [ ] **Step 4:** Unit tests PASS.
+- [ ] **Step 5:** Build release at the base commit (`scripts/bundle-app.sh`, following the one-profile rule), run `--mode before`, write the JSON to `bench/compare/results/multiwindow-before.json` and the table to `docs/benchmarks.md` section "Multiple windows — before". If there is no Screen Recording/Accessibility permission, stop and tell the user (only RAM can run without screen permissions).
 - [ ] **Step 6: Commit** `bench: multi-window measurement and the baseline before one process`.
 
-### Task 2: `WorkspaceLayer` và `SettingsView` trong `lucerna-settings`
+### Task 2: `WorkspaceLayer` and `SettingsView` in `lucerna-settings`
 
 **Files:**
 - Modify: `crates/lucerna-settings/src/store.rs`, `crates/lucerna-settings/src/lib.rs`
 - Create: `crates/lucerna-settings/src/scope.rs`
-- Test: trong `store.rs`/`scope.rs` (`#[cfg(test)]`)
+- Test: in `store.rs`/`scope.rs` (`#[cfg(test)]`)
 
 **Interfaces:**
 - Produces:
-  - `pub struct WorkspaceLayer` (map đã parse; `Default` = rỗng) với `pub fn parse(jsonc: &str) -> Result<WorkspaceLayer, SettingsError>` và `pub fn app_scope_keys(&self) -> Vec<String>` (khóa phạm vi app có trong lớp, để ghi log).
-  - `pub struct SettingsView<'a>` (`Copy`) với `pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T>` và `pub fn get_trusted<T>(..)`.
-  - `impl SettingsStore { pub fn view<'a>(&'a self, workspace: Option<&'a WorkspaceLayer>) -> SettingsView<'a> }`. `SettingsStore::get`/`get_trusted` giữ nguyên = `view(None)`.
-  - `pub fn is_app_scope(key: &str) -> bool` (scope.rs): `true` cho `workbench.colorTheme`, `workbench.preferredDarkColorTheme`, `workbench.preferredLightColorTheme`, `workbench.iconTheme`, `workbench.startupEditor`, mọi khóa bắt đầu `window.` hoặc `extensions.`.
-  - `Layer` chỉ còn `Default`, `User` (bỏ `Workspace`: lỗi biên dịch dẫn các chỗ cần sửa).
-- `SettingsView::get` khi lớp workspace có khóa phạm vi app: bỏ qua giá trị đó (tra như không có).
+  - `pub struct WorkspaceLayer` (a parsed map; `Default` = empty) with `pub fn parse(jsonc: &str) -> Result<WorkspaceLayer, SettingsError>` and `pub fn app_scope_keys(&self) -> Vec<String>` (the app-scope keys present in the layer, for logging).
+  - `pub struct SettingsView<'a>` (`Copy`) with `pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T>` and `pub fn get_trusted<T>(..)`.
+  - `impl SettingsStore { pub fn view<'a>(&'a self, workspace: Option<&'a WorkspaceLayer>) -> SettingsView<'a> }`. `SettingsStore::get`/`get_trusted` stay as they are = `view(None)`.
+  - `pub fn is_app_scope(key: &str) -> bool` (scope.rs): `true` for `workbench.colorTheme`, `workbench.preferredDarkColorTheme`, `workbench.preferredLightColorTheme`, `workbench.iconTheme`, `workbench.startupEditor`, every key starting with `window.` or `extensions.`.
+  - `Layer` keeps only `Default`, `User` (remove `Workspace`: compile errors lead to the places that need fixing).
+- `SettingsView::get` when the workspace layer has an app-scope key: ignore that value (look up as if it were absent).
 
-- [ ] **Step 1: Test** — `view_prefers_workspace`: user `{"editor.tabSize":4}`, workspace `{"editor.tabSize":2}` → `view(Some(&ws)).get::<u32>("editor.tabSize", None) == Some(2)`, `view(None)` → `Some(4)`. `view_language_override_order`: workspace `[rust]` > user `[rust]` > workspace > user (port các test thứ tự hiện có sang `view`). `view_merges_objects` (R26 qua ba lớp). `trusted_skips_workspace`. `app_scope_ignored_in_workspace`: workspace `{"workbench.colorTheme":"X","window.restoreWindows":"none"}` → `view(Some(&ws)).get::<String>("workbench.colorTheme", None)` bằng giá trị user/default. `is_app_scope` cho từng khóa trên và `false` cho `editor.tabSize`, `files.associations`.
+- [ ] **Step 1: Tests** — `view_prefers_workspace`: user `{"editor.tabSize":4}`, workspace `{"editor.tabSize":2}` → `view(Some(&ws)).get::<u32>("editor.tabSize", None) == Some(2)`, `view(None)` → `Some(4)`. `view_language_override_order`: workspace `[rust]` > user `[rust]` > workspace > user (port the existing order tests to `view`). `view_merges_objects` (R26 across three layers). `trusted_skips_workspace`. `app_scope_ignored_in_workspace`: workspace `{"workbench.colorTheme":"X","window.restoreWindows":"none"}` → `view(Some(&ws)).get::<String>("workbench.colorTheme", None)` equals the user/default value. `is_app_scope` for each key above and `false` for `editor.tabSize`, `files.associations`.
 - [ ] **Step 2:** `cargo test -p lucerna-settings` → FAIL.
-- [ ] **Step 3:** Cài đặt; chuyển các test cũ dùng `Layer::Workspace` trong crate này sang `WorkspaceLayer`.
-- [ ] **Step 4:** `cargo test -p lucerna-settings` → PASS. (`lucerna-workbench` chưa biên dịch: Task 3 sửa.)
-- [ ] **Step 5: Commit** `settings: workspace layer as a separate value, views over user + workspace`. Có thể gộp commit với Task 3 nếu workspace không biên dịch giữa chừng; thứ tự review vẫn tách.
+- [ ] **Step 3:** Implement; move the old tests that use `Layer::Workspace` in this crate to `WorkspaceLayer`.
+- [ ] **Step 4:** `cargo test -p lucerna-settings` → PASS. (`lucerna-workbench` does not compile yet: Task 3 fixes it.)
+- [ ] **Step 5: Commit** `settings: workspace layer as a separate value, views over user + workspace`. May be merged with the Task 3 commit if the workspace does not compile in between; the review order stays separate.
 
-### Task 3: Entity `WindowSettings`; `ConfigState` chỉ còn user
+### Task 3: `WindowSettings` entity; `ConfigState` keeps only user
 
 **Files:**
 - Create: `crates/lucerna-workbench/src/window_settings.rs`
-- Modify: `config_files.rs`, `app.rs` (gọi `watch_config` một lần trong `start`), `workbench.rs` (tạo entity), `lib.rs` (export), status item lỗi cấu hình (trong `config_files.rs`)
-- Test: `crates/lucerna-workbench/tests/window_settings.rs`, sửa `tests/config_files.rs`, `tests/trust.rs`, `tests/lsp_health.rs`, `tests/terminal_lifecycle.rs`, `src/git/tests.rs` (các chỗ `Layer::Workspace`)
+- Modify: `config_files.rs`, `app.rs` (call `watch_config` once in `start`), `workbench.rs` (create the entity), `lib.rs` (export), the config-error status item (in `config_files.rs`)
+- Test: `crates/lucerna-workbench/tests/window_settings.rs`, fix `tests/config_files.rs`, `tests/trust.rs`, `tests/lsp_health.rs`, `tests/terminal_lifecycle.rs`, `src/git/tests.rs` (the places with `Layer::Workspace`)
 
 **Interfaces:**
 - Consumes: Task 2.
 - Produces:
   - `pub struct WindowSettings`; `impl WindowSettings`:
-    - `pub fn new(root: Option<&Path>, cx: &mut Context<Self>) -> Self` — `root` `None` cho cửa sổ file riêng. Đọc `<root>/.lucerna/settings.json` đồng bộ; observe global `AppState` để `cx.notify()` khi lớp user đổi; watcher `<root>/.lucerna` (không chạy khi `cx.background_executor().is_test()`), debounce `CONFIG_DEBOUNCE`.
+    - `pub fn new(root: Option<&Path>, cx: &mut Context<Self>) -> Self` — `root` is `None` for a lone-file window. Reads `<root>/.lucerna/settings.json` synchronously; observes the global `AppState` to `cx.notify()` when the user layer changes; watcher on `<root>/.lucerna` (not run when `cx.background_executor().is_test()`), debounced by `CONFIG_DEBOUNCE`.
     - `pub fn view<'a>(&'a self, cx: &'a App) -> SettingsView<'a>`
-    - `pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>, cx: &App) -> Option<T>`; `pub fn get_trusted<T>(..)` tương tự.
-    - `pub fn reload(&mut self, cx: &mut Context<Self>)` — đọc lại file (luồng nền), cập nhật lớp, lỗi, `generation`, notify.
-    - `pub fn set_workspace_json(&mut self, jsonc: &str, cx: &mut Context<Self>) -> Result<(), SettingsError>` — cho test.
+    - `pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>, cx: &App) -> Option<T>`; `pub fn get_trusted<T>(..)` likewise.
+    - `pub fn reload(&mut self, cx: &mut Context<Self>)` — re-reads the file (background thread), updates the layer, error, `generation`, notifies.
+    - `pub fn set_workspace_json(&mut self, jsonc: &str, cx: &mut Context<Self>) -> Result<(), SettingsError>` — for tests.
     - `pub fn error(&self) -> Option<&ConfigError>`; `pub fn generation(&self) -> u64`; `pub fn settings_path(&self) -> Option<&Path>`.
-  - `impl Workbench { pub fn settings(&self) -> &Entity<WindowSettings> }` — tạo trong `Workbench::build` trước mọi entity con.
-  - `ConfigPaths` bỏ trường `workspace_settings` và `with_user_dir(_, root)`/`for_root`; còn `user_only()` (đổi tên `ConfigPaths::default_user()` không cần — giữ `user_only`, `user_only_with_user_dir`). `ConfigFile::WorkspaceSettings` chuyển sang `ConfigError` của `WindowSettings` (giữ `status_text` ".lucerna/settings.json: …").
-  - Status item lỗi cấu hình: hiện lỗi `ConfigState` (user) rồi `WindowSettings::error()` của cửa sổ.
-  - Lưu `.lucerna/settings.json` mở trong editor: workbench gọi `WindowSettings::reload` (thay cho việc `reload_config` thấy đường dẫn workspace).
-- Bước này **chưa** đổi các chỗ đọc (Task 4–6): mọi chỗ vẫn đọc `AppState.settings` (giờ chỉ user), nên settings workspace tạm thời không có tác dụng ở các view. Các test hỏng vì lý do đó được đánh dấu trong ledger và phải xanh lại sau Task 6.
+  - `impl Workbench { pub fn settings(&self) -> &Entity<WindowSettings> }` — created in `Workbench::build` before any child entity.
+  - `ConfigPaths` drops the field `workspace_settings` and `with_user_dir(_, root)`/`for_root`; `user_only()` remains (renaming to `ConfigPaths::default_user()` is not needed — keep `user_only`, `user_only_with_user_dir`). `ConfigFile::WorkspaceSettings` moves to the `ConfigError` of `WindowSettings` (keep `status_text` ".lucerna/settings.json: …").
+  - The config-error status item: shows the `ConfigState` (user) error and then the window's `WindowSettings::error()`.
+  - Saving `.lucerna/settings.json` open in the editor: the workbench calls `WindowSettings::reload` (instead of `reload_config` seeing the workspace path).
+- This step does **not** yet change the readers (Tasks 4–6): every place still reads `AppState.settings` (now user only), so workspace settings temporarily have no effect in the views. Tests that break for that reason are marked in the ledger and must be green again after Task 6.
 
-- [ ] **Step 1: Test** (`tests/window_settings.rs`): `reads_workspace_file` (tempdir có `.lucerna/settings.json` `{"editor.tabSize":2}` → `get::<u32>("editor.tabSize")==Some(2)`); `user_change_notifies` (`reload_config` user → observer của entity chạy, giá trị mới thấy được); `reload_picks_up_edit`; `broken_file_keeps_previous_and_reports` (`error()` có `status_text` bắt đầu `.lucerna/settings.json:`); `single_file_has_no_workspace` (`new(None)`); `two_entities_independent` (hai root, hai giá trị).
-- [ ] **Step 2:** Chạy `cargo test -p lucerna-workbench --test window_settings` → FAIL.
-- [ ] **Step 3:** Cài đặt; sửa `config_files.rs`, `app.rs` (`watch_config(ConfigPaths::user_only_with_user_dir(..))` một lần trong `start`/`Router` không gọi lại khi đổi thư mục), `workbench.rs`; sửa các test dùng `Layer::Workspace` sang ghi file `.lucerna/settings.json` trước khi tạo workbench hoặc `wb.settings().update(cx, |s, cx| s.set_workspace_json(..., cx))`.
-- [ ] **Step 4:** `cargo test -p lucerna-workbench --test window_settings --test config_files` → PASS; `cargo build -p lucerna` qua.
+- [ ] **Step 1: Tests** (`tests/window_settings.rs`): `reads_workspace_file` (a tempdir with `.lucerna/settings.json` `{"editor.tabSize":2}` → `get::<u32>("editor.tabSize")==Some(2)`); `user_change_notifies` (`reload_config` user → the entity's observer runs, the new value is visible); `reload_picks_up_edit`; `broken_file_keeps_previous_and_reports` (`error()` has a `status_text` starting with `.lucerna/settings.json:`); `single_file_has_no_workspace` (`new(None)`); `two_entities_independent` (two roots, two values).
+- [ ] **Step 2:** Run `cargo test -p lucerna-workbench --test window_settings` → FAIL.
+- [ ] **Step 3:** Implement; change `config_files.rs`, `app.rs` (`watch_config(ConfigPaths::user_only_with_user_dir(..))` once in `start`/`Router` is not called again when the folder changes), `workbench.rs`; change the tests that use `Layer::Workspace` to write the `.lucerna/settings.json` file before creating the workbench or `wb.settings().update(cx, |s, cx| s.set_workspace_json(..., cx))`.
+- [ ] **Step 4:** `cargo test -p lucerna-workbench --test window_settings --test config_files` → PASS; `cargo build -p lucerna` passes.
 - [ ] **Step 5: Commit** `workbench: per-window workspace settings entity; config state keeps the user files`.
 
-### Task 4: Đọc settings theo cửa sổ — editor (documents, code view, excerpt list, vim, save, goto, fonts, symbols, editor groups, markdown preview)
+### Task 4: Per-window settings reads — editor (documents, code view, excerpt list, vim, save, goto, fonts, symbols, editor groups, markdown preview)
 
 **Files:**
-- Modify: `documents.rs`, `code_view/mod.rs`, `code_view/transact.rs`, `code_view/minimap.rs`, `code_view/element.rs` (nếu đọc settings), `excerpt_list/render.rs`, `excerpt_list/mod.rs`, `vim.rs`, `save.rs`, `goto.rs`, `fonts.rs`, `symbols/breadcrumbs.rs`, `editor_groups/view.rs`, `markdown_preview/{mod,sync,commands}.rs`, `workbench.rs` (truyền handle)
-- Test: `tests/multi_window.rs` (tạo file), sửa `tests/code_view*.rs`, `tests/excerpt_list*.rs` theo chữ ký mới
+- Modify: `documents.rs`, `code_view/mod.rs`, `code_view/transact.rs`, `code_view/minimap.rs`, `code_view/element.rs` (if it reads settings), `excerpt_list/render.rs`, `excerpt_list/mod.rs`, `vim.rs`, `save.rs`, `goto.rs`, `fonts.rs`, `symbols/breadcrumbs.rs`, `editor_groups/view.rs`, `markdown_preview/{mod,sync,commands}.rs`, `workbench.rs` (pass the handle)
+- Test: `tests/multi_window.rs` (create the file), fix `tests/code_view*.rs`, `tests/excerpt_list*.rs` for the new signatures
 
 **Interfaces:**
 - Consumes: `WindowSettings` (Task 3).
-- Produces (chữ ký mới, các task sau và test dùng):
+- Produces (new signatures, used by later tasks and tests):
   - `Documents::new(root: PathBuf, settings: Entity<WindowSettings>) -> Self`
   - `CodeView::new(path: Arc<Path>, settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self`
   - `ExcerptList::new(root: PathBuf, id_prefix: &'static str, settings: Entity<WindowSettings>, cx) -> Self`
   - `VimLayer::new(settings: Entity<WindowSettings>, cx) -> Self`
-  - `MarkdownPreview::new(.., settings: Entity<WindowSettings>, ..)` (thêm tham số cuối trước `cx`)
-  - `fonts::editor_font_family(settings: SettingsView<'_>) -> ..` (đổi tham số từ `cx: &App`)
-  - Hàm tự do khác đang nhận `cx: &App` chỉ để đọc settings: đổi sang nhận `SettingsView<'_>`; caller lấy `self.settings.read(cx).view(cx)`.
-  - `observe_global::<AppState>` dùng để nghe settings (vim.rs:172, code_view/mod.rs:449, workbench.rs:718) đổi sang `cx.observe(&settings, ..)`; chỗ nghe theme giữ `observe_global`.
-- Ngôn ngữ của tài liệu (`Documents::language_for`) vẫn dùng `AppState.languages` ở task này; Task 5 đổi sang registry của cửa sổ.
+  - `MarkdownPreview::new(.., settings: Entity<WindowSettings>, ..)` (add the last parameter before `cx`)
+  - `fonts::editor_font_family(settings: SettingsView<'_>) -> ..` (the parameter changes from `cx: &App`)
+  - Other free functions that take `cx: &App` only to read settings: change to take `SettingsView<'_>`; the caller gets `self.settings.read(cx).view(cx)`.
+  - `observe_global::<AppState>` used to listen to settings (vim.rs:172, code_view/mod.rs:449, workbench.rs:718) changes to `cx.observe(&settings, ..)`; the places that listen to the theme keep `observe_global`.
+- The document language (`Documents::language_for`) still uses `AppState.languages` in this task; Task 5 switches it to the window's registry.
 
-- [ ] **Step 1: Test** (`tests/multi_window.rs`, helper `open_two(cx, ws_a: &str, ws_b: &str) -> (WindowHandle<Workbench>, WindowHandle<Workbench>)` mở hai `Workbench::new` ở hai cửa sổ trên hai tempdir có `.lucerna/settings.json` khác nhau): `editor_settings_per_window` — A `{"editor.tabSize":2,"editor.wordWrap":"on"}`, B `{"editor.tabSize":8}`; mở `a.rs` ở mỗi cửa sổ; tab size của indent (`Documents` indentation inputs) là 2 và 8; `CodeView` của A wrap, của B không. `workspace_change_stays_in_window` — `set_workspace_json` ở A đổi tabSize → B không đổi, A đổi.
+- [ ] **Step 1: Tests** (`tests/multi_window.rs`, helper `open_two(cx, ws_a: &str, ws_b: &str) -> (WindowHandle<Workbench>, WindowHandle<Workbench>)` opens two `Workbench::new` in two windows on two tempdirs with different `.lucerna/settings.json`): `editor_settings_per_window` — A `{"editor.tabSize":2,"editor.wordWrap":"on"}`, B `{"editor.tabSize":8}`; open `a.rs` in each window; the indent tab size (`Documents` indentation inputs) is 2 and 8; A's `CodeView` wraps, B's does not. `workspace_change_stays_in_window` — `set_workspace_json` in A changes tabSize → B does not change, A does.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Truyền handle và đổi các chỗ đọc trong các file của task.
-- [ ] **Step 4:** `cargo test -p lucerna-workbench --test multi_window` và các test editor bị ảnh hưởng (`code_view`, `documents`, `editing`, `vim*`, `markdown_preview`, `excerpt_list*`) → PASS.
+- [ ] **Step 3:** Pass the handle and change the reads in this task's files.
+- [ ] **Step 4:** `cargo test -p lucerna-workbench --test multi_window` and the affected editor tests (`code_view`, `documents`, `editing`, `vim*`, `markdown_preview`, `excerpt_list*`) → PASS.
 - [ ] **Step 5: Commit** `workbench: editor views read the window's settings`.
 
-### Task 5: Đọc settings theo cửa sổ — language servers, git, trust, `files.associations`
+### Task 5: Per-window settings reads — language servers, git, trust, `files.associations`
 
 **Files:**
-- Modify: `language_servers/{mod,sync,lifecycle}.rs`, `lsp_log.rs`, `lsp_health.rs`, `lsp_status.rs` (nếu đọc), `git/*` (khóa `git.*`, `scm.*`), `trust.rs:459`, `window_settings.rs` (registry), `documents.rs::language_for`, `extensions/service.rs` (registry chung chỉ dùng user; báo cửa sổ dựng lại khi registry chung đổi)
-- Test: `tests/multi_window.rs`, sửa `tests/lsp_*.rs`, `src/git/tests.rs`
+- Modify: `language_servers/{mod,sync,lifecycle}.rs`, `lsp_log.rs`, `lsp_health.rs`, `lsp_status.rs` (if it reads), `git/*` (keys `git.*`, `scm.*`), `trust.rs:459`, `window_settings.rs` (registry), `documents.rs::language_for`, `extensions/service.rs` (the shared registry only uses user; tell windows to rebuild when the shared registry changes)
+- Test: `tests/multi_window.rs`, fix `tests/lsp_*.rs`, `src/git/tests.rs`
 
 **Interfaces:**
-- Consumes: Task 3, 4.
+- Consumes: Tasks 3, 4.
 - Produces:
-  - `LanguageServers::new(.., settings: Entity<WindowSettings>, ..)` (thêm tham số); `lsp`, `lucerna.lsp.enabled` đọc qua `get_trusted`/`get` của cửa sổ.
-  - `GitStore` nhận `Entity<WindowSettings>` (đọc `git.enabled`, `git.path`, `git.statusLimit`, `git.diffBase`, `scm.*`).
-  - `impl WindowSettings { pub fn languages(&self, cx: &App) -> Arc<LanguageRegistry> }` — `AppState.languages` nếu lớp workspace không có `files.associations`; ngược lại registry riêng dựng (luồng nền) từ cùng đầu vào extension với associations gộp user + workspace; dựng lại khi `AppState.languages_generation` đổi hoặc lớp workspace đổi. Thêm `pub fn languages_generation(&self) -> u64` để `Documents` biết tra lại.
-  - Để dựng registry riêng: `extensions::service` cung cấp `pub(crate) fn registry_with_associations(assoc: Associations, cx: &App) -> Task<LanguageRegistry>` dùng lại `RegistryInputs` hiện có.
+  - `LanguageServers::new(.., settings: Entity<WindowSettings>, ..)` (add the parameter); `lsp`, `lucerna.lsp.enabled` read through the window's `get_trusted`/`get`.
+  - `GitStore` takes `Entity<WindowSettings>` (reads `git.enabled`, `git.path`, `git.statusLimit`, `git.diffBase`, `scm.*`).
+  - `impl WindowSettings { pub fn languages(&self, cx: &App) -> Arc<LanguageRegistry> }` — `AppState.languages` if the workspace layer has no `files.associations`; otherwise a private registry built (on a background thread) from the same extension inputs with associations merged from user + workspace; rebuilt when `AppState.languages_generation` changes or the workspace layer changes. Add `pub fn languages_generation(&self) -> u64` so `Documents` knows to look up again.
+  - To build the private registry: `extensions::service` provides `pub(crate) fn registry_with_associations(assoc: Associations, cx: &App) -> Task<LanguageRegistry>` reusing the existing `RegistryInputs`.
 
-- [ ] **Step 1: Test:** `lsp_settings_per_window` — A workspace `{"lucerna.lsp.enabled":false}`, B không; dùng fake server của `tests/support/lsp.rs`, mở `a.rs` ở cả hai (cả hai trusted) → chỉ B khởi động server. `lsp_binary_ignores_workspace` (đã có ý trong test hiện tại; chuyển sang `WindowSettings`). `associations_per_window` — A `{"files.associations":{"*.foo":"rust"}}` → `x.foo` ở A là Rust, ở B là plain text. `git_disabled_per_window` — A `{"git.enabled":false}` → `GitStore` của A không quét, B quét.
+- [ ] **Step 1: Tests:** `lsp_settings_per_window` — A workspace `{"lucerna.lsp.enabled":false}`, B none; use the fake server from `tests/support/lsp.rs`, open `a.rs` in both (both trusted) → only B starts a server. `lsp_binary_ignores_workspace` (the idea is already in the current test; move it to `WindowSettings`). `associations_per_window` — A `{"files.associations":{"*.foo":"rust"}}` → `x.foo` is Rust in A, plain text in B. `git_disabled_per_window` — A `{"git.enabled":false}` → A's `GitStore` does not scan, B's does.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** `cargo test -p lucerna-workbench` cho `multi_window`, `lsp_*`, `git_*`, `trust` và unit test trong `src/git` → PASS.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `cargo test -p lucerna-workbench` for `multi_window`, `lsp_*`, `git_*`, `trust` and the unit tests in `src/git` → PASS.
 - [ ] **Step 5: Commit** `workbench: language servers, git and file associations follow the window's settings`.
 
-### Task 6: Đọc settings theo cửa sổ — terminal, explorer, search, panel, phần còn lại của workbench; test kiến trúc
+### Task 6: Per-window settings reads — terminal, explorer, search, panel, the rest of the workbench; architecture test
 
 **Files:**
-- Modify: `terminal/{settings,commands,links,panel,view}.rs`, `explorer/{view,menu,commands}.rs`, `search_view/view.rs`, `layout/panel.rs`, `workbench.rs` (1636, 2349, 2804, 3166), `onboarding/mod.rs` (chỉ đọc user: giữ `AppState`, Get Started không có cửa sổ workbench; trong tab của workbench thì đọc qua handle)
+- Modify: `terminal/{settings,commands,links,panel,view}.rs`, `explorer/{view,menu,commands}.rs`, `search_view/view.rs`, `layout/panel.rs`, `workbench.rs` (1636, 2349, 2804, 3166), `onboarding/mod.rs` (user only: keep `AppState`, Get Started has no workbench window; inside a workbench's tab it reads through the handle)
 - Create: `crates/lucerna-workbench/tests/architecture_settings.rs`
-- Test: `tests/multi_window.rs`, sửa `tests/terminal_*.rs`, `tests/explorer_*.rs`
+- Test: `tests/multi_window.rs`, fix `tests/terminal_*.rs`, `tests/explorer_*.rs`
 
 **Interfaces:**
-- Consumes: Task 3–5.
-- Produces: hàm `terminal::settings::*`, `terminal::commands::skips_shell`, `explorer::commands::*` nhận `SettingsView<'_>` thay vì `&App`. `TerminalPanel::new(settings: Entity<WindowSettings>, window, cx)`.
+- Consumes: Tasks 3–5.
+- Produces: the functions `terminal::settings::*`, `terminal::commands::skips_shell`, `explorer::commands::*` take `SettingsView<'_>` instead of `&App`. `TerminalPanel::new(settings: Entity<WindowSettings>, window, cx)`.
 
-- [ ] **Step 1: Test:** `window_settings_reach_every_reader` trong `multi_window.rs`: A workspace đặt `terminal.integrated.scrollback: 123`, `explorer.confirmDelete: false`, `workbench.panel.defaultLocation: "right"`, `vim.enabled: true`, `files.autoSave: "afterDelay"`; B không đặt. Kiểm từng giá trị qua API công khai của panel terminal, explorer (xoá không hỏi), vị trí panel, vim layer bật, auto-save — A theo workspace, B theo mặc định. `architecture_settings.rs`: quét `src/**/*.rs`, không file nào ngoài `config_files.rs`, `app.rs`, `router.rs`, `startup.rs`, `session.rs`, `extensions/service.rs`, `theme_picker.rs`, `onboarding/mod.rs`, `welcome.rs`, `window_settings.rs`, `app_menu.rs` chứa `AppState>().settings` hoặc `AppState>()\n            .settings`; không file nào chứa `process::spawn`/`SpawnRequest` (phần này bật ở Task 7: để `#[ignore]` kèm ghi chú tới khi Task 7 xong).
+- [ ] **Step 1: Tests:** `window_settings_reach_every_reader` in `multi_window.rs`: A's workspace sets `terminal.integrated.scrollback: 123`, `explorer.confirmDelete: false`, `workbench.panel.defaultLocation: "right"`, `vim.enabled: true`, `files.autoSave: "afterDelay"`; B sets none. Check each value through the public API of the terminal panel, the explorer (delete without asking), the panel position, the vim layer being on, auto-save — A follows the workspace, B follows the defaults. `architecture_settings.rs`: scan `src/**/*.rs`, no file other than `config_files.rs`, `app.rs`, `router.rs`, `startup.rs`, `session.rs`, `extensions/service.rs`, `theme_picker.rs`, `onboarding/mod.rs`, `welcome.rs`, `window_settings.rs`, `app_menu.rs` contains `AppState>().settings` or `AppState>()\n            .settings`; no file contains `process::spawn`/`SpawnRequest` (this part turns on in Task 7: leave it `#[ignore]` with a note until Task 7 is done).
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** `cargo test -p lucerna-workbench` (toàn bộ) → PASS, kể cả các test đã ghi là tạm hỏng ở Task 3.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `cargo test -p lucerna-workbench` (all) → PASS, including the tests recorded as temporarily broken in Task 3.
 - [ ] **Step 5: Commit** `workbench: terminal, explorer and panels read the window's settings; guard test`.
 
-### Task 7: Router nhiều cửa sổ và `router::open`
+### Task 7: Multi-window Router and `router::open`
 
 **Files:**
 - Create: `window_choice.rs`, `router.rs`
 - Delete: `process.rs`, `open_requests.rs`
-- Modify: `app.rs` (Router chuyển ra `router.rs`; `run` dùng `router::open`), `open_commands.rs` (bỏ `SpawnRequest`, `spawn_or_report`, `WorkbenchEvent::Replace`), `welcome.rs`, `onboarding/mod.rs` (`OpenSettingsInNewWindow`), `recent_picker.rs`/`open_commands.rs` (⌘Enter), `lib.rs`, `crates/lucerna/src/main.rs` (bỏ `resolver`)
-- Test: `window_choice.rs` (unit), `tests/multi_window.rs`, sửa tests dùng `WorkbenchEvent`/`Spawner`/`open_launch_for_test`/`router_shown_root_for_test`
+- Modify: `app.rs` (Router moves out to `router.rs`; `run` uses `router::open`), `open_commands.rs` (drop `SpawnRequest`, `spawn_or_report`, `WorkbenchEvent::Replace`), `welcome.rs`, `onboarding/mod.rs` (`OpenSettingsInNewWindow`), `recent_picker.rs`/`open_commands.rs` (⌘Enter), `lib.rs`, `crates/lucerna/src/main.rs` (drop `resolver`)
+- Test: `window_choice.rs` (unit), `tests/multi_window.rs`, fix tests that use `WorkbenchEvent`/`Spawner`/`open_launch_for_test`/`router_shown_root_for_test`
 
 **Interfaces:**
 - Produces:
-  - `window_choice.rs` (thuần, không GPUI):
-    - `pub enum WindowKind { Welcome, Folder(PathBuf), File(PathBuf) }` (`Welcome` gồm cả Get Started)
+  - `window_choice.rs` (pure, no GPUI):
+    - `pub enum WindowKind { Welcome, Folder(PathBuf), File(PathBuf) }` (`Welcome` includes Get Started)
     - `pub struct WindowInfo { pub kind: WindowKind, pub last_active: u64 }`
     - `pub enum Target { Auto, NewWindow, ReplaceIn(usize) }`
     - `pub enum Choice { Focus(usize), OpenTab(usize), ReplaceRoot(usize), NewWindow }`
-    - `pub fn choose(windows: &[WindowInfo], path: &Path, is_dir: bool, target: Target) -> Choice` — quy tắc 1–4 §6.3 (index là vị trí trong slice).
-    - `pub fn file_paths(urls: &[String]) -> Vec<PathBuf>` (chuyển từ `open_requests`).
+    - `pub fn choose(windows: &[WindowInfo], path: &Path, is_dir: bool, target: Target) -> Choice` — rules 1–4 of §6.3 (index is the position in the slice).
+    - `pub fn file_paths(urls: &[String]) -> Vec<PathBuf>` (moved from `open_requests`).
   - `router.rs`:
-    - `pub struct Launch` giữ nguyên trường; thêm `pub fn Launch::for_path(path: PathBuf) -> Result<Launch, String>` (thư mục → folder; file → single file với root là cha; không tồn tại → `"path not found: …"`), thay `Resolve`.
+    - `pub struct Launch` keeps its fields; add `pub fn Launch::for_path(path: PathBuf) -> Result<Launch, String>` (folder → folder; file → single file with the parent as root; nonexistent → `"path not found: …"`), replacing `Resolve`.
     - `pub enum Source { Cli, Finder, Menu, Restore }`
     - `pub struct OpenRequest { pub paths: Vec<PathBuf>, pub target: Target, pub source: Source }`
-    - `pub fn open(request: OpenRequest, cx: &mut App) -> Result<(), String>` — canonical hoá, gọi `choose` cho từng đường dẫn, thực hiện, ghi recent, `app_menu::refresh`, (Task 10 thêm ghi `windows.json`). Lỗi gộp thành một chuỗi cho `Source::Cli`.
+    - `pub fn open(request: OpenRequest, cx: &mut App) -> Result<(), String>` — canonicalizes, calls `choose` for each path, performs it, records recent, `app_menu::refresh`, (Task 10 adds writing `windows.json`). Errors are combined into one string for `Source::Cli`.
     - `pub fn open_welcome(target: Target, cx: &mut App)`; `pub fn open_onboarding(cx: &mut App)`.
-    - `pub fn windows(cx: &App) -> Vec<(AnyWindowHandle, WindowKind)>` theo `last_active` giảm dần (dùng cho quit, session, test).
-    - Router là `Global` (tạo lười bằng `default_global` nếu chưa có, để test dựng `Workbench::new` trực tiếp vẫn chạy); `last_active` cập nhật qua `observe_window_activation` của mỗi cửa sổ router mở; `on_window_closed` bỏ mục.
-  - `Workbench`: `replace_with(Replacement, window, cx)` với `pub enum Replacement { Path(PathBuf), Welcome }` — sau `confirm_quit` gọi thẳng `router::open(.. Target::ReplaceIn(this window) ..)` hoặc `open_welcome(ReplaceIn)`; thư mục đã mở ở cửa sổ khác thì focus cửa sổ đó, không hỏi lưu (quy tắc 1 kiểm trước `confirm_quit`). `WorkbenchEvent` bị xoá.
-  - Lệnh mới `workbench.action.newWindow` ("New Window"), phím trong `default-keybindings.json`, mục menu File đầu nhóm Open, mục Dock menu (`cx.set_dock_menu`) "New Window". Chạy được không cần cửa sổ: Task 9 đăng ký handler cấp app; ở task này đăng ký như lệnh workbench + Welcome.
-  - Test hooks thay cho cũ: `#[doc(hidden)] pub fn router::open_for_test(paths: Vec<PathBuf>, target: Target, cx: &mut App)` và `router::windows`.
+    - `pub fn windows(cx: &App) -> Vec<(AnyWindowHandle, WindowKind)>` in descending `last_active` (used for quit, session, tests).
+    - Router is a `Global` (created lazily with `default_global` if absent, so tests that build `Workbench::new` directly still run); `last_active` is updated through `observe_window_activation` of every window the router opens; `on_window_closed` drops the entry.
+  - `Workbench`: `replace_with(Replacement, window, cx)` with `pub enum Replacement { Path(PathBuf), Welcome }` — after `confirm_quit` it calls `router::open(.. Target::ReplaceIn(this window) ..)` or `open_welcome(ReplaceIn)` directly; a folder already open in another window focuses that window, without asking to save (rule 1 is checked before `confirm_quit`). `WorkbenchEvent` is deleted.
+  - New command `workbench.action.newWindow` ("New Window"), key in `default-keybindings.json`, File menu item at the top of the Open group, Dock menu item (`cx.set_dock_menu`) "New Window". Works without a window: Task 9 registers the app-level handler; in this task it is registered as a workbench + Welcome command.
+  - Test hooks replacing the old ones: `#[doc(hidden)] pub fn router::open_for_test(paths: Vec<PathBuf>, target: Target, cx: &mut App)` and `router::windows`.
 
-- [ ] **Step 1: Unit test `choose`:** `choose_focuses_open_folder`, `choose_focuses_open_single_file`, `choose_deepest_root_wins` (roots `/a` và `/a/b`, file `/a/b/c.rs` → cửa sổ `/a/b`), `choose_single_file_window_is_not_a_root` (cửa sổ file `/a/x.rs`, mở `/a/y.rs`, có cửa sổ thư mục `/z` dùng gần nhất → `OpenTab(z)`), `choose_loose_file_goes_to_last_active_folder`, `choose_loose_file_reuses_welcome`, `choose_loose_file_new_window_when_none`, `choose_folder_reuses_welcome` (Welcome dùng gần nhất trong hai Welcome), `choose_new_window_still_focuses_open` (`Target::NewWindow` + thư mục đã mở → `Focus`), `choose_replace_in` (`ReplaceIn(1)` thư mục chưa mở → `ReplaceRoot(1)`), `choose_focuses_canonical_root` (caller truyền đường dẫn canonical; test xác nhận so sánh đường dẫn đúng từng thành phần, `/a/bc` không nằm trong `/a/b`).
-- [ ] **Step 2: GPUI test** (`multi_window.rs`): `open_two_folders_one_app` (hai `open_for_test` → `router::windows` có 2, cả hai `Folder`); `reopen_focuses_existing` (mở lại thư mục 1 → vẫn 2, cửa sổ 1 là `last_active` lớn nhất); `open_through_symlink_focuses` (symlink tới thư mục 1); `file_inside_b_opens_in_b` (A active, mở `b/src/x.rs` → tab ghim ở B, A không đổi); `new_window_then_pick_folder` (New Window → 3 cửa sổ, một `Welcome`; `WelcomeEvent::Open` thư mục mới trên Welcome đó → vẫn 3, mục đó thành `Folder`); `open_recent_cmd_enter_new_window`; `replace_releases_old_workbench` (giữ test W8: workbench cũ không upgrade được); `same_file_two_windows_reload` (M17: `a/x.rs` mở ở A và ở cửa sổ file riêng B; lưu ở A → B nhận thay đổi đĩa và nạp lại, như với mọi thay đổi ngoài).
+- [ ] **Step 1: Unit tests for `choose`:** `choose_focuses_open_folder`, `choose_focuses_open_single_file`, `choose_deepest_root_wins` (roots `/a` and `/a/b`, file `/a/b/c.rs` → window `/a/b`), `choose_single_file_window_is_not_a_root` (a file window `/a/x.rs`, open `/a/y.rs`, there is a folder window `/z` used most recently → `OpenTab(z)`), `choose_loose_file_goes_to_last_active_folder`, `choose_loose_file_reuses_welcome`, `choose_loose_file_new_window_when_none`, `choose_folder_reuses_welcome` (the most recently used Welcome of two Welcomes), `choose_new_window_still_focuses_open` (`Target::NewWindow` + an already open folder → `Focus`), `choose_replace_in` (`ReplaceIn(1)` a folder not yet open → `ReplaceRoot(1)`), `choose_focuses_canonical_root` (the caller passes a canonical path; the test confirms the path comparison is component by component, `/a/bc` is not inside `/a/b`).
+- [ ] **Step 2: GPUI tests** (`multi_window.rs`): `open_two_folders_one_app` (two `open_for_test` → `router::windows` has 2, both `Folder`); `reopen_focuses_existing` (reopen folder 1 → still 2, window 1 has the largest `last_active`); `open_through_symlink_focuses` (a symlink to folder 1); `file_inside_b_opens_in_b` (A active, open `b/src/x.rs` → pinned tab in B, A unchanged); `new_window_then_pick_folder` (New Window → 3 windows, one `Welcome`; `WelcomeEvent::Open` of a new folder on that Welcome → still 3, that entry becomes `Folder`); `open_recent_cmd_enter_new_window`; `replace_releases_old_workbench` (keep test W8: the old workbench cannot upgrade); `same_file_two_windows_reload` (M17: `a/x.rs` open in A and in a lone-file window B; saving in A → B receives the disk change and reloads, like any external change).
 - [ ] **Step 3:** FAIL.
-- [ ] **Step 4:** Cài đặt; xoá `process.rs`, `open_requests.rs`, `Spawner`; bật phần `process::spawn` của test kiến trúc (Task 6).
+- [ ] **Step 4:** Implement; delete `process.rs`, `open_requests.rs`, `Spawner`; turn on the `process::spawn` part of the architecture test (Task 6).
 - [ ] **Step 5:** `cargo test -p lucerna-workbench` → PASS; `cargo build -p lucerna`.
 - [ ] **Step 6: Commit** `workbench: one router for every window; New Window; no more processes per window`.
 
-### Task 8: `status_message` theo cửa sổ
+### Task 8: Per-window `status_message`
 
 **Files:**
-- Modify: `status_message.rs` và 27 caller (`grep -rn "status_message::show"`), status bar đọc `current`
-- Test: `tests/multi_window.rs`, sửa test đang dùng `status_message::` (13 chỗ)
+- Modify: `status_message.rs` and 27 callers (`grep -rn "status_message::show"`), the status bar reads `current`
+- Test: `tests/multi_window.rs`, fix the tests that use `status_message::` (13 places)
 
 **Interfaces:**
-- Produces: `pub fn show(window: WindowId, text: impl Into<SharedString>, cx: &mut App)`; `pub fn current(window: WindowId, cx: &App) -> Option<SharedString>`; `observe` giữ nguyên chữ ký. Map `WindowId → (text, generation)`; mục bị bỏ khi cửa sổ đóng (router gọi `status_message::forget(window, cx)`). Caller trong workbench dùng `window.window_handle().window_id()`; caller không có `Window` (router) truyền cửa sổ đích; không có cửa sổ thì ghi log thay vì hiện.
+- Produces: `pub fn show(window: WindowId, text: impl Into<SharedString>, cx: &mut App)`; `pub fn current(window: WindowId, cx: &App) -> Option<SharedString>`; `observe` keeps its signature. A map `WindowId → (text, generation)`; the entry is dropped when the window closes (the router calls `status_message::forget(window, cx)`). Callers in the workbench use `window.window_handle().window_id()`; callers without a `Window` (the router) pass the target window; with no window, log instead of showing.
 
-- [ ] **Step 1: Test** `status_message_stays_in_window`: `show(a, "hi")` → `current(a) == Some("hi")`, `current(b) == None`; status bar của B không render "hi".
-- [ ] **Step 2:** FAIL. **Step 3:** Cài đặt. **Step 4:** PASS toàn crate.
+- [ ] **Step 1: Test** `status_message_stays_in_window`: `show(a, "hi")` → `current(a) == Some("hi")`, `current(b) == None`; B's status bar does not render "hi".
+- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS the whole crate.
 - [ ] **Step 5: Commit** `workbench: status messages belong to their window`.
 
-### Task 9: Thoát, đóng cửa sổ cuối, Dock, action cấp app
+### Task 9: Quit, closing the last window, Dock, app-level actions
 
 **Files:**
-- Modify: `app.rs` (`start`: bỏ observer quit; `run`: `application().with_quit_mode(QuitMode::Default)`, `on_reopen` → `router::open_welcome(Target::NewWindow)`), `workbench.rs::quit` (sắp theo `router::windows`, chịu cửa sổ đóng giữa chừng), `app_menu.rs` (handler cấp app cho M10 khi không có cửa sổ; trạng thái bật/tắt mục khi không có cửa sổ)
+- Modify: `app.rs` (`start`: remove the quit observer; `run`: `application().with_quit_mode(QuitMode::Default)`, `on_reopen` → `router::open_welcome(Target::NewWindow)`), `workbench.rs::quit` (sorted by `router::windows`, tolerates a window closing midway), `app_menu.rs` (app-level handler for M10 when there is no window; enabled/disabled state of items when there is no window)
 - Test: `tests/multi_window.rs`, `tests/app_menu.rs`
 
 **Interfaces:**
 - Consumes: `router::windows`, `router::open`, `router::open_welcome` (Task 7).
-- Produces: `pub(crate) fn quit(cx: &mut App)` giữ tên; Task 10 thêm bước ghi `windows.json` đồng bộ ngay trước `cx.quit()` (để móc `session::save_now(cx)` ở đúng chỗ đó, task này để comment chỗ móc).
-- Hành vi không cửa sổ (M10): `workbench.action.newWindow` → Welcome mới; `workbench.action.files.openFileFolder`/`openFolder`/`openFile` → hộp chọn của app (`cx.prompt_for_paths`) rồi `router::open(Target::NewWindow, Source::Menu)`; mục Open Recent của menu (`OpenRecentEntry`) → `router::open(Target::Auto)`; `workbench.action.openSettingsJson`/`openGlobalKeybindingsFile` (id có trong `config_files::register_commands`) → `router::open` file user ở `Target::NewWindow`; About như nay; Quit như nay.
+- Produces: `pub(crate) fn quit(cx: &mut App)` keeps its name; Task 10 adds a step writing `windows.json` synchronously right before `cx.quit()` (so hook `session::save_now(cx)` at exactly that place; this task leaves a comment at the hook spot).
+- Behavior with no window (M10): `workbench.action.newWindow` → a new Welcome; `workbench.action.files.openFileFolder`/`openFolder`/`openFile` → the app's picker (`cx.prompt_for_paths`) then `router::open(Target::NewWindow, Source::Menu)`; the menu's Open Recent item (`OpenRecentEntry`) → `router::open(Target::Auto)`; `workbench.action.openSettingsJson`/`openGlobalKeybindingsFile` (ids present in `config_files::register_commands`) → `router::open` the user file with `Target::NewWindow`; About as today; Quit as today.
 
-- [ ] **Step 1: Test:** `quit_cancel_in_second_window_keeps_all` (hai cửa sổ có file bẩn; Quit; cửa sổ dùng gần nhất hỏi trước — `simulate_prompt_answer` "Don't Save" ở nó, "Cancel" ở cửa sổ kia → không thoát, hai cửa sổ còn); `quit_dont_save_both_quits` (dùng cờ test: thay `cx.quit` bằng hook ghi nhận, vì `TestPlatform::quit` là no-op); `quit_survives_window_closed_during_prompt` (đang hỏi ở A thì đóng B bằng `remove_window` → không panic; trả lời A → thoát); `close_last_window_keeps_app` (`QuitMode::Explicit` trong test; đóng hết → app vẫn còn, `router::windows` rỗng, menu: mục New Window bật, mục cần workbench tắt); `menu_open_folder_without_window` (`simulate_path_prompt_response` → một cửa sổ thư mục mới); `reopen_opens_welcome` (gọi hàm handler `app::on_reopen_for_test(cx)` → một Welcome).
-- [ ] **Step 2:** FAIL. **Step 3:** Cài đặt. **Step 4:** PASS toàn crate.
+- [ ] **Step 1: Tests:** `quit_cancel_in_second_window_keeps_all` (two windows with dirty files; Quit; the most recently used window asks first — `simulate_prompt_answer` "Don't Save" in it, "Cancel" in the other window → no quit, both windows remain); `quit_dont_save_both_quits` (use a test flag: replace `cx.quit` with a recording hook, because `TestPlatform::quit` is a no-op); `quit_survives_window_closed_during_prompt` (while asking in A, close B with `remove_window` → no panic; answer A → quit); `close_last_window_keeps_app` (`QuitMode::Explicit` in the test; close all → the app remains, `router::windows` is empty, menu: the New Window item is enabled, items needing a workbench are disabled); `menu_open_folder_without_window` (`simulate_path_prompt_response` → one new folder window); `reopen_opens_welcome` (call the handler function `app::on_reopen_for_test(cx)` → one Welcome).
+- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS the whole crate.
 - [ ] **Step 5: Commit** `workbench: quit asks every window, the app outlives its last window on macOS, Dock reopens Welcome`.
 
-### Task 10: `windows.json`, `window.restoreWindows: "all"`, hàng đợi khi restore
+### Task 10: `windows.json`, `window.restoreWindows: "all"`, queue during restore
 
 **Files:**
 - Create: `session.rs`
-- Modify: `startup.rs` (`restores_last_workspace` → `restore_windows`), `app.rs::first_screen` và `open_without_folder`, `router.rs` (ghi session sau mỗi thay đổi; cờ `restoring`, hàng đợi), `workbench.rs::quit` (ghi đồng bộ), `crates/lucerna-settings/assets/default-settings.json` (`"window.restoreWindows": "all"`), `docs/superpowers/specs/2026-11-15-restore-last-workspace-design.md` (ghi chú: thay bởi spec nhiều cửa sổ)
+- Modify: `startup.rs` (`restores_last_workspace` → `restore_windows`), `app.rs::first_screen` and `open_without_folder`, `router.rs` (write the session after every change; flag `restoring`, queue), `workbench.rs::quit` (synchronous write), `crates/lucerna-settings/assets/default-settings.json` (`"window.restoreWindows": "all"`), `docs/superpowers/specs/2026-11-15-restore-last-workspace-design.md` (note: replaced by the multi-window spec)
 - Test: `session.rs` (unit), `app.rs` tests (`first_screen_*`), `tests/multi_window.rs`
 
 **Interfaces:**
 - Produces:
-  - `pub struct SessionWindow { pub kind: RecentKind, pub path: PathBuf }` (dùng `RecentKind::{Folder, File}` có sẵn); `pub struct Session { pub windows: Vec<SessionWindow> }` (dùng gần nhất trước).
-  - `pub fn session_path(data_dir: &Path) -> PathBuf` (`windows.json`); `pub fn load(path: &Path) -> Session` (thiếu/hỏng/`version` ≠ 1 → rỗng, log); `pub fn save(path: &Path, session: &Session) -> io::Result<()>` (ghi nguyên tử, tên tạm theo pid như `recent.rs`).
-  - `pub enum RestoreWindows { Preserve, All, Folders, One, None }`; `pub fn restore_windows(settings: &SettingsStore) -> RestoreWindows` (giá trị lạ → `All`).
-  - `pub fn to_restore(session: &Session, mode: RestoreWindows, exists: impl Fn(&Path) -> bool) -> Vec<SessionWindow>` (đã lọc, thứ tự dùng gần nhất trước).
-  - `StartupScreen::Restore(Vec<SessionWindow>)` thay `Restore(PathBuf)`; danh sách rỗng → fallback `recent.json` như cũ (một mục) trừ `None`.
-  - `router::save_session(cx)` (nền) và `session::save_now(cx)` (đồng bộ, gọi trong `quit`).
-  - Khởi động có đường dẫn: `Preserve` mở lại rồi mở đường dẫn; khác chỉ mở đường dẫn.
+  - `pub struct SessionWindow { pub kind: RecentKind, pub path: PathBuf }` (uses the existing `RecentKind::{Folder, File}`); `pub struct Session { pub windows: Vec<SessionWindow> }` (most recently used first).
+  - `pub fn session_path(data_dir: &Path) -> PathBuf` (`windows.json`); `pub fn load(path: &Path) -> Session` (missing/corrupt/`version` ≠ 1 → empty, log); `pub fn save(path: &Path, session: &Session) -> io::Result<()>` (atomic write, temp name by pid like `recent.rs`).
+  - `pub enum RestoreWindows { Preserve, All, Folders, One, None }`; `pub fn restore_windows(settings: &SettingsStore) -> RestoreWindows` (unknown value → `All`).
+  - `pub fn to_restore(session: &Session, mode: RestoreWindows, exists: impl Fn(&Path) -> bool) -> Vec<SessionWindow>` (filtered, most recently used first).
+  - `StartupScreen::Restore(Vec<SessionWindow>)` replaces `Restore(PathBuf)`; an empty list → fall back to `recent.json` as before (one entry) except `None`.
+  - `router::save_session(cx)` (background) and `session::save_now(cx)` (synchronous, called in `quit`).
+  - Startup with a path: `Preserve` reopens and then opens the path; the others only open the path.
 
-- [ ] **Step 1: Unit test:** `session_round_trip`; `session_load_corrupt_is_empty` (rác, `{"version":2}`, thiếu file); `to_restore_all_skips_missing`; `to_restore_folders_only`; `to_restore_one_takes_first`; `to_restore_none_is_empty`; `restore_windows_default_is_all` (với `SettingsStore::with_defaults()`); `first_screen_restores_all_windows`; `first_screen_empty_session_falls_back_to_recent`; `first_screen_none_ignores_session`.
-- [ ] **Step 2: GPUI test:** `session_follows_open_and_close` (mở 2 → file có 2 theo thứ tự dùng gần nhất; đóng 1 → còn 1; Welcome không vào file); `restore_opens_in_reverse_order` (session 3 mục, 1 đã xoá → 2 cửa sổ, cửa sổ dùng gần nhất có `last_active` lớn nhất sau restore); `requests_wait_for_restore` (đặt `restoring`, `router::open` thư mục nằm trong session → xếp hàng; restore xong → không có cửa sổ trùng, đúng một cửa sổ cho thư mục đó).
-- [ ] **Step 3:** FAIL. **Step 4:** Cài đặt. **Step 5:** PASS toàn crate.
+- [ ] **Step 1: Unit tests:** `session_round_trip`; `session_load_corrupt_is_empty` (garbage, `{"version":2}`, missing file); `to_restore_all_skips_missing`; `to_restore_folders_only`; `to_restore_one_takes_first`; `to_restore_none_is_empty`; `restore_windows_default_is_all` (with `SettingsStore::with_defaults()`); `first_screen_restores_all_windows`; `first_screen_empty_session_falls_back_to_recent`; `first_screen_none_ignores_session`.
+- [ ] **Step 2: GPUI tests:** `session_follows_open_and_close` (open 2 → the file has 2 in most-recently-used order; close 1 → 1 left; Welcome does not go into the file); `restore_opens_in_reverse_order` (a session with 3 entries, 1 already deleted → 2 windows, the most recently used window has the largest `last_active` after restore); `requests_wait_for_restore` (set `restoring`, `router::open` a folder that is in the session → queued; after restore finishes → no duplicate window, exactly one window for that folder).
+- [ ] **Step 3:** FAIL. **Step 4:** Implement. **Step 5:** PASS the whole crate.
 - [ ] **Step 6: Commit** `workbench: remember open windows and reopen them all at startup`.
 
-### Task 11: `luc` qua socket, tách khỏi terminal, `--foreground`
+### Task 11: `luc` over a socket, detached from the terminal, `--foreground`
 
 **Files:**
 - Create: `crates/lucerna-workbench/src/cli_socket.rs`, `crates/lucerna/src/launch.rs`
-- Modify: `crates/lucerna/src/main.rs`, `crates/lucerna/src/lib.rs`, `app.rs::run` (nhận listener), `router.rs` (kênh yêu cầu CLI, trả lời), `bench/compare/editors.py` (thêm `--foreground` khi `editor == "lucerna"`), `scripts/bundle-app.sh` (comment shim: `luc` tự tách khỏi terminal), `bench/compare/multiwindow.py` (mode after)
+- Modify: `crates/lucerna/src/main.rs`, `crates/lucerna/src/lib.rs`, `app.rs::run` (takes a listener), `router.rs` (CLI request channel, reply), `bench/compare/editors.py` (add `--foreground` when `editor == "lucerna"`), `scripts/bundle-app.sh` (shim comment: `luc` detaches from the terminal itself), `bench/compare/multiwindow.py` (mode after)
 - Test: `cli_socket.rs` (unit), `crates/lucerna/tests/cli_socket.rs` (`#[ignore]`), `bench/compare/tests`
 
 **Interfaces:**
@@ -284,45 +284,45 @@
   - `cli_socket.rs` (`#[cfg(unix)]`):
     - `pub const PROTOCOL_VERSION: u32 = 1;`
     - `#[derive(Serialize, Deserialize)] pub struct CliRequest { pub version: u32, pub cwd: PathBuf, pub paths: Vec<PathBuf>, #[serde(default)] pub new_window: bool }`; `pub struct CliReply { pub ok: bool, #[serde(default)] pub error: Option<String> }`.
-    - `pub fn socket_path(data_dir: &Path) -> PathBuf` — `luc-<ver>[-dev].sock`; nếu `as_os_str().len() > 100` thì `std::env::temp_dir().join(format!("lucerna-{:016x}.sock", hash(data_dir)))`.
-    - `pub enum Claim { Server(UnixListener), Client(UnixStream), Unavailable(io::Error) }`; `pub fn claim(path: &Path) -> Claim` — bind; `EADDRINUSE` → connect (timeout 1 s) → `Client`; connect `ECONNREFUSED` → xoá file, bind lại một lần.
+    - `pub fn socket_path(data_dir: &Path) -> PathBuf` — `luc-<ver>[-dev].sock`; if `as_os_str().len() > 100` then `std::env::temp_dir().join(format!("lucerna-{:016x}.sock", hash(data_dir)))`.
+    - `pub enum Claim { Server(UnixListener), Client(UnixStream), Unavailable(io::Error) }`; `pub fn claim(path: &Path) -> Claim` — bind; `EADDRINUSE` → connect (timeout 1 s) → `Client`; connect `ECONNREFUSED` → delete the file, bind again once.
     - `pub fn send(stream: UnixStream, request: &CliRequest, timeout: Duration) -> Result<CliReply, String>`.
-    - `pub fn serve(listener: UnixListener, tx: futures::channel::mpsc::UnboundedSender<(CliRequest, futures::channel::oneshot::Sender<CliReply>)>)` — chạy trên `std::thread`.
-  - `app::run(launch: Option<Launch>, listener: Option<UnixListener>)` (bỏ `Resolve`). Router nhận từ kênh, gọi `router::open(Source::Cli, Target::Auto)` (`paths` rỗng → `[cwd]`), trả `CliReply`; `version > PROTOCOL_VERSION` → `ok:false`, `error:"this Lucerna is older than luc; update Lucerna"`. Thoát app xoá file socket (`on_app_quit`).
-  - `crates/lucerna/src/launch.rs`: `pub fn spawn_detached(exe: &Path, args: &[OsString], cwd: &Path) -> io::Result<()>` — `Command` + `pre_exec(libc::setsid)`, stdio `/dev/null`, không đợi (thread reap như `process.rs` cũ). `pub fn send_with_retry(path: &Path, request: &CliRequest, total: Duration) -> Result<CliReply, String>` (thử nối mỗi 50 ms tới 10 s).
-  - `main.rs`: thêm `#[arg(long, hide = true)] foreground: bool`; `--trace-startup` bật `foreground`. Luồng: parse → `ext`/`lsp` như cũ → resolve đường dẫn (lỗi → in, mã 1) → `claim(socket_path)`:
-    - `Client` → `send` → in lỗi/thoát mã 0 hoặc 1.
-    - `Server` và `foreground` (hoặc cwd `/` không đối số: mở từ Finder/Dock) → `app::run(.., Some(listener))`.
-    - `Server` và không `foreground` → thả listener (xoá file), `spawn_detached(current_exe, ["--foreground", <path>], cwd)`, `send_with_retry`; trả mã theo trả lời (hết giờ: in "Lucerna is starting; could not confirm the window opened", mã 1).
-    - `Unavailable` → cảnh báo stderr, `app::run(.., None)` tại chỗ.
+    - `pub fn serve(listener: UnixListener, tx: futures::channel::mpsc::UnboundedSender<(CliRequest, futures::channel::oneshot::Sender<CliReply>)>)` — runs on a `std::thread`.
+  - `app::run(launch: Option<Launch>, listener: Option<UnixListener>)` (drop `Resolve`). The router receives from the channel, calls `router::open(Source::Cli, Target::Auto)` (`paths` empty → `[cwd]`), returns `CliReply`; `version > PROTOCOL_VERSION` → `ok:false`, `error:"this Lucerna is older than luc; update Lucerna"`. Quitting the app deletes the socket file (`on_app_quit`).
+  - `crates/lucerna/src/launch.rs`: `pub fn spawn_detached(exe: &Path, args: &[OsString], cwd: &Path) -> io::Result<()>` — `Command` + `pre_exec(libc::setsid)`, stdio `/dev/null`, does not wait (a reap thread like the old `process.rs`). `pub fn send_with_retry(path: &Path, request: &CliRequest, total: Duration) -> Result<CliReply, String>` (try connecting every 50 ms up to 10 s).
+  - `main.rs`: add `#[arg(long, hide = true)] foreground: bool`; `--trace-startup` turns on `foreground`. Flow: parse → `ext`/`lsp` as before → resolve the path (error → print, exit code 1) → `claim(socket_path)`:
+    - `Client` → `send` → print the error/exit with code 0 or 1.
+    - `Server` and `foreground` (or cwd `/` with no arguments: opened from Finder/Dock) → `app::run(.., Some(listener))`.
+    - `Server` and not `foreground` → drop the listener (delete the file), `spawn_detached(current_exe, ["--foreground", <path>], cwd)`, `send_with_retry`; return the code per the reply (timeout: print "Lucerna is starting; could not confirm the window opened", code 1).
+    - `Unavailable` → warn on stderr, `app::run(.., None)` in place.
 
-- [ ] **Step 1: Unit test** (`cli_socket.rs`, socket trong `tempfile::tempdir`): `claim_first_is_server`; `claim_second_caller_becomes_client` (server đang nghe → `Client`); `claim_stale_socket_rebinds` (file socket không ai nghe → `Server`); `request_round_trip` (server giả trả `ok`); `unknown_fields_ignored`; `newer_version_rejected` (hàm thuần `reply_for_version`); `long_data_dir_uses_temp` (đường dẫn > 100 byte).
-- [ ] **Step 2: Test tích hợp** `crates/lucerna/tests/cli_socket.rs` `#[ignore]`: `HOME` tạm; `luc <dir1>` thoát < 10 s, còn đúng một tiến trình `luc --foreground`; `luc <dir2>` mã 0, số tiến trình không đổi; `luc /nope` mã 1, stderr có `path not found`; kill tiến trình app cuối test.
-- [ ] **Step 3:** Unit FAIL. **Step 4:** Cài đặt. **Step 5:** `cargo test -p lucerna-workbench cli_socket` và `cargo test -p lucerna` PASS; chạy tay `cargo test -p lucerna --test cli_socket -- --ignored` trên máy có màn hình (ghi kết quả trong ledger). `python3 -m unittest discover -s bench/compare/tests -v` PASS.
+- [ ] **Step 1: Unit tests** (`cli_socket.rs`, sockets in `tempfile::tempdir`): `claim_first_is_server`; `claim_second_caller_becomes_client` (a server is listening → `Client`); `claim_stale_socket_rebinds` (a socket file nobody listens on → `Server`); `request_round_trip` (a fake server returns `ok`); `unknown_fields_ignored`; `newer_version_rejected` (pure function `reply_for_version`); `long_data_dir_uses_temp` (path > 100 bytes).
+- [ ] **Step 2: Integration test** `crates/lucerna/tests/cli_socket.rs` `#[ignore]`: temporary `HOME`; `luc <dir1>` exits in < 10 s, exactly one `luc --foreground` process remains; `luc <dir2>` code 0, the process count does not change; `luc /nope` code 1, stderr has `path not found`; kill the app process at the end of the test.
+- [ ] **Step 3:** Unit FAIL. **Step 4:** Implement. **Step 5:** `cargo test -p lucerna-workbench cli_socket` and `cargo test -p lucerna` PASS; run by hand `cargo test -p lucerna --test cli_socket -- --ignored` on a machine with a display (record the result in the ledger). `python3 -m unittest discover -s bench/compare/tests -v` PASS.
 - [ ] **Step 6: Commit** `luc: hand paths to the running app over a socket and leave the terminal`.
 
-### Task 12: Trust đồng bộ giữa cửa sổ
+### Task 12: Trust synced between windows
 
 **Files:**
-- Modify: `trust.rs` (sự kiện app-level), `workbench.rs` (nghe và đọc lại trust)
+- Modify: `trust.rs` (app-level event), `workbench.rs` (listen and re-read trust)
 - Test: `tests/multi_window.rs`, `tests/trust.rs`
 
 **Interfaces:**
-- Produces: global `TrustChanged { generation: u64 }` (hoặc `cx.observe_global::<TrustGeneration>`); cửa sổ ghi `trusted.json` xong thì tăng; mỗi `Workbench` observe, đọc lại trust của gốc mình ở luồng nền (`TrustStore` có sẵn) và gọi `trust_loaded` nếu đổi.
+- Produces: a global `TrustChanged { generation: u64 }` (or `cx.observe_global::<TrustGeneration>`); when a window finishes writing `trusted.json` it increments; every `Workbench` observes, re-reads the trust of its own root on a background thread (the existing `TrustStore`) and calls `trust_loaded` if it changed.
 
-- [ ] **Step 1: Test** `trust_in_a_reaches_b`: A gốc `/t`, B gốc `/t/sub`, cả hai chưa tin; A tin `/t` cùng thư mục cha (`parents`) → sau `run_until_parked`, `LanguageServers` của B `is_trusted()`. `trust_other_folder_leaves_b`.
-- [ ] **Step 2:** FAIL. **Step 3:** Cài đặt. **Step 4:** PASS.
+- [ ] **Step 1: Test** `trust_in_a_reaches_b`: A has root `/t`, B has root `/t/sub`, neither trusted yet; A trusts `/t` together with the parent folders (`parents`) → after `run_until_parked`, B's `LanguageServers` `is_trusted()`. `trust_other_folder_leaves_b`.
+- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5: Commit** `workbench: trusting a folder in one window updates the others`.
 
-### Task 13: Đo sau, ngưỡng, tài liệu
+### Task 13: Measure after, thresholds, docs
 
 **Files:**
-- Modify: `docs/benchmarks.md`, `bench/compare/results/multiwindow-after.json`, `docs/superpowers/specs/2026-11-12-welcome-design.md` (W1, W8, ghi "thay bởi 2026-11-15-multi-window-design.md" ở chỗ nói một tiến trình một cửa sổ), `README.md` nếu có câu về nhiều tiến trình, `crates/lucerna-workbench/src/lib.rs`/module docs nói "a process shows one window"
-- Test: không thêm
+- Modify: `docs/benchmarks.md`, `bench/compare/results/multiwindow-after.json`, `docs/superpowers/specs/2026-11-12-welcome-design.md` (W1, W8, note "replaced by 2026-11-15-multi-window-design.md" where it says one process per window), `README.md` if it has a sentence about multiple processes, `crates/lucerna-workbench/src/lib.rs`/module docs that say "a process shows one window"
+- Test: none added
 
-- [ ] **Step 1:** Dựng release ở đầu nhánh; chạy `multiwindow.py --mode after` 5 vòng; chạy `bench/compare` `startup_ms` và `idle_ram_mb` một cửa sổ (mốc: cùng lệnh ở Task 1 — nếu Task 1 chưa đo hai số này thì đo ở commit gốc trước).
-- [ ] **Step 2:** So ngưỡng §7.2. Không đạt → dừng, ghi số, báo lại (không coi là xong). Đạt → ghi bảng trước/sau vào `docs/benchmarks.md`.
-- [ ] **Step 3:** `grep -rn "one window\|own process\|a process shows" crates docs README.md` và sửa câu cũ.
-- [ ] **Step 4:** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check` → qua.
-- [ ] **Step 5: Chạy tay trên macOS** (ghi kết quả vào ledger): Dock một icon với 3 cửa sổ mở từ menu, Welcome ⌘bấm, Finder Open With, `luc` trong terminal; ⌘` đi qua cả 3; App Exposé đủ 3; ⌘Q với file bẩn hai cửa sổ; đóng hết cửa sổ rồi bấm Dock → Welcome; thoát rồi mở lại → đủ cửa sổ.
+- [ ] **Step 1:** Build release at the branch head; run `multiwindow.py --mode after` for 5 rounds; run `bench/compare` `startup_ms` and `idle_ram_mb` for one window (baseline: the same command in Task 1 — if Task 1 did not measure these two numbers, measure them at the base commit first).
+- [ ] **Step 2:** Compare against the §7.2 thresholds. Not met → stop, record the numbers, report back (do not treat it as done). Met → write the before/after table into `docs/benchmarks.md`.
+- [ ] **Step 3:** `grep -rn "one window\|own process\|a process shows" crates docs README.md` and fix the old sentences.
+- [ ] **Step 4:** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check` → pass.
+- [ ] **Step 5: Manual run on macOS** (record the result in the ledger): one Dock icon with 3 windows opened from the menu, Welcome ⌘click, Finder Open With, `luc` in the terminal; ⌘` cycles through all 3; App Exposé shows all 3; ⌘Q with dirty files in two windows; close all windows then click the Dock → Welcome; quit and reopen → all windows are back.
 - [ ] **Step 6: Commit** `docs: multi-window measurements and notes`.
