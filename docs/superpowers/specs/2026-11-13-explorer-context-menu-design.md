@@ -1,209 +1,209 @@
-# Context menu của Explorer — thiết kế
+# Explorer context menu: design
 
-Ngày: 2026-11-13. Trạng thái: đã duyệt.
+Date: 2026-11-13. Status: approved.
 
-## Ý định
+## Intent
 
-Bấm chuột phải vào một dòng trong Explorer sẽ mở một menu nhỏ. Menu có các lệnh để đọc code (mở bên cạnh, hiện trong Finder, mở terminal, tìm trong thư mục, chép đường dẫn) và các lệnh sửa cây file (tạo file hoặc thư mục, đổi tên, xóa vào Trash). Người dùng muốn làm **đủ cả hai loại**.
+Right-clicking a row in the Explorer opens a small menu. The menu has commands for reading code (open to the side, reveal in Finder, open a terminal, search in a folder, copy a path) and commands that edit the file tree (create a file or folder, rename, delete to Trash). The user wants **both kinds**.
 
-Đây là menu chuột phải đầu tiên của Lucerna. Component menu phải là component dùng chung trong `ui.rs`, để sau này menu của tab, của editor và của thanh path dùng lại được.
+This is Lucerna's first right-click menu. The menu component must be a shared component in `ui.rs`, so that the tab, editor and path-bar menus can reuse it later.
 
-## Tham khảo
+## References
 
-Phần chi tiết nằm ở `docs/research/2026-11-13-explorer-context-menu.md`. Tóm tắt:
+The details are in `docs/research/2026-11-13-explorer-context-menu.md`. Summary:
 
 - **VS Code** (`MenuId.ExplorerContext`):
-  - Chia nhóm theo thứ tự: tạo mới → mở hoặc reveal → so sánh → tìm kiếm → cắt, chép, dán → chép đường dẫn → đổi tên, xóa.
-  - Mục không áp dụng thì bị ẩn.
-  - Tạo mới và đổi tên đều nhập tên ngay trong cây.
-  - Delete đưa file vào Trash và hỏi lại trước khi xóa.
-  - Có các lệnh `explorer.newFile`, `explorer.newFolder`, `explorer.openToSide`, `revealFileInOS`, `openInTerminal`, `filesExplorer.findInFolder`, `copyFilePath`, `copyRelativeFilePath`, `renameFile`, `moveFileToTrash`, `deleteFile`.
+  - Groups in this order: create new → open or reveal → compare → search → cut, copy, paste → copy path → rename, delete.
+  - Items that do not apply are hidden.
+  - Both create and rename take the name right in the tree.
+  - Delete moves the file to the Trash and asks for confirmation first.
+  - Commands: `explorer.newFile`, `explorer.newFolder`, `explorer.openToSide`, `revealFileInOS`, `openInTerminal`, `filesExplorer.findInFolder`, `copyFilePath`, `copyRelativeFilePath`, `renameFile`, `moveFileToTrash`, `deleteFile`.
 - **Zed** (`project_panel::deploy_context_menu`, `ui::ContextMenu`):
-  - Thứ tự các mục gần như giống VS Code.
-  - Menu là một popover tự vẽ nằm ở vị trí chuột (`deferred(anchored())`). Nó có focus riêng và đi được bằng `↑↓`, `Enter`, `Esc`.
-  - Mỗi mục hiện phím tắt ở bên phải. Menu rộng tối thiểu 200 px.
-  - Mục bị tắt thì làm mờ, đường kẻ phân cách màu `border_variant`.
-  - Dòng đang mở menu được tô sáng cho tới khi menu đóng.
-  - `shift-f10` mở menu tại dòng đang chọn.
-- **Lucerna theo bên nào:**
-  - Lệnh, ID, phím, settings và hành vi theo VS Code.
-  - Giao diện menu và cách vẽ theo Zed.
-  - Lệch khỏi cả hai: "Open in Terminal" mở **terminal ngoài**, vì Lucerna không có terminal tích hợp. Đây cũng là chỗ người dùng chạy agent CLI.
+  - The item order is nearly the same as VS Code.
+  - The menu is a custom-drawn popover placed at the mouse position (`deferred(anchored())`). It has its own focus and is navigated with `↑↓`, `Enter`, `Esc`.
+  - Each item shows its shortcut on the right. The menu is at least 200 px wide.
+  - Disabled items are dimmed, and separators use the `border_variant` color.
+  - The row that opened the menu stays highlighted until the menu closes.
+  - `shift-f10` opens the menu at the selected row.
+- **Which one Lucerna follows:**
+  - Commands, IDs, keys, settings and behavior follow VS Code.
+  - Menu look and drawing follow Zed.
+  - Differs from both: "Open in Terminal" opens an **external terminal**, because Lucerna has no integrated terminal. This is also where users run CLI agents.
 
-## Mục tiêu
+## Goals
 
-1. Có component `ContextMenu` dùng chung trong `ui.rs`, vẽ theo Zed.
-2. Explorer có **dòng đang chọn** riêng, mở được menu bằng chuột phải hoặc `shift+f10`, và có các phím tắt của VS Code cho các lệnh dưới đây.
-3. Có các lệnh chỉ đọc: Open to the Side, Reveal in Finder, Open in Terminal, Find in Folder…, Copy Path, Copy Relative Path.
-4. Có các lệnh sửa: New File…, New Folder…, Rename…, Delete (đưa vào Trash), và Delete Permanently (chỉ có phím tắt, không có trong menu).
+1. A shared `ContextMenu` component in `ui.rs`, drawn after Zed.
+2. The Explorer has its own **selected row**, can open the menu with a right-click or `shift+f10`, and has the VS Code shortcuts for the commands below.
+3. Read-only commands: Open to the Side, Reveal in Finder, Open in Terminal, Find in Folder…, Copy Path, Copy Relative Path.
+4. Editing commands: New File…, New Folder…, Rename…, Delete (move to Trash), and Delete Permanently (shortcut only, not in the menu).
 
-## Không làm
+## Non-goals
 
-- Cut, Copy, Paste, Duplicate file; kéo thả; Undo/Redo thao tác file.
-- Chọn nhiều dòng. Menu luôn tác động lên đúng một dòng.
-- Đi trong cây bằng phím mũi tên. Đó là một tính năng riêng, nhưng dòng đang chọn được thiết kế để sau này dùng được cho việc đó.
-- Compare, Open With…, các mục Git, Add/Remove Folder.
-- Menu cho tab, editor và thanh path. Component sẵn sàng cho các menu này, nhưng việc làm chúng thuộc spec sau.
-- Ô "Do not ask me again" trong hộp thoại xóa. Hộp thoại native của GPUI không có checkbox, nên người dùng tắt bằng setting `explorer.confirmDelete`.
-- Submenu, mục có dấu check, header trong menu. Component không cần những thứ này lúc này.
+- Cut, Copy, Paste, Duplicate file; drag and drop; Undo/Redo of file operations.
+- Multi-row selection. The menu always acts on exactly one row.
+- Moving through the tree with the arrow keys. That is a separate feature, but the selected row is designed so it can be used for that later.
+- Compare, Open With…, the Git items, Add/Remove Folder.
+- Menus for the tab, the editor and the path bar. The component is ready for these menus, but building them belongs to a later spec.
+- A "Do not ask me again" checkbox in the delete dialog. GPUI's native dialog has no checkbox, so users turn it off with the `explorer.confirmDelete` setting.
+- Submenus, items with a check mark, headers inside the menu. The component does not need these for now.
 
-## Không được xảy ra (anti-goals)
+## Must not happen (anti-goals)
 
-- Mất dữ liệu: xóa mà không hỏi khi `explorer.confirmDelete` đang bật; xóa vĩnh viễn khi người dùng chỉ chọn Trash; ghi đè file đã có khi tạo mới hoặc đổi tên.
-- Luồng UI chờ I/O. Mọi thao tác file chạy ở luồng nền.
-- Tab của file vừa đổi tên bị mất nội dung đang sửa dở.
-- Thao tác của chính Lucerna bị đánh dấu là "thay đổi từ bên ngoài" trong Explorer (xem `2026-11-13-explorer-own-save-decoration-design.md`).
-- Menu kiểu VS Code hoặc menu native. Menu phải trông như Zed.
+- Data loss: deleting without asking while `explorer.confirmDelete` is on; deleting permanently when the user only chose Trash; overwriting an existing file when creating or renaming.
+- A UI thread that waits on I/O. Every file operation runs on a background thread.
+- The tab of a renamed file losing its unsaved edits.
+- Lucerna's own operations being marked as "changed externally" in the Explorer (see `2026-11-13-explorer-own-save-decoration-design.md`).
+- A VS Code-style or native menu. The menu must look like Zed's.
 
-## Ràng buộc
+## Constraints
 
-- Chỉ `lucerna-workbench` được dùng GPUI. Thao tác file (tạo, đổi tên, đưa vào Trash, xóa) nằm trong `lucerna-project` và có test không cần UI.
-- Xóa vào Trash dùng crate `trash` (giấy phép MIT; Zed cũng dùng). Phải chạy `cargo deny check` sau khi thêm crate.
-- Không viết code chỉ chạy trên macOS ở ngoài phần riêng cho từng nền tảng:
-  - Reveal dùng `cx.reveal_path`.
-  - Terminal ngoài chọn theo nền tảng, như ở dưới.
-  - Tên hiện cho người dùng: "Reveal in Finder" trên macOS, "Open Containing Folder" trên Linux, "Reveal in File Explorer" trên Windows (giống VS Code).
-- Không chép code của Zed vì Zed dùng giấy phép GPL. Chỉ học cách thiết kế.
+- Only `lucerna-workbench` may use GPUI. File operations (create, rename, move to Trash, delete) live in `lucerna-project` and have tests that need no UI.
+- Moving to the Trash uses the `trash` crate (MIT license; Zed uses it too). Run `cargo deny check` after adding the crate.
+- No macOS-only code outside the platform-specific parts:
+  - Reveal uses `cx.reveal_path`.
+  - The external terminal is chosen per platform, as below.
+  - The label shown to the user: "Reveal in Finder" on macOS, "Open Containing Folder" on Linux, "Reveal in File Explorer" on Windows (same as VS Code).
+- Don't copy Zed's code, because Zed is GPL. Learn the design only.
 
-## Cách làm đã cân nhắc
+## Approaches considered
 
-1. **Theo Zed: menu là entity có focus riêng, nhập tên ngay trong cây.** Đây là cách được chọn. Nó giống cả VS Code lẫn Zed, người dùng thấy file mới sẽ nằm ở đâu, và component menu dùng lại được.
-2. Giống cách 1, nhưng nhập tên trong một popover ở đầu cửa sổ, kiểu Quick Open. Bỏ vì nó lệch khỏi cả hai bên. Cách này nhẹ hơn chỉ vì không phải chèn ô nhập vào danh sách ảo hóa.
-3. Dùng menu native của hệ điều hành. Bỏ vì GPUI không hỗ trợ menu chuột phải native, và cách này không dùng lại được cho tab hay editor.
+1. **Follow Zed: the menu is an entity with its own focus, and the name is typed right in the tree.** This is the chosen approach. It matches both VS Code and Zed, the user sees where the new file will go, and the menu component is reusable.
+2. Same as approach 1, but type the name in a popover at the top of the window, Quick Open style. Dropped because it differs from both. It is lighter only because it avoids inserting an input box into the virtualized list.
+3. Use the operating system's native menu. Dropped because GPUI does not support native right-click menus, and this approach cannot be reused for tabs or the editor.
 
-Người dùng chọn cách 1. Việc này được chia làm hai phần, làm lần lượt, mỗi phần có plan riêng:
+The user chose approach 1. The work is split into two parts, done in order, each with its own plan:
 
-- **Phần 1:** component menu, dòng đang chọn, các lệnh chỉ đọc.
-- **Phần 2:** New File/Folder, Rename, Delete.
+- **Part 1:** the menu component, the selected row, the read-only commands.
+- **Part 2:** New File/Folder, Rename, Delete.
 
-## Thiết kế
+## Design
 
-### 1. Component `ContextMenu` (`ui.rs`)
+### 1. The `ContextMenu` component (`ui.rs`)
 
-**Dữ liệu.** Một entity GPUI có `FocusHandle` riêng và phát ra `DismissEvent`. Menu là một danh sách các mục, mỗi mục là một trong hai loại:
+**Data.** A GPUI entity with its own `FocusHandle` that emits `DismissEvent`. The menu is a list of items, each one of two kinds:
 
 - `Entry { label, command: &'static str, args: Option<Value>, disabled: bool }`
 - `Separator`
 
-Mục chạy lệnh theo **command ID của `CommandRegistry`**, không dùng action của GPUI. Nhờ vậy cùng một lệnh chạy được từ menu, từ phím tắt và từ Command Palette.
+An item runs a command by its **`CommandRegistry` command ID**, not a GPUI action. This way the same command runs from the menu, from a shortcut and from the Command Palette.
 
-Builder có `entry(label, command)`, `entry_with_args(...)`, `disabled_when(cond)`, `separator()`, `when(cond, f)`. Builder tự bỏ đường kẻ ở đầu menu, ở cuối menu và đường kẻ thứ hai khi hai đường kẻ liền nhau, để chỗ gọi viết `when` thoải mái.
+The builder has `entry(label, command)`, `entry_with_args(...)`, `disabled_when(cond)`, `separator()`, `when(cond, f)`. The builder drops a separator at the start of the menu, at the end of the menu, and the second of two adjacent separators, so call sites can use `when` freely.
 
-**Hiện ra.** View chủ giữ menu trong `Option<DeployedMenu { menu, position, _subscription }>`. Khi menu phát `DismissEvent`, view đặt lại thành `None`.
+**Showing.** The owning view keeps the menu in `Option<DeployedMenu { menu, position, _subscription }>`. When the menu emits `DismissEvent`, the view sets it back to `None`.
 
-Menu được vẽ bằng `deferred(anchored().position(pos).child(menu))`. `anchored` tự dời menu để không tràn ra ngoài cửa sổ, và menu cách mép cửa sổ ít nhất 8 px. Có một hàm dùng chung `deploy_context_menu(...)`, để view nào cũng mở menu bằng một lời gọi.
+The menu is drawn with `deferred(anchored().position(pos).child(menu))`. `anchored` moves the menu automatically so it does not overflow the window, and the menu stays at least 8 px from the window edge. A shared function `deploy_context_menu(...)` lets any view open a menu with a single call.
 
-**Giao diện** (theo Zed, lấy số đo của Lucerna):
+**Look** (after Zed, using Lucerna's measurements):
 
-- Khung dùng nền, viền và bóng của `popover()`, nhưng không bị giới hạn bởi `POPOVER_MAX_WIDTH`. Rộng tối thiểu 200 px. Cao tối đa 75% cửa sổ, cuộn được khi dài hơn. Padding trong `GRID`.
-- Mỗi mục cao 6 × `GRID`, padding ngang 2 × `GRID`, bo góc `GRID`. Nhãn cỡ `UI_FONT_SIZE_SMALL`, màu `text`. Phím tắt nằm bên phải, màu `text_muted`, lấy từ `keymap.label_for(command)` giống `list_button`.
-  - Hover hoặc mục đang chọn bằng phím: nền `ghost_element_hover`.
-  - Mục bị tắt: màu `text_disabled`, không có hover, bấm không chạy gì.
-- Đường kẻ phân cách: cao 1 px, màu `border_variant`, cách trên dưới `GRID`.
-- Menu chưa có icon. Chừa sẵn chỗ để thêm icon tùy chọn sau này.
+- The frame uses the background, border and shadow of `popover()`, but is not limited by `POPOVER_MAX_WIDTH`. At least 200 px wide. At most 75% of the window height, scrollable when longer. Padding in `GRID`.
+- Each item is 6 × `GRID` tall, with horizontal padding of 2 × `GRID` and a corner radius of `GRID`. The label uses `UI_FONT_SIZE_SMALL` and the `text` color. The shortcut sits on the right in `text_muted`, taken from `keymap.label_for(command)` like `list_button`.
+  - Hover or the item selected by keyboard: `ghost_element_hover` background.
+  - Disabled item: `text_disabled` color, no hover, clicking does nothing.
+- Separator: 1 px tall, `border_variant` color, `GRID` of space above and below.
+- The menu has no icons yet. Leave room to add optional icons later.
 
-**Tương tác:**
+**Interaction:**
 
-- Lúc vừa mở, chưa có mục nào được chọn. `↓` chọn mục đầu tiên, `↑` chọn mục cuối cùng. Khi di chuyển, bỏ qua đường kẻ và các mục bị tắt. Có `home` và `end`.
-- `Enter` chạy mục đang chọn. Bấm chuột trái vào một mục cũng chạy mục đó.
-- `Esc` đóng menu. Bấm chuột ra ngoài menu (cả chuột trái lẫn chuột phải) cũng đóng menu.
-- Chạy một mục thì trước hết đóng menu, trả focus về view đã mở menu, rồi mới chạy lệnh. Như vậy các lệnh cần Explorer đang có focus (như Rename) vẫn chạy đúng.
-- Khi menu đóng mà không chạy lệnh nào, focus quay về view đã mở menu. Nhưng chỉ khi menu (hoặc không gì cả) còn giữ focus, theo cách của Zed: bấm vào editor để đóng menu thì editor giữ focus, không bị Explorer lấy lại.
-- Menu đóng khi focus rời khỏi nó, ví dụ khi mở Quick Open (`cmd+p`), Command Palette (`cmd+shift+p`) hay ẩn sidebar (`cmd+b`).
-- Bấm chuột phải ở chỗ khác khi menu đang mở thì đóng menu cũ và mở menu mới.
+- When it first opens, no item is selected. `↓` selects the first item, `↑` selects the last. Moving skips separators and disabled items. `home` and `end` work.
+- `Enter` runs the selected item. A left-click on an item also runs it.
+- `Esc` closes the menu. Clicking outside the menu (left or right button) also closes it.
+- Running an item first closes the menu, returns focus to the view that opened it, and only then runs the command. This way commands that need the Explorer to have focus (such as Rename) still work.
+- When the menu closes without running a command, focus returns to the view that opened it. But only if the menu (or nothing) still holds focus, as in Zed: clicking the editor to close the menu leaves focus in the editor, and the Explorer does not take it back.
+- The menu closes when focus leaves it, for example when opening Quick Open (`cmd+p`), the Command Palette (`cmd+shift+p`) or hiding the sidebar (`cmd+b`).
+- Right-clicking elsewhere while a menu is open closes the old menu and opens a new one.
 
-**Phím trong menu do chính menu xử lý**, trong key handler riêng của menu, giống cách ô nhập của Quick Open nhận phím: `up`, `down`, `home`, `end`, `enter`, `escape`, không kèm phím bổ trợ. Phím có `cmd`, `ctrl`, `alt` hay `shift` đi tiếp ra keymap của workbench. Có context key mới `contextMenuVisible`. Khi menu đang mở, hoặc khi đang nhập tên trong cây, `filesExplorerFocus` là false, để `enter` không chạy Rename và `cmd+backspace` không xóa.
+**Keys inside the menu are handled by the menu itself**, in its own key handler, the same way the Quick Open input receives keys: `up`, `down`, `home`, `end`, `enter`, `escape`, with no modifiers. Keys with `cmd`, `ctrl`, `alt` or `shift` pass on to the workbench keymap. There is a new context key `contextMenuVisible`. While the menu is open, or while a name is being typed in the tree, `filesExplorerFocus` is false, so `enter` does not run Rename and `cmd+backspace` does not delete.
 
-### 2. Dòng đang chọn và focus của Explorer
+### 2. The selected row and Explorer focus
 
-`ExplorerModel` có thêm `selected: Option<Arc<Path>>`, là đường dẫn so với gốc. `None` nghĩa là đang chọn thư mục gốc.
+`ExplorerModel` gets `selected: Option<Arc<Path>>`, a path relative to the root. `None` means the root folder is selected.
 
-**Cập nhật:**
+**Updating:**
 
-- Bấm chuột trái vào một dòng thì chọn dòng đó, rồi làm như hiện nay (mở file, hoặc mở/đóng thư mục).
-- Bấm chuột phải vào một dòng thì chọn dòng đó và mở menu của nó.
-- Bấm chuột phải vào dòng gốc hoặc chỗ trống dưới cây thì chọn thư mục gốc và mở menu của gốc.
-- Khi tab đang mở đổi, dòng đang chọn cũng đi theo tab đó, giống VS Code. Chỉ khi `explorer.autoReveal` bật; tắt thì dòng đang chọn đứng yên.
-- Khi dòng đang chọn biến mất khỏi cây (bị xóa, hoặc thư mục cha bị đóng), chọn thư mục cha gần nhất còn hiện.
+- A left-click on a row selects that row, then does what it does today (opens the file, or expands/collapses the folder).
+- A right-click on a row selects that row and opens its menu.
+- A right-click on the root row or the empty space below the tree selects the root folder and opens the root menu.
+- When the open tab changes, the selected row follows that tab, as in VS Code. Only when `explorer.autoReveal` is on; when it is off, the selected row stays put.
+- When the selected row disappears from the tree (deleted, or its parent folder collapsed), select the nearest parent folder that is still visible.
 
-**Cách vẽ:**
+**Drawing:**
 
-- Dòng đang chọn có nền `element_selected`, thay cho cách hiện nay là tô theo tab đang mở. Bình thường hai cái trùng nhau.
-- Khi menu đang mở, dòng của menu có thêm viền 1 px màu `border_focused`, bên trong dòng, theo Zed. Viền này mất khi menu đóng.
-- Dòng gốc: hiện nay bấm vào không làm gì. Bây giờ bấm vào sẽ chọn gốc, và dòng gốc cũng được tô khi đang chọn.
+- The selected row has the `element_selected` background, replacing today's highlighting by the open tab. Normally the two coincide.
+- While a menu is open, the row that owns the menu also gets a 1 px `border_focused` border, inside the row, as in Zed. The border disappears when the menu closes.
+- The root row: clicking it does nothing today. Now clicking it selects the root, and the root row is also highlighted while selected.
 
-**Focus.** Sidebar đã có focus handle (`sidebar_focus`). Có thêm các context key sau:
+**Focus.** The sidebar already has a focus handle (`sidebar_focus`). These context keys are added:
 
-- `filesExplorerFocus` = sidebar đang có focus, sidebar đang hiện Explorer, không có context menu nào đang mở và không đang nhập tên trong cây.
-- `explorerViewletFocus` giữ nguyên, bằng `sideBarFocus`: sidebar hiện chỉ chứa Explorer (Search và Extensions đã thành tab), nên hai key trùng nghĩa.
-- `explorerResourceIsFolder` = dòng đang chọn là thư mục, hoặc là gốc.
-- `explorerResourceIsRoot` = đang chọn gốc.
+- `filesExplorerFocus` = the sidebar has focus, the sidebar is showing the Explorer, no context menu is open and no name is being typed in the tree.
+- `explorerViewletFocus` stays as is, equal to `sideBarFocus`: the sidebar now holds only the Explorer (Search and Extensions became tabs), so the two keys mean the same thing.
+- `explorerResourceIsFolder` = the selected row is a folder, or the root.
+- `explorerResourceIsRoot` = the root is selected.
 
-Tên các key theo VS Code. Bấm vào một dòng sẽ đưa focus vào sidebar. Cần kiểm tra lại điều này, vì hiện nay bấm vào dòng có thể không lấy focus.
+The key names follow VS Code. Clicking a row moves focus into the sidebar. This needs rechecking, because clicking a row may not take focus today.
 
-**Chế độ một file** (mở một file lẻ, xem `2026-11-13-single-file-open-design.md`): ở chế độ này worktree không quét và không theo dõi thư mục. Vì vậy mọi menu ở đây, kể cả bấm chuột phải vào dòng gốc hay chỗ trống, đều tác động lên **chính file đó**, không phải lên thư mục cha. Menu chỉ có Open to the Side, Reveal in Finder, Open in Terminal (mở tại thư mục cha), Copy Path và Copy Relative Path (chép tên file). Không có New File/Folder, Find in Folder, Rename hay Delete. Đây là quyết định của Claude.
+**Single-file mode** (opening a lone file, see `2026-11-13-single-file-open-design.md`): in this mode the worktree does not scan or watch a folder. So every menu here, including a right-click on the root row or the empty space, acts on **the file itself**, not on its parent folder. The menu has only Open to the Side, Reveal in Finder, Open in Terminal (opens at the parent folder), Copy Path and Copy Relative Path (copies the file name). No New File/Folder, Find in Folder, Rename or Delete. This is Claude's decision.
 
-### 3. Lệnh và menu
+### 3. Commands and menu
 
-Mọi lệnh được đăng ký trong `CommandRegistry` với ID của VS Code. Lệnh tác động lên **dòng đang chọn** của Explorer. Khi nhận `args` là `{ "path": … }` thì lệnh tác động lên đường dẫn đó, để dùng lại cho menu tab sau này. Mọi mục của menu đều mang `args.path` của dòng mở menu (gốc là `""`), nên đích của lệnh cố định từ lúc menu mở, kể cả khi dòng biến mất trong lúc menu đang mở.
+Every command is registered in `CommandRegistry` with the VS Code ID. A command acts on the Explorer's **selected row**. When it receives `args` of `{ "path": … }`, the command acts on that path instead, for reuse by the tab menu later. Every menu item carries the `args.path` of the row that opened the menu (`""` for the root), so the command's target is fixed from the moment the menu opens, even if the row disappears while the menu is open.
 
-Tên trong Command Palette: Copy Path và Copy Relative Path là "Explorer: Copy Path" và "Explorer: Copy Relative Path", vì chúng tác động lên dòng đang chọn chứ không phải file đang mở. Reveal dùng nhãn của nền tảng: "File: Reveal in Finder" (macOS), "File: Reveal in File Explorer" (Windows), "File: Open Containing Folder" (Linux).
+Names in the Command Palette: Copy Path and Copy Relative Path are "Explorer: Copy Path" and "Explorer: Copy Relative Path", because they act on the selected row, not the open file. Reveal uses the platform label: "File: Reveal in Finder" (macOS), "File: Reveal in File Explorer" (Windows), "File: Open Containing Folder" (Linux).
 
-Chạy New File, New Folder, Rename hay Open Context Menu từ Command Palette khi sidebar đang ẩn thì hiện Explorer trước (VS Code cũng focus Explorer), để ô nhập hay menu không giữ focus mà không được vẽ. Ẩn sidebar thì hủy tên đang nhập và đóng menu.
+Running New File, New Folder, Rename or Open Context Menu from the Command Palette while the sidebar is hidden shows the Explorer first (VS Code also focuses the Explorer), so the input box or menu does not hold focus without being drawn. Hiding the sidebar cancels any name being typed and closes the menu.
 
-Menu của một dòng có thứ tự như sau. Mục không áp dụng thì bị ẩn, theo VS Code. Dấu "—" là đường kẻ phân cách.
+A row's menu has the order below. Items that do not apply are hidden, as in VS Code. "—" is a separator.
 
-| Mục | ID | Hiện khi | Phím mặc định (macOS; Linux và Windows theo VS Code) | Loại |
+| Item | ID | Shown when | Default key (macOS; Linux and Windows follow VS Code) | Kind |
 |---|---|---|---|---|
-| New File… | `explorer.newFile` | thư mục hoặc gốc | — | sửa |
-| New Folder… | `explorer.newFolder` | thư mục hoặc gốc | — | sửa |
+| New File… | `explorer.newFile` | folder or root | — | edit |
+| New Folder… | `explorer.newFolder` | folder or root | — | edit |
 | — | | | | |
-| Open to the Side | `explorer.openToSide` | file | `ctrl+enter` (Linux/Windows: `ctrl+enter`) | đọc |
-| Reveal in Finder | `revealFileInOS` | luôn | `alt+cmd+r` (Linux: `ctrl+alt+r`; Windows: `shift+alt+r`) | đọc |
-| Open in Terminal | `openInTerminal` | luôn | — | đọc |
+| Open to the Side | `explorer.openToSide` | file | `ctrl+enter` (Linux/Windows: `ctrl+enter`) | read |
+| Reveal in Finder | `revealFileInOS` | always | `alt+cmd+r` (Linux: `ctrl+alt+r`; Windows: `shift+alt+r`) | read |
+| Open in Terminal | `openInTerminal` | always | — | read |
 | — | | | | |
-| Find in Folder… | `filesExplorer.findInFolder` | thư mục hoặc gốc | `alt+shift+f` | đọc |
+| Find in Folder… | `filesExplorer.findInFolder` | folder or root | `alt+shift+f` | read |
 | — | | | | |
-| Copy Path | `copyFilePath` | luôn | `alt+cmd+c` (Linux: `ctrl+alt+c`; Windows: `shift+alt+c`) | đọc |
-| Copy Relative Path | `copyRelativeFilePath` | luôn | `alt+cmd+shift+c` (Linux: `ctrl+shift+alt+c`; Windows: `ctrl+k ctrl+shift+c`) | đọc |
+| Copy Path | `copyFilePath` | always | `alt+cmd+c` (Linux: `ctrl+alt+c`; Windows: `shift+alt+c`) | read |
+| Copy Relative Path | `copyRelativeFilePath` | always | `alt+cmd+shift+c` (Linux: `ctrl+shift+alt+c`; Windows: `ctrl+k ctrl+shift+c`) | read |
 | — | | | | |
-| Rename… | `renameFile` | không phải gốc | `enter` (Linux/Windows: `f2`) | sửa |
-| Delete | `moveFileToTrash` | không phải gốc | `cmd+backspace` (Linux/Windows: `delete`) | sửa |
+| Rename… | `renameFile` | not the root | `enter` (Linux/Windows: `f2`) | edit |
+| Delete | `moveFileToTrash` | not the root | `cmd+backspace` (Linux/Windows: `delete`) | edit |
 
-Các phím khác:
+Other keys:
 
-- `deleteFile` (Delete Permanently): `alt+cmd+backspace` / `shift+delete`. Không có trong menu.
-- Mở menu bằng phím: `shift+f10`, ID `filesExplorer.openContextMenu`. Đây là đề xuất của mình, vì VS Code không có ID riêng cho việc này. Menu mở ngay dưới dòng đang chọn. Phím dùng được ở cả VS Code lẫn Zed.
+- `deleteFile` (Delete Permanently): `alt+cmd+backspace` / `shift+delete`. Not in the menu.
+- Opening the menu by key: `shift+f10`, ID `filesExplorer.openContextMenu`. This is my own proposal, because VS Code has no separate ID for this. The menu opens right below the selected row. The key works in both VS Code and Zed.
 
-Mọi phím của Explorer có điều kiện `filesExplorerFocus`. VS Code cho Reveal, Copy Path và Copy Relative Path chạy cả khi editor không có focus (`!editorFocus`), và lấy file từ tab đang mở. Lucerna hẹp lại, chỉ cho chạy trong Explorer; mở rộng ra thì để lúc làm menu tab. Thêm các điều kiện sau:
+Every Explorer key has the `filesExplorerFocus` condition. VS Code lets Reveal, Copy Path and Copy Relative Path run even when the editor does not have focus (`!editorFocus`), and takes the file from the open tab. Lucerna narrows this to run only inside the Explorer; widening it is left for when the tab menu is built. Add these conditions:
 
-- Rename và Delete: `&& !explorerResourceIsRoot`.
+- Rename and Delete: `&& !explorerResourceIsRoot`.
 - Open to the Side: `&& !explorerResourceIsFolder`.
 - Find in Folder: `&& explorerResourceIsFolder`.
-- Rename (phím `enter`): thêm `&& !textInputFocus`, để lúc đang nhập tên thì `enter` không kích hoạt Rename. Key `textInputFocus` đã có sẵn, nhưng được tính theo frame trước. Người làm phải bảo đảm ô nhập vừa nhận focus không làm `enter` lọt sang Rename, ví dụ bằng cách cho Explorer tự kiểm tra trạng thái `editing`.
+- Rename (the `enter` key): add `&& !textInputFocus`, so that while a name is being typed `enter` does not trigger Rename. The `textInputFocus` key already exists, but is computed per frame, from the previous frame. The implementer must make sure an input that has just received focus does not let `enter` slip through to Rename, for example by having the Explorer check its own `editing` state.
 
-Các phím được thêm vào `crates/lucerna-settings/assets/default-keybindings.json`.
+The keys are added to `crates/lucerna-settings/assets/default-keybindings.json`.
 
-Cách từng lệnh chạy:
+How each command runs:
 
 - **Open to the Side:** `open_path(path, OpenMode::ToSide)`.
-- **Reveal in Finder:** `cx.reveal_path(abs)`. Hàm này mở Finder và chọn sẵn file.
-- **Open in Terminal:** mở tại thư mục đó, hoặc tại thư mục chứa nếu là file. Chạy theo setting của nền tảng:
-  - macOS: `terminal.external.osxExec` (mặc định `Terminal.app`), chạy `open -a <app> <dir>`.
-  - Linux: `terminal.external.linuxExec` (mặc định là terminal của hệ, ví dụ `x-terminal-emulator`), spawn với `cwd = dir`.
-  - Windows: `terminal.external.windowsExec`, để dành cho bản Windows.
+- **Reveal in Finder:** `cx.reveal_path(abs)`. This opens Finder with the file pre-selected.
+- **Open in Terminal:** opens at that folder, or at the containing folder if it is a file. It runs according to the platform's setting:
+  - macOS: `terminal.external.osxExec` (default `Terminal.app`), runs `open -a <app> <dir>`.
+  - Linux: `terminal.external.linuxExec` (default is the system terminal, for example `x-terminal-emulator`), spawned with `cwd = dir`.
+  - Windows: `terminal.external.windowsExec`, reserved for the Windows version.
 
-  Lucerna chờ chương trình mở terminal kết thúc (ở luồng nền), giống VS Code. Nếu không chạy được hoặc nó thoát với mã khác 0 (ví dụ `open -a` với tên app sai), báo bằng `status_message`: "Couldn't open the terminal: …".
-- **Find in Folder…:** mở hoặc đưa tab Search lên trước, điền ô include bằng đường dẫn tương đối của thư mục (`src/foo`, giống VS Code; gốc thì để trống), rồi focus vào ô query.
-  - Một mẫu include không có ký tự glob là đường dẫn, và khớp cả `<đường dẫn>/**`, giống VS Code.
-  - Tên thư mục có ký tự đặc biệt thì được escape: `[ ] { } * ? ,` được bọc thành lớp ký tự (`app/[slug]` thành `app/[[]slug[]]`), `!` hay `#` ở đầu được thêm `\`, rồi thêm `/**` ở cuối.
-  - Ô include tách mẫu theo dấu phẩy, trừ dấu phẩy nằm trong `[]` hoặc `{}`, giống `splitGlobAware` của VS Code.
-- **Copy Path:** chép đường dẫn tuyệt đối vào clipboard.
-- **Copy Relative Path:** chép đường dẫn so với gốc. Ngăn cách theo `explorer.copyRelativePathSeparator`: `auto`, `/` hoặc `\`, mặc định `auto` (`/` trên macOS và Linux). Với gốc thì chép tên thư mục gốc, giống VS Code.
+  Lucerna waits for the program that opens the terminal to finish (on a background thread), like VS Code. If it cannot run or it exits with a non-zero code (for example `open -a` with a wrong app name), report it with `status_message`: "Couldn't open the terminal: …".
+- **Find in Folder…:** opens or brings the Search tab to the front, fills the include box with the folder's relative path (`src/foo`, like VS Code; leave it empty for the root), then focuses the query box.
+  - An include pattern with no glob characters is a path, and also matches `<path>/**`, like VS Code.
+  - Folder names with special characters are escaped: `[ ] { } * ? ,` are wrapped into a character class (`app/[slug]` becomes `app/[[]slug[]]`), a leading `!` or `#` gets a `\` added, then `/**` is appended.
+  - The include box splits patterns on commas, except commas inside `[]` or `{}`, like VS Code's `splitGlobAware`.
+- **Copy Path:** copies the absolute path to the clipboard.
+- **Copy Relative Path:** copies the path relative to the root. The separator follows `explorer.copyRelativePathSeparator`: `auto`, `/` or `\`, default `auto` (`/` on macOS and Linux). For the root it copies the root folder's name, like VS Code.
 
-### 4. Nhập tên ngay trong cây (New File, New Folder, Rename)
+### 4. Typing the name in the tree (New File, New Folder, Rename)
 
-`ExplorerModel` có thêm trạng thái `editing: Option<EditState>`:
+`ExplorerModel` gets an `editing: Option<EditState>` state:
 
 ```
 EditState {
@@ -214,128 +214,128 @@ EditState {
 }
 ```
 
-- **Vị trí:**
-  - New File/Folder: mở thư mục đích ra (gốc thì luôn mở sẵn), rồi chèn một **dòng ảo** làm con đầu tiên của thư mục đó. Dòng ảo có icon file hoặc thư mục và một `TextInput`.
-  - Rename: thay tên của chính dòng đó bằng `TextInput`. Ô nhập điền sẵn tên cũ, và chọn sẵn phần tên **trước đuôi cuối** (`foo.rs` thì chọn `foo`). Thư mục thì chọn cả tên.
-  - Dòng ảo vẫn nằm trong `uniform_list`, chiều cao dòng giữ nguyên `TREE_ROW_HEIGHT`. Ô nhập dùng `TextInput` của Lucerna, có viền 1 px `border_focused`, không bo góc, cao vừa dòng.
-- **Xác nhận và hủy:**
-  - `Enter` xác nhận.
-  - `Esc` hủy.
-  - Mất focus: xác nhận nếu tên hợp lệ, hủy nếu không. Đây là cách của VS Code.
-  - Trong lúc đang nhập, các phím của Explorer không chạy.
-- **Kiểm tra tên** mỗi lần gõ. Lỗi hiện ngay dưới ô nhập, trong một khung nhỏ viền `error`, nền `elevated_surface`. Khi đang có lỗi thì `Enter` không làm gì. Các lỗi:
-  - tên rỗng hoặc chỉ có khoảng trắng;
-  - bắt đầu bằng `/`;
-  - có thành phần `.` hoặc `..`;
-  - có ký tự không hợp lệ trên nền tảng hiện tại;
-  - đã có file hoặc thư mục cùng tên. Kiểm tra trên snapshot, rồi kiểm tra lại khi thực sự ghi.
+- **Position:**
+  - New File/Folder: expand the target folder (the root is always expanded), then insert a **virtual row** as that folder's first child. The virtual row has a file or folder icon and a `TextInput`.
+  - Rename: replace the row's own name with a `TextInput`. The input is pre-filled with the old name, with the part **before the last extension** preselected (for `foo.rs`, `foo` is selected). For a folder the whole name is selected.
+  - The virtual row stays inside the `uniform_list`, and the row height stays `TREE_ROW_HEIGHT`. The input uses Lucerna's `TextInput`, with a 1 px `border_focused` border, no rounded corners, and a height that fits the row.
+- **Confirm and cancel:**
+  - `Enter` confirms.
+  - `Esc` cancels.
+  - Losing focus: confirm if the name is valid, cancel if not. This is VS Code's behavior.
+  - While typing, the Explorer's keys do not run.
+- **Name validation** on every keystroke. The error appears right below the input, in a small box with an `error` border and an `elevated_surface` background. While there is an error, `Enter` does nothing. The errors:
+  - empty or whitespace-only name;
+  - starts with `/`;
+  - contains a `.` or `..` component;
+  - contains a character that is invalid on the current platform;
+  - a file or folder with the same name already exists. Checked against the snapshot, then checked again at the actual write.
 
-  Câu báo lỗi lấy theo VS Code, ví dụ: "A file or folder **x** already exists at this location. Please choose a different name."
-- **Đường dẫn nhiều cấp:** `a/b/c.rs` tạo luôn các thư mục `a` và `b` ở giữa, giống VS Code và Zed.
-- **Sau khi tạo:**
-  - File mới được mở thành tab ghim, và dòng của nó được chọn.
-  - Thư mục mới được mở ra trong cây và được chọn.
-  - Thao tác chạy ở luồng nền. Dòng mới xuất hiện khi worktree báo có thay đổi, và lúc đó Explorer chọn và cuộn tới nó.
+  The error messages follow VS Code, for example: "A file or folder **x** already exists at this location. Please choose a different name."
+- **Multi-level paths:** `a/b/c.rs` also creates the intermediate folders `a` and `b`, like VS Code and Zed.
+- **After creating:**
+  - A new file opens as a pinned tab, and its row is selected.
+  - A new folder is expanded in the tree and selected.
+  - The operation runs on a background thread. The new row appears when the worktree reports a change, and at that point the Explorer selects it and scrolls to it.
 - **Rename:**
-  - Đổi tên chỉ khác hoa thường (`readme.md` thành `README.md`) phải chạy được trên ổ không phân biệt hoa thường.
-  - Đổi tên sang tên đã có thì báo lỗi, không ghi đè.
-  - Mọi tab mở file đó, hoặc mở file nằm trong thư mục được đổi tên, chuyển sang đường dẫn mới. Tab giữ nguyên nội dung đang sửa dở, vị trí con trỏ và trạng thái ghim. Ngôn ngữ và LSP được tính lại theo tên mới.
-- **Lỗi khi ghi** (không có quyền, ổ chỉ đọc…): báo bằng `status_message`, dòng ảo đóng lại. Câu báo do Lucerna đặt: "Unable to create {file|folder} '<tên>': <lỗi>" và "Unable to rename '<tên>': <lỗi>". Nếu tên vừa bị chương trình khác chiếm sau lần kiểm tra và ô nhập còn focus, ô nhập ở lại với lỗi trùng tên.
-- **Những trường hợp biên:**
-  - Cửa sổ mất focus (chuyển sang app khác) thì ô nhập vẫn mở, không xác nhận cũng không hủy.
-  - Dòng đang nhập bị cuộn ra khỏi khung nhìn thì ô nhập vẫn giữ. Nó chỉ kết thúc khi focus thật sự chuyển đi nơi khác.
-  - Thư mục cha của dòng đang nhập biến mất (hoặc dòng đang đổi tên biến mất) thì ô nhập đóng, không tạo gì.
-  - Rename chờ các lần lưu đang chạy của tài liệu bên trong xong rồi mới đổi tên, để lần lưu không ghi lại đường dẫn cũ.
-  - Rename từ chối tên mà một tab đang mở giữ (tab của file đã bị xóa trên đĩa), để hai tab không bao giờ chung một đường dẫn.
+  - A rename that changes only the letter case (`readme.md` to `README.md`) must work on a case-insensitive disk.
+  - Renaming to a name that already exists reports an error and does not overwrite.
+  - Every tab that has that file open, or a file inside the renamed folder, moves to the new path. The tab keeps its unsaved edits, cursor position and pinned state. The language and LSP are recomputed for the new name.
+- **Write errors** (no permission, read-only disk, …): report with `status_message`, and the virtual row closes. The messages are Lucerna's own: "Unable to create {file|folder} '<name>': <error>" and "Unable to rename '<name>': <error>". If the name was just taken by another program after the check and the input still has focus, the input stays with a duplicate-name error.
+- **Edge cases:**
+  - When the window loses focus (switching to another app), the input stays open, neither confirmed nor canceled.
+  - If the row being typed in scrolls out of the viewport, the input is kept. It ends only when focus really moves elsewhere.
+  - If the parent folder of the row being typed in disappears (or the row being renamed disappears), the input closes and nothing is created.
+  - Rename waits for the in-progress saves of the documents inside to finish before renaming, so a save does not write back to the old path.
+  - Rename rejects a name that an open tab holds (the tab of a file that was deleted on disk), so two tabs never share a path.
 
 ### 5. Delete
 
 - **`moveFileToTrash`:**
-  - Nếu `explorer.confirmDelete` bật (mặc định bật), hỏi bằng `window.prompt(Warning, …)`:
-    - Tiêu đề: "Are you sure you want to delete '<tên>'?"
-    - Chi tiết: "You can restore this file from the Trash." (với thư mục: "…this folder and its contents…")
-    - Nút: `Move to Trash`, `Cancel`.
-  - Sau đó đưa vào Trash ở luồng nền. Trên macOS dùng `NSFileManager` (`trashItemAtURL`) thay cho cách mặc định của crate `trash` là nhờ Finder qua AppleScript: cách đó bật hộp thoại xin quyền điều khiển Finder, và bị từ chối thì mọi lần Delete đều lỗi.
-  - Nếu không đưa vào Trash được (ổ mạng, ổ ngoài không có Trash…), hỏi tiếp: "Unable to move '<tên>' to the Trash. Do you want to permanently delete instead?" với chi tiết "This action is irreversible!" kèm lỗi của hệ điều hành, và nút `Delete Permanently`, `Cancel`. Đây là cách VS Code làm.
-- **`deleteFile`:** luôn hỏi, không phụ thuộc setting: "Are you sure you want to permanently delete '<tên>'?" với chi tiết "This action is irreversible!". Rồi xóa bằng `std::fs::remove_file` hoặc `remove_dir_all`.
-- **Trong lúc xóa:**
-  - Giữ phím Delete không xóa tiếp các dòng kế bên: lệnh Delete thứ hai cho cùng đường dẫn (hoặc đường dẫn bên trong, bên ngoài nó) bị bỏ qua khi lệnh trước chưa xong.
-  - Xóa chờ các lần lưu đang chạy của tài liệu bên trong xong rồi mới chạy, để lần lưu không ghi file trở lại.
-  - Lỗi khi xóa báo bằng `status_message`: "Unable to delete '<tên>': <lỗi>" (câu do Lucerna đặt).
-- **Sau khi xóa:**
-  - Tab của file bị xóa, hoặc của file nằm trong thư mục bị xóa, sẽ đóng nếu chưa sửa.
-  - Tab đang có sửa dở thì giữ lại, ở trạng thái "đã bị xóa" như hiện nay (`DocState::Deleted`). VS Code hỏi riêng khi xóa file đang sửa dở; Lucerna không hỏi thêm.
-  - Dòng đang chọn chuyển sang dòng kế tiếp cùng cấp, không có thì dòng trước, không có nữa thì thư mục cha. VS Code cũng focus một dòng bên cạnh. Dòng này được tính trước khi xóa, vì watcher có thể báo dòng đã mất trước khi lệnh xóa trả kết quả.
-- **Không đánh dấu thao tác của mình:** mọi đường dẫn mà Lucerna vừa tạo, đổi tên hoặc xóa đều được bỏ qua khi Explorer đánh dấu "thay đổi từ bên ngoài". Cơ chế của thao tác lưu (`documents.follows_disk`) chỉ áp dụng cho tài liệu đang mở, nên phải có thêm một danh sách riêng các đường dẫn Lucerna đang chờ thấy thay đổi. Mỗi đường dẫn bị xóa khỏi danh sách khi worktree báo nó được thêm hoặc sửa, và chậm nhất sau một thời hạn ngắn (5 giây). Báo "đã xóa" không làm bỏ đường dẫn, vì đường dẫn cũ của Rename hay Delete được báo như vậy.
+  - If `explorer.confirmDelete` is on (the default), ask with `window.prompt(Warning, …)`:
+    - Title: "Are you sure you want to delete '<name>'?"
+    - Detail: "You can restore this file from the Trash." (for a folder: "…this folder and its contents…")
+    - Buttons: `Move to Trash`, `Cancel`.
+  - Then move it to the Trash on a background thread. On macOS this uses `NSFileManager` (`trashItemAtURL`) instead of the `trash` crate's default of asking Finder through AppleScript: that approach pops up a permission dialog for controlling Finder, and if it is denied every Delete fails.
+  - If it cannot be moved to the Trash (network drive, external drive without a Trash…), ask again: "Unable to move '<name>' to the Trash. Do you want to permanently delete instead?" with the detail "This action is irreversible!" plus the operating system's error, and buttons `Delete Permanently`, `Cancel`. This is how VS Code does it.
+- **`deleteFile`:** always asks, regardless of the setting: "Are you sure you want to permanently delete '<name>'?" with the detail "This action is irreversible!". Then it deletes with `std::fs::remove_file` or `remove_dir_all`.
+- **While deleting:**
+  - Holding the Delete key does not delete the neighboring rows one after another: a second Delete command for the same path (or a path inside it, or containing it) is ignored while the earlier one is not finished.
+  - Delete waits for the in-progress saves of the documents inside to finish before running, so a save does not write the file back.
+  - A delete error is reported with `status_message`: "Unable to delete '<name>': <error>" (Lucerna's own message).
+- **After deleting:**
+  - The tab of the deleted file, or of a file inside the deleted folder, closes if it has no unsaved edits.
+  - A tab with unsaved edits is kept, in the "deleted" state as it is today (`DocState::Deleted`). VS Code asks separately when deleting a file with unsaved edits; Lucerna does not ask again.
+  - The selected row moves to the next sibling, or the previous one if there is none, or the parent folder if there is neither. VS Code also focuses a neighboring row. This row is computed before the delete, because the watcher may report the row as gone before the delete command returns its result.
+- **Not marking its own operations:** every path that Lucerna just created, renamed or deleted is skipped when the Explorer marks "changed externally". The save mechanism (`documents.follows_disk`) applies only to open documents, so there must also be a separate list of paths that Lucerna is waiting to see change. Each path is removed from the list when the worktree reports it added or modified, and at the latest after a short deadline (5 seconds). A "removed" report does not drop the path, because the old path of a Rename or Delete is reported that way.
 
-### 6. Settings mới
+### 6. New settings
 
-Tên, mặc định và ngữ nghĩa theo VS Code:
+Names, defaults and semantics follow VS Code:
 
-| Key | Mặc định | Ghi chú |
+| Key | Default | Notes |
 |---|---|---|
 | `explorer.confirmDelete` | `true` | |
 | `explorer.copyRelativePathSeparator` | `"auto"` | `"/"`, `"\\"`, `"auto"` |
 | `terminal.external.osxExec` | `"Terminal.app"` | |
-| `terminal.external.linuxExec` | `"x-terminal-emulator"` | VS Code dò theo môi trường desktop, Lucerna lấy một giá trị cố định |
-| `terminal.external.windowsExec` | `"cmd.exe"` | để dành cho bản Windows |
+| `terminal.external.linuxExec` | `"x-terminal-emulator"` | VS Code detects it from the desktop environment, Lucerna uses a fixed value |
+| `terminal.external.windowsExec` | `"cmd.exe"` | reserved for the Windows version |
 
-### 7. Phần phụ cần thêm
+### 7. Side additions needed
 
-- **Theme:** `UiColors` chưa có `text_disabled` và `border_focused`. Thêm hai trường này, đọc từ khóa `text.disabled` và `border.focused` trong theme kiểu Zed. Nếu theme không có thì lấy `text_muted` và `border`.
-- **`TextInput`:** thêm API để đặt vùng chọn (`set_selection(range)`), để Rename chọn sẵn phần tên trước đuôi file.
+- **Theme:** `UiColors` does not yet have `text_disabled` and `border_focused`. Add these two fields, read from the keys `text.disabled` and `border.focused` in a Zed-style theme. If the theme does not have them, use `text_muted` and `border`.
+- **`TextInput`:** add an API to set the selection (`set_selection(range)`), so Rename can preselect the part of the name before the file extension.
 
-### 8. Test
+### 8. Tests
 
 - `lucerna-project`:
-  - tạo file hoặc thư mục, kể cả đường dẫn nhiều cấp;
-  - từ chối khi tên đã có;
-  - đổi tên, kể cả chỉ đổi hoa thường;
-  - đưa vào Trash (test chạy trên thư mục tạm; nếu môi trường CI không có Trash thì test hành vi khi lỗi);
-  - xóa vĩnh viễn;
-  - kiểm tra tên hợp lệ (hàm thuần).
+  - create a file or folder, including multi-level paths;
+  - reject when the name already exists;
+  - rename, including a case-only change;
+  - move to the Trash (the test runs on a temp folder; if the CI environment has no Trash, test the failure behavior);
+  - permanent delete;
+  - name validity checks (a pure function).
 - `ContextMenu`:
-  - builder bỏ đúng các đường kẻ thừa;
-  - `↑` `↓` bỏ qua đường kẻ và mục bị tắt;
-  - `Enter` chạy lệnh và đóng menu;
-  - `Esc` hoặc bấm ra ngoài thì đóng menu và trả focus;
-  - phím tắt hiện đúng.
-- Explorer (test GPUI có `debug_selector`):
-  - chuột phải chọn dòng và mở đúng bộ mục cho file, cho thư mục và cho gốc;
-  - viền của dòng đang mở menu;
+  - the builder drops exactly the redundant separators;
+  - `↑` `↓` skip separators and disabled items;
+  - `Enter` runs the command and closes the menu;
+  - `Esc` or a click outside closes the menu and returns focus;
+  - shortcuts display correctly.
+- Explorer (GPUI tests with `debug_selector`):
+  - right-click selects the row and opens the correct set of items for a file, a folder and the root;
+  - the border of the row that owns the menu;
   - `shift+f10`;
-  - mỗi lệnh chỉ đọc gọi đúng API;
-  - New File: dòng ảo, lỗi trùng tên, `Enter` tạo và mở tab, `Esc` hủy;
-  - Rename chọn sẵn phần tên, tab đổi theo đường dẫn mới;
-  - Delete: hỏi lại, đóng tab chưa sửa, giữ tab đang sửa dở;
-  - thao tác của Lucerna không bị đánh dấu là thay đổi từ bên ngoài.
-- Kiểm tra giao diện so với Zed theo §1.1 của design-principles: chạy app đặt cạnh Zed và so khoảng cách, chiều cao, màu nền, viền, hover của menu và ô nhập.
+  - each read-only command calls the right API;
+  - New File: the virtual row, duplicate-name error, `Enter` creates and opens a tab, `Esc` cancels;
+  - Rename preselects the name part, the tab follows the new path;
+  - Delete: asks again, closes a tab with no edits, keeps a tab with unsaved edits;
+  - Lucerna's own operations are not marked as external changes.
+- Check the look against Zed per §1.1 of design-principles: run the app next to Zed and compare the menu's and input's spacing, height, background color, border and hover.
 
-## Để người làm quyết
+## Left to the implementer
 
-- Kiểu dữ liệu cụ thể của `ContextMenu`, của builder và của `EditState`; chia file trong `explorer/`.
-- Cách đưa dòng ảo vào danh sách của `uniform_list`.
-- Cách dời tab sang đường dẫn mới trong `documents.rs` và `editor_groups` (đổi key, đóng mở lại LSP).
-- Cách báo cho Explorer bỏ qua đường dẫn của chính mình: dùng lại hoặc mở rộng cơ chế của own-save.
-- Test cụ thể và tên của test.
-- Ranh giới giữa phần 1 và phần 2 trong plan, miễn là phần 1 tự chạy được.
+- The concrete data types of `ContextMenu`, the builder and `EditState`; how to split files in `explorer/`.
+- How to put the virtual row into the `uniform_list`.
+- How to move a tab to a new path in `documents.rs` and `editor_groups` (change the key, close and reopen the LSP).
+- How to tell the Explorer to skip its own paths: reuse or extend the own-save mechanism.
+- The specific tests and their names.
+- The boundary between part 1 and part 2 in the plan, as long as part 1 can run on its own.
 
-## Quyết định của Claude (người dùng xem lại khi duyệt)
+## Claude's decisions (the user reviews them when approving)
 
-- Bộ lệnh và thứ tự ở §3, gồm cả Find in Folder…. Bỏ Cut/Copy/Paste/Duplicate, chọn nhiều dòng, kéo thả, Undo.
-- Open in Terminal mở terminal ngoài, vì Lucerna không có terminal tích hợp.
-- Có Delete Permanently (`deleteFile`), nhưng chỉ bằng phím tắt, không có trong menu.
-- `shift+f10` mở menu bằng phím, dùng ID `filesExplorer.openContextMenu`.
-- Dòng đang chọn đi theo tab đang mở. Chưa làm đi trong cây bằng phím mũi tên.
-- Phím trong menu do key handler của menu xử lý, có `contextMenuVisible`; `filesExplorerFocus` tắt khi menu đang mở hoặc đang nhập tên. Menu đóng khi focus rời khỏi nó, và chỉ trả focus về Explorer khi menu còn giữ focus.
-- `explorerViewletFocus` giữ nguyên bằng `sideBarFocus`, vì sidebar chỉ chứa Explorer.
-- Dòng đang chọn đi theo tab đang mở chỉ khi `explorer.autoReveal` bật.
-- Lệnh sửa cây và Open Context Menu chạy khi sidebar ẩn thì hiện Explorer trước; ẩn sidebar thì hủy tên đang nhập và đóng menu.
-- Find in Folder escape ký tự glob và dấu phẩy trong tên thư mục; ô include không tách dấu phẩy trong `[]` và `{}`.
-- Open in Terminal chờ chương trình mở terminal và báo lỗi khi nó thoát với mã khác 0.
-- Các câu báo lỗi Lucerna tự đặt: "Unable to create {file|folder} '<tên>': <lỗi>", "Unable to rename '<tên>': <lỗi>", "Unable to delete '<tên>': <lỗi>".
-- Sau khi xóa thì chọn dòng kế tiếp, rồi dòng trước, rồi thư mục cha (thay cho "thư mục cha" ban đầu).
-- Tab đang sửa dở của file bị xóa được giữ lại mà không hỏi thêm, khác VS Code.
-- Trên macOS, Trash dùng `NSFileManager`, không nhờ Finder.
-- Ở chế độ một file, menu chỉ tác động lên file đó và chỉ có các lệnh chỉ đọc.
-- Fallback màu: `text_disabled` lấy `text_muted`, `border_focused` lấy `border`.
+- The set of commands and the order in §3, including Find in Folder…. Cut/Copy/Paste/Duplicate, multi-row selection, drag and drop and Undo are left out.
+- Open in Terminal opens an external terminal, because Lucerna has no integrated terminal.
+- There is Delete Permanently (`deleteFile`), but only as a shortcut, not in the menu.
+- `shift+f10` opens the menu by key, using the ID `filesExplorer.openContextMenu`.
+- The selected row follows the open tab. Moving through the tree with the arrow keys is not built yet.
+- Keys inside the menu are handled by the menu's key handler, with `contextMenuVisible`; `filesExplorerFocus` is off while the menu is open or a name is being typed. The menu closes when focus leaves it, and returns focus to the Explorer only when the menu still holds focus.
+- `explorerViewletFocus` stays equal to `sideBarFocus`, because the sidebar holds only the Explorer.
+- The selected row follows the open tab only when `explorer.autoReveal` is on.
+- Tree-editing commands and Open Context Menu, when run with the sidebar hidden, show the Explorer first; hiding the sidebar cancels any name being typed and closes the menu.
+- Find in Folder escapes glob characters and commas in folder names; the include box does not split on commas inside `[]` and `{}`.
+- Open in Terminal waits for the program that opens the terminal and reports an error when it exits with a non-zero code.
+- The error messages Lucerna wrote itself: "Unable to create {file|folder} '<name>': <error>", "Unable to rename '<name>': <error>", "Unable to delete '<name>': <error>".
+- After a delete, select the next sibling, then the previous one, then the parent folder (replacing the original "parent folder").
+- The unsaved tab of a deleted file is kept without asking again, unlike VS Code.
+- On macOS, the Trash uses `NSFileManager`, not Finder.
+- In single-file mode, the menu acts only on that file and has only the read-only commands.
+- Color fallback: `text_disabled` falls back to `text_muted`, `border_focused` falls back to `border`.

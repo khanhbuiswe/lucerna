@@ -1,479 +1,521 @@
-# Markdown preview — thiết kế
+# Markdown preview: design
 
-Ngày: 2026-11-13. Trạng thái: đã duyệt.
+Date: 2026-11-13. Status: approved.
 
-## 1. Ý định
+## 1. Intent
 
-Người dùng Lucerna để agent viết code, và agent viết rất nhiều `.md`: README,
-plan, spec, ghi chú. Đọc những file đó ở dạng mã nguồn thì mệt: bảng thành
-dãy `|`, task list thành `- [ ]`, ảnh chỉ là đường dẫn. Lucerna cần một
-preview markdown **vẽ bằng GPUI** để đọc chúng, cập nhật ngay khi agent ghi
-lại file.
+Lucerna users let agents write the code, and agents write a lot of `.md`:
+READMEs, plans, specs, notes. Reading those files as source is tiring: tables
+turn into rows of `|`, task lists into `- [ ]`, images are just paths. Lucerna
+needs a markdown preview **drawn with GPUI** to read them, updating as soon as
+the agent rewrites the file.
 
-Vì đọc là việc chính (`design-principles.md` §3), file `.md` **mặc định mở
-ra preview**. Mã nguồn chỉ cách một phím (⌘⇧V). Ai muốn như VS Code thì tắt
-bằng setting.
+Because reading is the main activity (`design-principles.md` §3), `.md` files
+**open as a preview by default**. The source is one key away (⌘⇧V). Anyone who
+wants it like VS Code turns it off with a setting.
 
-Thành công: mở một spec 2000 dòng do agent viết, đọc được ngay với bảng,
-task list và ảnh; agent ghi đè file thì preview đổi theo trong vòng chưa
-tới nửa giây mà không mất chỗ đang đọc; binary tăng không quá vài trăm KB.
+Success: open a 2000-line spec written by an agent and read it right away with
+its tables, task lists and images; when the agent overwrites the file, the
+preview follows within half a second without losing the reader's place; the
+binary grows by no more than a few hundred KB.
 
-## 2. Mục tiêu, không làm, phản mục tiêu
+## 2. Goals, non-goals, anti-goals
 
-**Mục tiêu**
-- Mở preview tại chỗ (thay tab nguồn) hoặc ở nhóm bên cạnh.
-- File `.md` mở mặc định ra preview, trừ khi nhảy tới một dòng cụ thể.
-- Tự cập nhật khi buffer đổi: gõ phím, undo, và file bị ghi đè trên đĩa.
-- Hiển thị: heading, đoạn, nhấn mạnh, gạch ngang, code inline, code block
-  có tô màu, danh sách (có thứ tự, bắt đầu từ số bất kỳ), task list, trích
-  dẫn, đường kẻ, bảng (có căn lề), ảnh local, link.
-- Cuộn đồng bộ hai chiều với editor của cùng file.
-- Lệnh "Open in Browser" cho file `.html`/`.htm`.
+**Goals**
+- Open the preview in place (replacing the source tab) or in the group beside it.
+- A `.md` file opens as a preview by default, unless jumping to a specific line.
+- Updates itself when the buffer changes: typing, undo, and the file being
+  overwritten on disk.
+- Display: headings, paragraphs, emphasis, strikethrough, inline code,
+  highlighted code blocks, lists (ordered, starting from any number), task
+  lists, blockquotes, rules, tables (with alignment), local images, links.
+- Two-way synchronized scrolling with the editor of the same file.
+- An "Open in Browser" command for `.html`/`.htm` files.
 
-**Không làm (bản này)**
-- Preview HTML (xem §4.3).
-- Ảnh `http(s)` (cần HTTP client cho gpui; hiện alt text).
-- Mermaid, công thức toán, footnote, raw HTML trong markdown (raw HTML bị
-  bỏ qua như hover hiện nay), front matter dạng bảng (front matter bị ẩn).
-- Preview "locked" (`markdown.showLockedPreviewToSide`,
-  `markdown.preview.toggleLock`), bấm checkbox để sửa file, tìm trong
-  preview (⌘F), chọn và copy văn bản trong preview, `markdown.styles`.
+**Non-goals (this version)**
+- HTML preview (see §4.3).
+- `http(s)` images (needs an HTTP client for gpui; the alt text is shown).
+- Mermaid, math formulas, footnotes, raw HTML in markdown (raw HTML is
+  ignored, as hover does today), table-style front matter (front matter is
+  hidden).
+- A "locked" preview (`markdown.showLockedPreviewToSide`,
+  `markdown.preview.toggleLock`), clicking a checkbox to edit the file,
+  search in the preview (⌘F), selecting and copying text in the preview,
+  `markdown.styles`.
 
-**Phản mục tiêu** (tính năng chạy được nhưng vẫn là thất bại nếu):
-- Binary tăng hơn 500 KB, hoặc thêm một crate mới vào `Cargo.lock`.
-- Luồng UI đứng khi file lớn đổi liên tục (agent đang ghi).
-- Preview nhảy về đầu trang mỗi khi file đổi.
-- Kéo webview vào.
+**Anti-goals** (the feature works but is still a failure if):
+- The binary grows by more than 500 KB, or a new crate is added to `Cargo.lock`.
+- The UI thread stalls when a large file changes continuously (the agent is writing).
+- The preview jumps back to the top every time the file changes.
+- A webview gets pulled in.
 
-## 3. Tham khảo
+## 3. References
 
-Chi tiết ở `docs/research/2026-11-13-markdown-preview.md`. Tóm tắt:
+Details are in `docs/research/2026-11-13-markdown-preview.md`. Summary:
 
-| Mặt | VS Code | Zed | Lucerna |
+| Aspect | VS Code | Zed | Lucerna |
 |---|---|---|---|
-| Render | webview + markdown-it | phần tử GPUI, pulldown-cmark, parse nền | **Zed** (GPUI, pulldown-cmark, parse nền) |
-| Phím | ⌘⇧V `markdown.togglePreview` (tại chỗ, bấm lại về nguồn), ⌘K V `showPreviewToSide` | ⌘⇧V mở / trong preview đóng, ⌘K V bên cạnh | **VS Code** |
-| Nút | editor title, Alt = tại chỗ | icon Eye trên toolbar pane, Alt = split | **Zed** (icon trên thanh đường dẫn), hành vi bấm theo VS Code |
-| Preview bên cạnh | dynamic: đi theo editor md active | lệnh Follow riêng | **VS Code** (dynamic) |
-| Mở md ra preview | `workbench.editorAssociations` (mặc định tắt) | `open_markdown_files_in_preview` (mặc định tắt) | key của **VS Code**, **mặc định bật** (lệch, §4.1) |
-| Cập nhật | throttle 300 ms | debounce 200 ms qua buffer | qua buffer, 200 ms |
-| Đồng bộ | theo vị trí cuộn, hai chiều, nội suy theo dòng | theo con trỏ và click | **VS Code** (theo cuộn) |
-| Dựng tài liệu | DOM | một phần tử cho cả tài liệu | `gpui::list`, mỗi khối gốc một item (hơn Zed về hiệu năng) |
-| Task list | không có trong core | checkbox bấm được | checkbox chỉ hiển thị |
-| Ảnh | trong workspace hoặc thư mục file | tương đối theo file, `/x` theo worktree | như Zed, giới hạn như VS Code |
+| Rendering | webview + markdown-it | GPUI elements, pulldown-cmark, background parse | **Zed** (GPUI, pulldown-cmark, background parse) |
+| Keys | ⌘⇧V `markdown.togglePreview` (in place, press again to return to source), ⌘K V `showPreviewToSide` | ⌘⇧V opens / closes inside the preview, ⌘K V to the side | **VS Code** |
+| Button | editor title, Alt = in place | Eye icon on the pane toolbar, Alt = split | **Zed** (icon on the path bar), click behavior follows VS Code |
+| Preview to the side | dynamic: follows the active md editor | a separate Follow command | **VS Code** (dynamic) |
+| Opening md as preview | `workbench.editorAssociations` (off by default) | `open_markdown_files_in_preview` (off by default) | **VS Code**'s key, **on by default** (a deviation, §4.1) |
+| Updating | throttle 300 ms | debounce 200 ms via the buffer | via the buffer, 200 ms |
+| Sync | by scroll position, two-way, interpolated by line | by cursor and click | **VS Code** (by scroll) |
+| Building the document | DOM | one element for the whole document | `gpui::list`, one item per root block (better than Zed for performance) |
+| Task list | not in core | clickable checkbox | display-only checkbox |
+| Images | in the workspace or the file's folder | relative to the file, `/x` relative to the worktree | like Zed, with VS Code's limits |
 
-## 4. Quyết định
+## 4. Decisions
 
-### 4.1 Mở `.md` mặc định ra preview
+### 4.1 Open `.md` as a preview by default
 
-Dùng setting của VS Code `workbench.editorAssociations` (object glob →
-editor id). Lucerna chỉ hiểu một editor id: `vscode.markdown.preview.editor`
-và id đặc biệt `default` (mã nguồn). Giá trị mặc định của Lucerna:
+Uses VS Code's `workbench.editorAssociations` setting (an object of glob →
+editor id). Lucerna understands only one editor id:
+`vscode.markdown.preview.editor` and the special id `default` (source).
+Lucerna's default value:
 
 ```json
 "workbench.editorAssociations": { "*.md": "vscode.markdown.preview.editor", "*.markdown": "vscode.markdown.preview.editor" }
 ```
 
-Glob khớp theo tên file (không có `/`) hoặc theo đường dẫn tuyệt đối (có
-`/`), như VS Code. Người dùng xóa key hoặc đặt `"*.md": "default"` để quay
-về mã nguồn.
+The glob matches by file name (no `/`) or by absolute path (with `/`), like
+VS Code. The user deletes the key or sets `"*.md": "default"` to go back to
+the source.
 
-Lệch VS Code (mặc định của VS Code là rỗng) vì người dùng Lucerna đọc
-markdown nhiều hơn sửa.
+This deviates from VS Code (whose default is empty) because Lucerna users read
+markdown more than they edit it.
 
-Cách mở nào đi đâu:
+Which way of opening goes where:
 
-| Cách mở | Kết quả với file khớp association |
+| Way of opening | Result for a file matching the association |
 |---|---|
-| Click trong Explorer, ⌘P (không có `:dòng`), Open Recent, `luc file.md`, khôi phục phiên, Open File… | preview |
-| Kết quả Search, Go to Definition, References, diagnostics, ⌘P có `:dòng`, link `file#L10`, Go Back/Forward | mã nguồn (cần đúng dòng) |
+| Click in the Explorer, ⌘P (no `:line`), Open Recent, `luc file.md`, session restore, Open File… | preview |
+| Search results, Go to Definition, References, diagnostics, ⌘P with `:line`, link `file#L10`, Go Back/Forward | source (the exact line is needed) |
 
-Quy tắc trong code: `open_path_at` hiện gọi `open_path`, và Go Back
-(`Workbench::navigate`) gọi `open_path` rồi `go_to_and_scroll_when_opened`.
-Vì vậy tách hai lối vào: một hàm mở **mã nguồn** (dùng bởi `open_path_at`,
-`jump_to`, `navigate` và mọi chỗ có điểm đến), và `open_path` (không điểm)
-tra association rồi gọi hàm kia hoặc mở preview. Preview tab (chữ nghiêng,
-`workbench.editor.enablePreview`) áp dụng y như tab file.
+Rule in code: `open_path_at` currently calls `open_path`, and Go Back
+(`Workbench::navigate`) calls `open_path` and then
+`go_to_and_scroll_when_opened`. So split two entry points: one function that
+opens the **source** (used by `open_path_at`, `jump_to`, `navigate` and every
+place that has a destination), and `open_path` (no destination), which looks
+up the association and then calls that function or opens the preview. A
+preview tab (italic, `workbench.editor.enablePreview`) applies just like a
+file tab.
 
-**File đã mở sẵn trong nhóm** (theo VS Code: dùng lại editor đã mở):
-- Mở không có điểm: nếu nhóm đã có tab mã nguồn hoặc preview tĩnh của file
-  thì kích hoạt tab đó (ưu tiên tab đang active, rồi tab dùng gần nhất), không
-  tạo tab mới. Chưa có thì theo association.
-- Mở có điểm: dùng tab mã nguồn của file nếu nhóm đã có; chưa có thì mở tab
-  mã nguồn mới. Preview tĩnh đang mở của file đó giữ nguyên.
+**A file already open in the group** (VS Code: reuse the editor already open):
+- Opening with no destination: if the group already has a source tab or a
+  static preview of the file, activate that tab (prefer the active tab, then
+  the most recently used one), and do not create a new tab. If there is none,
+  follow the association.
+- Opening with a destination: use the file's source tab if the group already
+  has one; if not, open a new source tab. A static preview of that file that
+  is already open is left as it is.
 
-**Preview là một tab của file.** `Tab::path()` trả về đường dẫn cho cả
-`MarkdownPreview`, nên preview tham gia mọi chỗ đang dựa vào nó: chấm
-"chưa lưu", lời hỏi lưu khi đóng tab cuối của file chưa lưu, ghim tự động
-preview tab của file chưa lưu, `disk_bar`, Explorer làm nổi bật, recent
-files. ⌘S và auto-save khi preview có focus lưu buffer của file đó.
-Preview hiển thị buffer, kể cả phần chưa lưu. Đóng tab mã nguồn cuối của
-file chưa lưu mà preview của file còn mở thì **không** hỏi (file vẫn còn
-tab), giống đóng một trong hai tab mã nguồn của cùng file hôm nay. Preview
-dynamic thì không tính là tab của file (nó đổi file liên tục): `path()`
-trả `None`, không chấm, không hỏi lưu.
+**The preview is a tab of the file.** `Tab::path()` returns the path for
+`MarkdownPreview` too, so the preview takes part everywhere that relies on it:
+the "unsaved" dot, the save prompt when closing the last tab of an unsaved
+file, automatic pinning of the preview tab of an unsaved file, `disk_bar`,
+Explorer highlighting, recent files. ⌘S and auto-save while the preview has
+focus save that file's buffer. The preview shows the buffer, including the
+unsaved part. Closing the last source tab of an unsaved file while the file's
+preview is still open does **not** prompt (the file still has a tab), the same
+as closing one of two source tabs of the same file today. A dynamic preview
+does not count as a tab of the file (it keeps changing files): `path()`
+returns `None`, no dot, no save prompt.
 
-### 4.2 Lệnh, phím, nút
+### 4.2 Commands, keys, buttons
 
-Lệnh (ID của VS Code, có trong command palette):
+Commands (VS Code IDs, available in the command palette):
 
-| Lệnh | Tiêu đề | Làm gì |
+| Command | Title | What it does |
 |---|---|---|
-| `markdown.togglePreview` | Markdown: Toggle Preview | Đang ở mã nguồn md → thay tab đó bằng preview tại chỗ. Đang ở preview tại chỗ → thay bằng mã nguồn. Đang ở preview bên cạnh → mở mã nguồn của file đó trong nhóm này. |
-| `markdown.showPreview` | Markdown: Open Preview | Mở preview tại chỗ (không đổi lại). |
-| `markdown.showPreviewToSide` | Markdown: Open Preview to the Side | Mở (hoặc dùng lại) preview dynamic ở nhóm bên phải; tạo nhóm nếu chưa có. Focus ở lại editor. |
-| `markdown.showSource` | Markdown: Show Source | Từ preview, mở mã nguồn tại chỗ. |
-| `markdown.preview.refresh` | Markdown: Refresh Preview | Parse lại. |
+| `markdown.togglePreview` | Markdown: Toggle Preview | In an md source: replace that tab with a preview in place. In an in-place preview: replace it with the source. In a side preview: open that file's source in this group. |
+| `markdown.showPreview` | Markdown: Open Preview | Open a preview in place (no toggling back). |
+| `markdown.showPreviewToSide` | Markdown: Open Preview to the Side | Open (or reuse) the dynamic preview in the group to the right; create the group if there is none. Focus stays in the editor. |
+| `markdown.showSource` | Markdown: Show Source | From a preview, open the source in place. |
+| `markdown.preview.refresh` | Markdown: Refresh Preview | Parse again. |
 | `workbench.action.openInBrowser` | Open in Browser | §4.3. |
 
-Phím mặc định (thêm vào `default-keybindings.json`):
+Default keys (added to `default-keybindings.json`):
 
 ```json
 { "key": "cmd+shift+v", "command": "markdown.togglePreview", "when": "editorLangId == markdown || activeEditor == 'markdownPreview'" },
 { "key": "cmd+k v", "command": "markdown.showPreviewToSide", "when": "editorLangId == markdown" }
 ```
 
-Context key mới `activeEditor` (giá trị `markdownPreview` khi tab active là
-preview, tĩnh hay dynamic). Hôm nay `editorLangId` lấy từ `CodeView` active
-hoặc `tab.path()`; cần sửa để khi preview active, `editorLangId` là
-`markdown` (ngôn ngữ của file đang xem trước) và `resourceExtname` là đuôi
-file đó, để ⌘K V chạy từ preview. `when.rs` đã có `||`, `==` và chuỗi
-trong nháy.
+A new context key `activeEditor` (value `markdownPreview` when the active tab
+is a preview, static or dynamic). Today `editorLangId` comes from the active
+`CodeView` or `tab.path()`; this needs fixing so that when a preview is
+active, `editorLangId` is `markdown` (the language of the file being
+previewed) and `resourceExtname` is that file's extension, so that ⌘K V works
+from the preview. `when.rs` already has `||`, `==` and quoted strings.
 
-Phím trong preview (focus ở preview): ↑/↓ cuộn một dòng chữ, PageUp/Down,
-Space/Shift+Space một trang, Home/End hoặc ⌘↑/⌘↓ đầu/cuối, như cuộn trong
-editor. Vim mode không áp dụng vào preview (bản này).
+Keys in the preview (with focus in the preview): ↑/↓ scroll one line of text,
+PageUp/Down, Space/Shift+Space one page, Home/End or ⌘↑/⌘↓ to the start/end,
+like scrolling in the editor. Vim mode does not apply to the preview (this
+version).
 
-**Nút** (UI theo Zed): thanh đường dẫn (path bar, dưới thanh tab) có một
-`icon_button` ở mép phải:
-- Tab mã nguồn `.md`: icon Lucide `eye` (chưa có trong
-  `crates/lucerna-workbench/assets/icons`: lấy `eye.svg` từ repo Lucide,
-  thêm vào `icons.rs` như các icon khác), tooltip "Open Preview to the Side
-  (⌘K V)". Bấm → `showPreviewToSide`; Alt+bấm → `togglePreview` (như VS Code
-  `navigation@1`, Alt = tại chỗ).
-- Tab preview: icon Lucide `file-code`, tooltip "Show Source (⌘⇧V)". Bấm →
+**Button** (UI after Zed): the path bar (below the tab bar) has an
+`icon_button` at the right edge:
+- A `.md` source tab: Lucide icon `eye` (not yet in
+  `crates/lucerna-workbench/assets/icons`: take `eye.svg` from the Lucide
+  repo and add it to `icons.rs` like the other icons), tooltip "Open Preview
+  to the Side (⌘K V)". Click → `showPreviewToSide`; Alt+click →
+  `togglePreview` (like VS Code `navigation@1`, Alt = in place).
+- A preview tab: Lucide icon `file-code`, tooltip "Show Source (⌘⇧V)". Click →
   `togglePreview`.
 
-### 4.3 HTML: chỉ "Open in Browser"
+### 4.3 HTML: only "Open in Browser"
 
-Không có preview HTML. Lệnh `workbench.action.openInBrowser` ("Open in
-Browser") mở file đang active bằng trình duyệt mặc định (`cx.open_url` với
-`file://` URL). Lệnh chỉ hiện trong palette khi tab active là file
-`.html`/`.htm` (`resourceExtname`), không gán phím. File chưa lưu thì mở
-bản trên đĩa (ghi chú trong tooltip/palette không cần).
+There is no HTML preview. The command `workbench.action.openInBrowser` ("Open
+in Browser") opens the active file in the default browser (`cx.open_url` with
+a `file://` URL). The command shows in the palette only when the active tab is
+an `.html`/`.htm` file (`resourceExtname`), with no key bound. For an unsaved
+file it opens the version on disk (no note needed in the tooltip/palette).
 
-Lý do không làm preview HTML bằng webview (`wry` / WKWebView):
-- Phải gắn một cửa sổ native vào cây view GPUI: z-order, focus, cắt khung
-  khi cuộn hay chia nhóm đều phải tự xử lý.
-- Linux cần WebKitGTK, Windows cần WebView2: thêm dependency hệ thống cho
-  mỗi nền tảng, trái với việc Lucerna sẽ ra Linux và Windows.
-- Mỗi webview tốn thêm khoảng 50–100 MB RAM, gấp nhiều lần cả editor.
-- Trình duyệt của người dùng đã làm việc này tốt hơn, kể cả DevTools.
+Why we do not build an HTML preview with a webview (`wry` / WKWebView):
+- A native window would have to be attached to the GPUI view tree: z-order,
+  focus, clipping when scrolling or splitting groups all have to be handled
+  ourselves.
+- Linux needs WebKitGTK and Windows needs WebView2: a system dependency per
+  platform, contrary to Lucerna going to Linux and Windows.
+- Each webview costs an extra 50–100 MB of RAM, several times the whole editor.
+- The user's browser already does this better, DevTools included.
 
-VS Code và Zed cũng không có preview HTML dựng sẵn.
+VS Code and Zed also have no built-in HTML preview.
 
-### 4.4 Preview tại chỗ và preview bên cạnh
+### 4.4 In-place preview and side preview
 
-Hai loại tab mới trong `TabItem`:
+Two new kinds of tab in `TabItem`:
 
-- `MarkdownPreview(Arc<Path>)`: preview **tĩnh** của một file. Do
-  association, `togglePreview` hay `showPreview` tạo ra. Tiêu đề tab: tên
-  file (`README.md`), icon là icon `eye` thay cho icon file. Mỗi nhóm có
-  tối đa một tab như vậy cho một đường dẫn; có thể cùng tồn tại với tab mã
-  nguồn của cùng file. Có thể là preview tab (nghiêng). Không phải
+- `MarkdownPreview(Arc<Path>)`: a **static** preview of one file. Created by
+  an association, `togglePreview` or `showPreview`. Tab title: the file name
+  (`README.md`), and the icon is the `eye` icon instead of the file icon.
+  Each group has at most one such tab per path; it can coexist with the
+  source tab of the same file. It can be a preview tab (italic). It is not a
   singleton.
-- `MarkdownPreviewDynamic`: preview **đi theo** editor markdown active,
-  tạo bởi `showPreviewToSide`. Tiêu đề: `Preview README.md`. Tối đa một
-  trong toàn cửa sổ (singleton): gọi lại thì đổi file và kích hoạt tab đó.
-  Khi tab active của nhóm khác là mã nguồn hoặc preview tĩnh của một file
-  markdown khác, preview dynamic chuyển sang file đó, giữ vị trí tương ứng
-  với editor (cuộn đồng bộ). Tab không phải markdown thì nó giữ nguyên.
+- `MarkdownPreviewDynamic`: a preview that **follows** the active markdown
+  editor, created by `showPreviewToSide`. Title: `Preview README.md`. At most
+  one in the whole window (a singleton): calling it again changes the file
+  and activates that tab. When the active tab of another group is the source
+  or a static preview of a different markdown file, the dynamic preview
+  switches to that file, keeping its position matched to the editor
+  (synchronized scrolling). A non-markdown tab leaves it unchanged.
 
-`togglePreview` thay tab tại chỗ: tab mới đứng đúng vị trí tab cũ, giữ trạng
-thái ghim. Vị trí đọc được giữ qua lần đổi: preview mở ra cuộn tới chỗ ứng
-với dòng trên cùng của editor, và ngược lại (dùng ánh xạ ở §5.4).
+`togglePreview` replaces the tab in place: the new tab sits exactly where the
+old tab was, and keeps the pinned state. The reading position is kept across
+the switch: the preview opens scrolled to the place matching the editor's top
+line, and vice versa (using the mapping in §5.4).
 
-Trạng thái phiên (`workspace_state`): lưu như các tab đặc biệt khác, chuỗi
-tương đối `lucerna:markdown-preview:<đường dẫn tuyệt đối>` và
-`lucerna:markdown-preview-dynamic:<đường dẫn tuyệt đối>`. Khôi phục mở lại
-đúng loại tab; file không còn thì bỏ tab.
+Session state (`workspace_state`): saved like the other special tabs, as the
+relative strings `lucerna:markdown-preview:<absolute path>` and
+`lucerna:markdown-preview-dynamic:<absolute path>`. Restoring reopens the
+right kind of tab; if the file no longer exists, the tab is dropped.
 
-### 4.5 Cuộn đồng bộ
+### 4.5 Synchronized scrolling
 
-Theo VS Code, hai setting (mặc định `true`):
-- `markdown.preview.scrollPreviewWithEditor`: cuộn editor → preview cuộn.
-- `markdown.preview.scrollEditorWithPreview`: cuộn preview → editor cuộn.
+Following VS Code, two settings (default `true`):
+- `markdown.preview.scrollPreviewWithEditor`: scroll the editor → the preview scrolls.
+- `markdown.preview.scrollEditorWithPreview`: scroll the preview → the editor scrolls.
 
-Chỉ áp dụng giữa preview và editor **đang hiện** của cùng file ở nhóm khác
-(trường hợp ⌘K V). Preview tại chỗ không có editor hiện cùng lúc nên chỉ
-dùng ánh xạ khi đổi qua lại (§4.4).
+They apply only between the preview and the **visible** editor of the same
+file in another group (the ⌘K V case). An in-place preview has no editor
+showing at the same time, so it uses the mapping only when switching back and
+forth (§4.4).
 
-`markdown.preview.doubleClickToSwitchToEditor` (Lucerna mặc định `true`;
-VS Code bản mới mặc định `false`): double-click một khối trong preview →
-mở mã nguồn tại dòng đầu của khối đó (tại chỗ nếu preview là tĩnh; ở nhóm
-có editor của file nếu là dynamic, không có thì tại chỗ). Lệch VS Code vì
-với preview mặc định, đây là cách nhanh nhất để sửa đúng chỗ đang đọc.
+`markdown.preview.doubleClickToSwitchToEditor` (Lucerna default `true`;
+newer VS Code defaults to `false`): double-clicking a block in the preview →
+opens the source at that block's first line (in place if the preview is
+static; in the group that has the file's editor if it is dynamic, in place if
+there is none). This deviates from VS Code because, with the preview as the
+default, it is the fastest way to edit exactly where you are reading.
 
-`markdown.preview.markEditorSelection` không làm bản này.
+`markdown.preview.markEditorSelection` is not built in this version.
 
-### 4.6 Kiểu chữ và bố cục
+### 4.6 Typography and layout
 
-Theo Zed về giao diện: nền `editor_background`, chữ UI (`UI_FONT_FAMILY`),
-code dùng font editor. Nội dung căn giữa, rộng tối đa 800 px, padding
-ngang 32 px, dọc 24 px. Setting kiểu chữ theo VS Code:
-`markdown.preview.fontSize` (mặc định 14), `markdown.preview.lineHeight`
-(1.6), `markdown.preview.fontFamily` (mặc định rỗng = font UI).
+Follows Zed for the look: `editor_background` background, UI text
+(`UI_FONT_FAMILY`), code uses the editor font. The content is centered, at
+most 800 px wide, with 32 px horizontal padding and 24 px vertical padding.
+Typography settings follow VS Code: `markdown.preview.fontSize` (default 14),
+`markdown.preview.lineHeight` (1.6), `markdown.preview.fontFamily` (default
+empty = UI font).
 
-Kiểu từng khối (màu từ theme, không màu cứng):
-- Heading: cỡ chữ h1 2.0×, h2 1.5×, h3 1.25×, h4–h6 1×; đậm; h1 và h2 có
-  đường kẻ dưới `border_variant`. Khoảng trên 24 px, dưới 12 px.
-- Code block: nền `elevated_surface_background` (theme không có
-  `surface_background`; nếu hover đang dùng màu khác cho code thì dùng
-  chung màu đó), bo góc `GRID`, padding 12 px, cuộn ngang khi dòng dài
-  (không ngắt dòng).
-- Trích dẫn: vạch trái 3 px `border`, chữ `text_muted`.
-- Bảng: viền 1 px `border_variant`, hàng đầu đậm và cùng nền với code
-  block, căn lề theo `:--`/`:-:`/`--:`, cột co theo nội
-  dung; bảng rộng hơn khung thì cuộn ngang riêng bảng.
-- Task list: `ui::checkbox` (đã có trong `ui.rs`) thay cho dấu đầu dòng,
-  không bấm được.
-- Ảnh: rộng tối đa bằng khung nội dung, giữ tỉ lệ, không phóng to quá cỡ
-  thật.
+The style of each block (colors from the theme, no hard-coded colors):
+- Heading: font size h1 2.0×, h2 1.5×, h3 1.25×, h4–h6 1×; bold; h1 and h2
+  have a `border_variant` rule underneath. 24 px above, 12 px below.
+- Code block: `elevated_surface_background` background (the theme has no
+  `surface_background`; if hover already uses a different color for code,
+  share that color), `GRID` corner radius, 12 px padding, scrolls
+  horizontally for long lines (no wrapping).
+- Blockquote: a 3 px left bar in `border`, `text_muted` text.
+- Table: 1 px `border_variant` border, a bold first row with the same
+  background as the code block, aligned per `:--`/`:-:`/`--:`, columns shrink
+  to their content; a table wider than the frame scrolls horizontally on its
+  own.
+- Task list: `ui::checkbox` (already in `ui.rs`) instead of the bullet,
+  not clickable.
+- Image: at most as wide as the content frame, keeping its aspect ratio, not
+  enlarged beyond its real size.
 
-Hover giữ cỡ chữ và khoảng cách hiện tại: preview truyền một bộ thông số
-kiểu riêng vào renderer (§5.2).
+Hover keeps its current font size and spacing: the preview passes its own set
+of style parameters into the renderer (§5.2).
 
-## 5. Thiết kế kỹ thuật
+## 5. Technical design
 
-### 5.1 Parser (`markdown.rs`, dùng chung với hover)
+### 5.1 Parser (`markdown.rs`, shared with hover)
 
-Mở rộng `parse_markdown`, giữ API hover:
-- Bật `ENABLE_TABLES | ENABLE_STRIKETHROUGH | ENABLE_TASKLISTS |
+Extend `parse_markdown`, keeping the hover API:
+- Enable `ENABLE_TABLES | ENABLE_STRIKETHROUGH | ENABLE_TASKLISTS |
   ENABLE_YAML_STYLE_METADATA_BLOCKS | ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
-  | ENABLE_GFM` (metadata bật chỉ để ẩn front matter; `GFM` cho alert
-  `> [!NOTE]`, hiển thị như trích dẫn có tiêu đề in đậm). Hover dùng cùng
-  cờ.
-- `Block` thêm: `Table { aligns, head: Vec<Vec<Inline>>, rows:
-  Vec<Vec<Vec<Inline>>> }`, `Image { url, alt, title }` (khi một đoạn chỉ
-  có một ảnh: ảnh khối), task marker trên mục danh sách
-  (`items: Vec<ListItem>` với `checked: Option<bool>`), danh sách có số bắt
-  đầu (`start: Option<u64>`).
-- `Inline` thêm `Strike(Vec<Inline>)`, `Image { url, alt }` (ảnh giữa dòng).
-- Mỗi **khối gốc** (con trực tiếp của tài liệu) mang khoảng dòng nguồn
-  `lines: Range<u32>` (0-based, dòng cuối không tính), lấy từ
-  `Parser::into_offset_iter()` rồi đổi offset byte → dòng bằng một bảng vị
-  trí `\n` dựng một lần. Khối lồng không cần dòng.
-- `MAX_MARKDOWN_BYTES` (100 KB) giữ cho hover. Preview dùng giới hạn riêng
-  **5 MB**; lớn hơn thì preview hiện thông báo "File too large to preview"
-  kèm nút Show Source, không parse.
+  | ENABLE_GFM` (metadata is enabled only to hide front matter; `GFM` is for
+  `> [!NOTE]` alerts, shown as a blockquote with a bold title). Hover uses
+  the same flags.
+- `Block` gains: `Table { aligns, head: Vec<Vec<Inline>>, rows:
+  Vec<Vec<Vec<Inline>>> }`, `Image { url, alt, title }` (when a paragraph has
+  only one image: a block image), a task marker on list items
+  (`items: Vec<ListItem>` with `checked: Option<bool>`), a list with a start
+  number (`start: Option<u64>`).
+- `Inline` gains `Strike(Vec<Inline>)`, `Image { url, alt }` (an inline image).
+- Each **root block** (a direct child of the document) carries its source
+  line range `lines: Range<u32>` (0-based, the last line excluded), taken from
+  `Parser::into_offset_iter()` and then converting byte offsets → lines with a
+  table of `\n` positions built once. Nested blocks do not need lines.
+- `MAX_MARKDOWN_BYTES` (100 KB) stays for hover. The preview uses its own
+  limit of **5 MB**; anything larger makes the preview show the message "File
+  too large to preview" with a Show Source button, without parsing.
 
 ### 5.2 Renderer
 
-Tách `Renderer` thành hàm render **một khối** với một `MarkdownStyle`
-(cỡ chữ gốc, line height, khoảng cách khối, cỡ heading, độ rộng tối đa của
-ảnh). Hover gọi nó cho mọi khối trong một `div` như hiện nay; preview gọi
-nó cho từng item của list. Highlight code block dùng lại `code_runs` có
-cache. Link dùng `LinkHandler` hiện có, cộng thêm luật ở §5.6.
+Split `Renderer` into a function that renders **one block** with a
+`MarkdownStyle` (base font size, line height, block spacing, heading sizes,
+maximum image width). Hover calls it for every block inside one `div` as it
+does today; the preview calls it for each item of the list. Code block
+highlighting reuses the cached `code_runs`. Links use the existing
+`LinkHandler`, plus the rules in §5.6.
 
-### 5.3 View `MarkdownPreview` (`markdown_preview.rs` mới)
+### 5.3 The `MarkdownPreview` view (new `markdown_preview.rs`)
 
-- Giữ `Arc<MarkdownBlocks>` hiện tại, `ListState` của `gpui::list` (mỗi
-  khối gốc một item, `ListAlignment::Top`, overdraw vừa đủ), đường dẫn
-  file và loại (tĩnh hay dynamic).
-- Giữ document mở trong `Documents` khi không có editor nào của file:
-  `Documents` cần một cách "giữ" document không qua `CodeView` (handle
-  thả ra thì document được thu như view đóng). Cách cụ thể do người làm
-  chọn; giữ một `CodeView` passive không vẽ là chấp nhận được nếu gọn hơn.
-  Nhờ đó file bị agent ghi đè vẫn được reload và preview vẫn nghe được.
-- Trạng thái tải: document đang tải → khung trống (không hiện spinner trong
-  200 ms đầu); lỗi đọc / file bị xóa → dùng cùng thông báo và `disk_bar`
-  như tab mã nguồn.
+- Holds the current `Arc<MarkdownBlocks>`, the `ListState` of `gpui::list`
+  (one item per root block, `ListAlignment::Top`, just enough overdraw), the
+  file path and the kind (static or dynamic).
+- Keeps the document open in `Documents` when no editor of the file exists:
+  `Documents` needs a way to "hold" a document without going through
+  `CodeView` (when the handle is dropped, the document is reclaimed as a view
+  closes). The specific way is up to the implementer; holding a passive,
+  undrawn `CodeView` is acceptable if it is more compact. This way a file
+  that the agent overwrites is still reloaded and the preview can still
+  listen.
+- Loading state: document loading → an empty frame (no spinner in the first
+  200 ms); read error / file deleted → use the same message and `disk_bar` as
+  the source tab.
 
-### 5.4 Cập nhật
+### 5.4 Updating
 
-- Subscribe `DocumentEvent::Edited` (và `Opened`) của đúng đường dẫn. Lần
-  đầu parse ngay; sau đó gom: nếu đã có lần parse đang chờ thì bỏ qua, nếu
-  không thì hẹn 200 ms rồi parse snapshot **mới nhất** lúc đó.
-- Parse chạy trên luồng nền (`cx.background_spawn`) với `BufferSnapshot`
-  bất biến; kết quả cũ hiển thị tới khi kết quả mới về. Kết quả về muộn
-  hơn một kết quả mới hơn thì bỏ (so `revision`).
-- Giữ chỗ đang đọc khi thay khối: trước khi thay, lấy khối trên cùng
-  (`logical_scroll_top`) và dòng nguồn tương ứng (§5.5); sau khi thay,
-  `ListState::reset` rồi cuộn tới khối chứa dòng đó với cùng tỉ lệ trong
-  khối. Agent ghi đè toàn bộ file thì vẫn giữ được theo dòng.
-- Đổi theme, font, `languages_generation`: chỉ vẽ lại (cache runs đã theo
-  generation).
-- Ảnh đổi trên đĩa: không theo dõi bản này; `markdown.preview.refresh`
-  tải lại (xóa cache ảnh của view).
+- Subscribe to `DocumentEvent::Edited` (and `Opened`) of the exact path. The
+  first time, parse immediately; after that, coalesce: if a parse is already
+  pending, skip; otherwise schedule 200 ms later and parse the **latest**
+  snapshot at that moment.
+- Parsing runs on a background thread (`cx.background_spawn`) with an
+  immutable `BufferSnapshot`; the old result is displayed until the new one
+  arrives. A result that arrives later than a newer one is dropped (compare
+  `revision`).
+- Keep the reader's place when swapping blocks: before swapping, take the top
+  block (`logical_scroll_top`) and the corresponding source line (§5.5);
+  after swapping, `ListState::reset` and then scroll to the block that
+  contains that line at the same fraction within the block. When the agent
+  overwrites the entire file, the position is still kept by line.
+- Theme, font, `languages_generation` changes: just redraw (the runs cache is
+  already keyed by generation).
+- Image changes on disk: not watched in this version; `markdown.preview.refresh`
+  reloads (clears the view's image cache).
 
-### 5.5 Ánh xạ dòng ↔ vị trí cuộn
+### 5.5 Line ↔ scroll position mapping
 
-Hàm thuần, test được không cần gpui, đặt trong `markdown.rs` hoặc
+Pure functions, testable without gpui, placed in `markdown.rs` or
 `markdown_preview/sync.rs`:
 
-- `line → (item, fraction)`: khối cuối cùng có `lines.start ≤ line`;
-  `fraction = (line − start) / max(1, next_start − start)` với `next_start`
-  là dòng bắt đầu của khối kế (hoặc số dòng tài liệu), kẹp vào [0, 1).
-  Dòng trống giữa hai khối thuộc khối trước.
-- `(item, offset_px, item_height) → line` (số thực): ngược lại, `start +
+- `line → (item, fraction)`: the last block with `lines.start ≤ line`;
+  `fraction = (line − start) / max(1, next_start − start)` where `next_start`
+  is the start line of the next block (or the document's line count), clamped
+  to [0, 1). A blank line between two blocks belongs to the earlier block.
+- `(item, offset_px, item_height) → line` (a real number): the reverse,
+  `start +
   offset/height × (next_start − start)`.
 
-Editor → preview: khi `CodeView` của cùng file (đang hiện, nhóm khác) đổi
-`scroll_top_row`, preview `scroll_to(ListOffset { item_ix, offset_in_item:
-fraction × chiều cao item })`. Chiều cao item chưa đo thì dùng 0 và sửa ở
-frame sau. Preview → editor: khi `ListState` cuộn do người dùng, tính dòng
-rồi `set_scroll_top_row(floor)`. Chống vòng lặp: bên nhận cuộn đặt cờ "cuộn
-do đồng bộ" và bỏ qua sự kiện cuộn của chính nó cho tới frame sau. Không
-throttle thêm: mỗi frame tối đa một lần. (Handler cuộn của `gpui::list`
-chỉ chạy khi người dùng cuộn bằng chuột/trackpad, không chạy khi gọi
-`scroll_to`, nên chiều editor → preview không tự gây vòng lặp; cờ chủ yếu
-cần cho chiều preview → editor.)
+Editor → preview: when the `CodeView` of the same file (visible, another
+group) changes `scroll_top_row`, the preview does `scroll_to(ListOffset {
+item_ix, offset_in_item: fraction × item height })`. If the item height is not
+yet measured, use 0 and fix it on the next frame. Preview → editor: when the
+`ListState` scrolls because of the user, compute the line and then
+`set_scroll_top_row(floor)`. Loop prevention: the receiving side sets a
+"scroll caused by sync" flag and ignores its own scroll event until the next
+frame. No extra throttling: at most once per frame. (The scroll handler of
+`gpui::list` runs only when the user scrolls with the mouse/trackpad, not
+when `scroll_to` is called, so the editor → preview direction does not cause
+a loop by itself; the flag is mainly needed for the preview → editor
+direction.)
 
-`CodeView` cần một sự kiện (hoặc observe) báo `scroll_top_row` đổi; nếu
-chưa có thì thêm, không đổi hành vi hiện tại. Dòng bị fold: dùng dòng
-buffer thật, không dùng dòng hiển thị.
+`CodeView` needs an event (or observe) that reports `scroll_top_row`
+changing; if there is none yet, add it without changing current behavior. A
+folded line: use the real buffer line, not the displayed line.
 
-### 5.6 Ảnh và link
+### 5.6 Images and links
 
-Ảnh (`img()` của gpui, đã đọc png/jpg/gif/webp/svg/bmp/tiff/ico; không
-thêm crate):
-- `http(s):`, `data:` → không tải; hiện alt text trong khung viền mờ kèm
-  icon Lucide `image` (đã có).
-- Đường dẫn tương đối → theo thư mục file md; bắt đầu bằng `/` → theo gốc
-  workspace (chế độ một file: thư mục của file). Decode `%xx`, chuẩn hóa
-  `..` theo từ vựng.
-- Chỉ tải ảnh nằm trong gốc workspace, hoặc trong thư mục của file md nếu
-  file nằm ngoài workspace (như `localResourceRoots` của VS Code). Ngoài
-  vùng đó hoặc không tồn tại → khung alt text như trên.
-- Cache ảnh theo view (`RetainAllImageCache` hoặc tương đương), thả ra khi
-  tab đóng. Ảnh trên 20 MB (kích thước file) không tải, hiện alt text kèm
-  "Image too large".
+Images (gpui's `img()`, which already reads png/jpg/gif/webp/svg/bmp/tiff/ico;
+no crate added):
+- `http(s):`, `data:` → not loaded; show the alt text in a dim-bordered frame
+  with the Lucide `image` icon (already present).
+- A relative path → relative to the md file's folder; starting with `/` →
+  relative to the workspace root (single-file mode: the file's folder).
+  Decode `%xx`, normalize `..` lexically.
+- Only images inside the workspace root are loaded, or inside the md file's
+  folder if the file is outside the workspace (like VS Code's
+  `localResourceRoots`). Outside that area or nonexistent → the alt-text frame
+  as above.
+- The image cache is per view (`RetainAllImageCache` or equivalent), released
+  when the tab closes. An image over 20 MB (file size) is not loaded; the alt
+  text is shown with "Image too large".
 
-Link: hôm nay `link_target` chỉ nhận URL tuyệt đối (`url::Url::parse`), nên
-link tương đối và `mailto:` đều trượt, và `open_markdown_link` luôn gọi
-`jump_to`. Preview cần một hàm giải link **có đường dẫn gốc** (file md đang
-xem) và trả về loại đích; `LinkHandler` của preview giữ đường dẫn đó trong
-closure, hover giữ hành vi cũ. Luật:
-- `http(s):`, `mailto:` → trình duyệt / app mặc định.
-- `#slug` → cuộn tới heading có slug đó (slug kiểu GitHub: chữ thường, bỏ
-  dấu câu, khoảng trắng → `-`, trùng thì thêm `-1`, `-2`).
-- Đường dẫn tương đối hoặc `file://` tới file `.md`/`.markdown` → mở preview
-  (`markdown.preview.openMarkdownLinks`, mặc định `inPreview`; `inEditor`
-  thì mở mã nguồn). Mở **như click trong Explorer** (`open_path`, tab
-  nghiêng), không chuyển file trong chính tab đang xem như VS Code, vì
-  Lucerna chưa có lịch sử trong tab preview. Từ preview dynamic thì đổi
-  file của chính nó (nó vốn đi theo file). Có `#L10` → mở mã nguồn tại dòng
-  (luật §4.1); có `#slug` → mở preview và cuộn tới heading.
-- File khác → mở như `open_path` (Explorer click).
-- Hover link: con trỏ tay; URL hiện ở tooltip.
+Links: today `link_target` accepts only absolute URLs (`url::Url::parse`), so
+relative links and `mailto:` both slip through, and `open_markdown_link`
+always calls `jump_to`. The preview needs a link-resolving function **with a
+base path** (the md file being viewed) that returns the kind of target; the
+preview's `LinkHandler` holds that path in its closure, and hover keeps the
+old behavior. The rules:
+- `http(s):`, `mailto:` → the default browser / app.
+- `#slug` → scroll to the heading with that slug (GitHub-style slug:
+  lowercase, punctuation removed, whitespace → `-`, duplicates get `-1`,
+  `-2`).
+- A relative path or `file://` to a `.md`/`.markdown` file → open the preview
+  (`markdown.preview.openMarkdownLinks`, default `inPreview`; `inEditor`
+  opens the source). Opens **like a click in the Explorer** (`open_path`,
+  italic tab), without switching the file inside the tab being viewed as VS
+  Code does, because Lucerna has no in-tab history for the preview. From a
+  dynamic preview it changes its own file (it follows a file anyway). With
+  `#L10` → open the source at that line (rule in §4.1); with `#slug` → open
+  the preview and scroll to the heading.
+- Any other file → open like `open_path` (an Explorer click).
+- Hovering a link: a hand cursor; the URL shows in the tooltip.
 
-### 5.7 Hiệu năng
+### 5.7 Performance
 
-- Luồng UI không parse: parse nền, UI chỉ vẽ các item đang thấy.
-- Mục tiêu: file 5000 dòng (khoảng 200 KB) parse xong dưới 30 ms trên
-  luồng nền; cuộn giữ 120 fps trên M1 như editor; một lần cập nhật khi
-  agent ghi file không làm mất frame.
-- Code block dài (hơn 2000 dòng) vẫn là một item; highlight dùng
-  `SYNC_PARSE_BUDGET` như hover, vượt thì vẽ chữ thường.
+- The UI thread does not parse: parsing is in the background, and the UI only
+  draws the items currently visible.
+- Target: a 5000-line file (about 200 KB) parses in under 30 ms on the
+  background thread; scrolling holds 120 fps on an M1 like the editor; one
+  update when the agent writes the file does not drop a frame.
+- A long code block (over 2000 lines) is still one item; highlighting uses
+  `SYNC_PARSE_BUDGET` as hover does, and past it draws plain text.
 
-## 6. Đo kích thước binary và RAM
+## 6. Measuring binary size and RAM
 
-**Mốc hiện tại**: `luc` bản release ngày 2026-11-13 là **48 543 136 byte**
-(`/Applications/Lucerna.app/Contents/MacOS/luc`). Đo lại mốc trên commit
-ngay trước khi bắt đầu, cùng profile và cùng `scripts/bundle-app.sh`.
+**Current baseline**: the release `luc` of 2026-11-13 is **48,543,136 bytes**
+(`/Applications/Lucerna.app/Contents/MacOS/luc`). Re-measure the baseline on
+the commit right before starting, with the same profile and the same
+`scripts/bundle-app.sh`.
 
-**Cách đo binary**
-1. Build release bằng `scripts/bundle-app.sh` trên commit gốc và commit
-   cuối của tính năng; so `stat -f %z` của `luc`.
-2. `cargo tree -p lucerna --prefix none -e normal | sort -u` trước và sau:
-   không được có crate mới.
-3. Ngân sách: **tăng ≤ 300 KB**, trần cứng 500 KB. Vượt thì tìm nguyên
-   nhân (ví dụ feature mới của `image` bị bật) trước khi merge.
+**How to measure the binary**
+1. Build release with `scripts/bundle-app.sh` on the base commit and the
+   feature's last commit; compare `stat -f %z` of `luc`.
+2. `cargo tree -p lucerna --prefix none -e normal | sort -u` before and after:
+   there must be no new crates.
+3. Budget: **grow ≤ 300 KB**, hard ceiling 500 KB. If exceeded, find the cause
+   (for example a new `image` feature being turned on) before merging.
 
-Không cần dependency mới: `pulldown-cmark` đã có, các cờ bảng/task list chỉ
-là code trong crate đó; `image`, `resvg` đã vào qua gpui.
+No new dependency needed: `pulldown-cmark` is already there, the table/task
+list flags are just code inside that crate; `image` and `resvg` already come
+in through gpui.
 
-**Cách đo RAM** (RSS bằng `footprint <pid>` hoặc `ps -o rss`, sau khi mở 10 s):
-- A: mở project Lucerna, một tab mã nguồn `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md`.
-- B: như A nhưng tab đó là preview.
-- C: như B thêm một file md có 3 ảnh PNG 1–2 MB.
-- Ngân sách: B − A ≤ 10 MB. C tăng thêm xấp xỉ kích thước ảnh đã giải nén
-  (rộng × cao × 4 byte) và trở về gần mức A sau khi đóng tab.
+**How to measure RAM** (RSS via `footprint <pid>` or `ps -o rss`, 10 s after opening):
+- A: open the Lucerna project, one source tab `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md`.
+- B: like A but that tab is a preview.
+- C: like B plus an md file with 3 PNG images of 1–2 MB.
+- Budget: B − A ≤ 10 MB. C grows by roughly the decoded image size
+  (width × height × 4 bytes) and returns close to the A level after the tab
+  is closed.
 
-Ghi số đo vào phần cuối spec này hoặc vào ghi chú merge.
+Record the measurements at the end of this spec or in the merge notes.
 
-## 7. Kiểm thử
+## 7. Testing
 
-- Parser: bảng (căn lề, ô trống, inline trong ô), task list lồng, danh sách
-  bắt đầu từ 3, ảnh khối và ảnh giữa dòng, front matter bị ẩn, alert GFM,
-  khoảng dòng của khối gốc (kể cả code fence, danh sách nhiều đoạn, file
-  kết thúc không có `\n`, CRLF). Hover vẫn ra như cũ (test hiện có pass).
-- Ánh xạ dòng ↔ cuộn: các ca biên (trước khối đầu, sau khối cuối, khối một
-  dòng, tài liệu rỗng), hai chiều xấp xỉ nghịch đảo nhau.
-- Association: glob tên file, glob đường dẫn, `default`, key bị xóa; bảng
-  "cách mở nào đi đâu" ở §4.1.
-- Model nhóm editor: `togglePreview` thay đúng vị trí và trạng thái ghim;
-  preview dynamic là singleton và đổi file theo tab active; khôi phục phiên.
-- Cập nhật: ghi đè file trên đĩa (như agent) → preview đổi trong 500 ms và
-  giữ khối đang đọc; nhiều lần ghi liên tiếp chỉ parse lần cuối.
-- Ảnh: tương đối, `/x`, `..` thoát khỏi workspace bị chặn, `%20`, file
-  không tồn tại, `http(s)` → alt.
-- Link: `#slug`, `.md` mở preview, `#L10` mở mã nguồn, URL ngoài.
-- Open in Browser: chỉ hiện với `.html`/`.htm`.
-- Giao diện: đặt cạnh Zed (preview của Zed cùng file) và so khoảng cách,
-  cỡ chữ, viền, nền, trạng thái trống (`design-principles.md` §1.1).
+- Parser: tables (alignment, empty cells, inline content in cells), nested
+  task lists, lists starting from 3, block and inline images, hidden front
+  matter, GFM alerts, the line range of root blocks (including code fences,
+  multi-paragraph lists, a file ending with no `\n`, CRLF). Hover still comes
+  out as before (the existing tests pass).
+- Line ↔ scroll mapping: edge cases (before the first block, after the last
+  block, a one-line block, an empty document), the two directions are
+  approximately inverses of each other.
+- Association: file-name glob, path glob, `default`, a deleted key; the "which
+  way of opening goes where" table in §4.1.
+- Editor group model: `togglePreview` replaces at the right position and
+  pinned state; the dynamic preview is a singleton and changes file with the
+  active tab; session restore.
+- Updating: overwrite a file on disk (like the agent) → the preview changes
+  within 500 ms and keeps the block being read; many consecutive writes parse
+  only the last one.
+- Images: relative, `/x`, `..` escaping the workspace is blocked, `%20`,
+  nonexistent file, `http(s)` → alt.
+- Links: `#slug`, `.md` opens the preview, `#L10` opens the source, external URL.
+- Open in Browser: shown only for `.html`/`.htm`.
+- UI: put it next to Zed (Zed's preview of the same file) and compare spacing,
+  font size, borders, background, empty state (`design-principles.md` §1.1).
 
-## 8. Giới hạn đã chấp nhận
+## 8. Accepted limitations
 
-- **Go Back/Forward không ghi vị trí trong preview.** `nav_here` chỉ ghi
-  khi tab active là `CodeView`. Nhảy từ preview (double-click về mã nguồn,
-  click link) không ghi điểm xuất phát, nên Go Back không quay lại preview.
-  Thêm loại tab và vị trí cuộn preview vào `NavEntry` để sau.
-- `Documents::discard` (Don't Save khi đóng) bỏ document ngay cả khi còn
-  view. Với luật ở §4.1, lời hỏi chỉ hiện khi đóng tab cuối của file (mã
-  nguồn hoặc preview tĩnh), nên không còn preview nào mất document.
+- **Go Back/Forward does not record a position in the preview.** `nav_here`
+  records only when the active tab is a `CodeView`. Jumping from the preview
+  (double-click back to the source, clicking a link) does not record the
+  starting point, so Go Back does not return to the preview. Adding the tab
+  kind and the preview scroll position to `NavEntry` is left for later.
+- `Documents::discard` (Don't Save on close) drops the document even when a
+  view remains. With the rule in §4.1, the prompt appears only when closing the
+  last tab of the file (source or static preview), so no preview loses its
+  document.
 
-## 9. Việc để người làm tự quyết
+## 9. Left to the implementer
 
-- Cách `Documents` giữ document cho preview (§5.3).
-- Cách `CodeView` báo đổi `scroll_top_row` (§5.5).
-- Cấu trúc file trong `lucerna-workbench` (một file hay thư mục
-  `markdown_preview/`).
-- Overdraw của `gpui::list` và cách đo chiều cao item lần đầu.
-- Thứ tự task trong plan; gợi ý: parser → renderer dùng chung → view và
-  tab → association → cuộn đồng bộ → ảnh/link → Open in Browser → đo.
+- How `Documents` holds the document for the preview (§5.3).
+- How `CodeView` reports a `scroll_top_row` change (§5.5).
+- The file structure in `lucerna-workbench` (one file or a `markdown_preview/`
+  folder).
+- The overdraw of `gpui::list` and how to measure item height the first time.
+- The order of tasks in the plan; suggestion: parser → shared renderer → view
+  and tab → association → synchronized scrolling → images/links → Open in
+  Browser → measurement.
 
-## 10. Số đo
+## 10. Measurements
 
-Đo ngày 2026-11-13, cùng profile `release`, build bằng `cargo build --release -p lucerna`
-(không dùng `scripts/bundle-app.sh` vì nó giả định `target/` trong repo, còn target dir
-được chia sẻ giữa các worktree). Mốc là `7b79e1b` (chỉ có spec và plan), đầu tính năng là `b7f54ef`.
+Measured on 2026-11-13, same `release` profile, built with `cargo build --release -p lucerna`
+(not `scripts/bundle-app.sh`, because it assumes `target/` inside the repo, while the target dir
+is shared between worktrees). The baseline is `7b79e1b` (only the spec and plan), the feature head is `b7f54ef`.
 
-| Mục | Kết quả |
+| Item | Result |
 |---|---|
-| `luc` mốc `7b79e1b` | 48 792 336 byte |
-| `luc` đầu tính năng `b7f54ef` | 49 215 760 byte |
-| Chênh lệch | **+423 424 byte (413 KB)**: vượt ngân sách 300 KB, dưới trần cứng 500 KB |
-| `git diff 7b79e1b HEAD -- Cargo.lock` | rỗng, không có crate mới |
-| Parse `parse_markdown_document`, 5014 dòng, 191 KB | trung vị 2,2 ms, tối đa 3,0 ms (ngân sách 30 ms), `tests/perf.rs::parse_5000_lines` |
-| RAM A: tab mã nguồn (bản sao `.txt` của spec phase 1) | footprint 107 MB (RSS 113,6 MB) |
-| RAM B: cùng nội dung mở ở preview (`.md`) | footprint 109 MB (RSS 117,4 MB), B − A = +2 MB, trong ngân sách 10 MB |
-| RAM C: file md có 3 ảnh PNG 700×700 (mỗi ảnh 1,4 MB) | footprint 124 MB (RSS 130,2 MB), +15 MB so với B, ảnh giải nén khoảng 5,9 MB |
+| `luc` baseline `7b79e1b` | 48,792,336 bytes |
+| `luc` feature head `b7f54ef` | 49,215,760 bytes |
+| Difference | **+423,424 bytes (413 KB)**: over the 300 KB budget, under the 500 KB hard ceiling |
+| `git diff 7b79e1b HEAD -- Cargo.lock` | empty, no new crates |
+| Parse `parse_markdown_document`, 5014 lines, 191 KB | median 2.2 ms, max 3.0 ms (budget 30 ms), `tests/perf.rs::parse_5000_lines` |
+| RAM A: source tab (a `.txt` copy of the phase 1 spec) | footprint 107 MB (RSS 113.6 MB) |
+| RAM B: the same content opened as a preview (`.md`) | footprint 109 MB (RSS 117.4 MB), B − A = +2 MB, within the 10 MB budget |
+| RAM C: an md file with 3 PNG images of 700×700 (1.4 MB each) | footprint 124 MB (RSS 130.2 MB), +15 MB over B, decoded images about 5.9 MB |
 
-Ghi chú: mỗi ca là một tiến trình `luc <file>` chạy riêng, đo sau 10 s (`footprint <pid>`).
-CLI chỉ mở được một file, nên C không có sẵn tab B; "trở về gần A sau khi đóng tab"
-chưa đo, cần chạy tay: mở C, đóng tab, đợi 10 s, đo lại.
+Notes: each case is a separate `luc <file>` process, measured after 10 s (`footprint <pid>`).
+The CLI can open only one file, so C has no B tab to start from; "returns close to A after closing the tab"
+was not measured and needs a manual run: open C, close the tab, wait 10 s, measure again.
 
-Nguyên nhân chênh 413 KB (so `size -m` và `nm -m` của hai binary, tên symbol giải bằng
-`c++filt`, gộp theo module): `__text` +207 KB, bảng unwind/exception (`__eh_frame`,
-`__gcc_except_tab`, `__unwind_info`) +62 KB, `__DATA_CONST` +16 KB, còn khoảng +115 KB là
-bảng symbol trong `__LINKEDIT` (binary không strip; +936 symbol, bảng tên +106 KB). Trong
-`__text`, các hàm có tên chứa `markdown_preview`/`MarkdownPreview` chiếm 118 KB: code của
-module (+54 KB: view, `ScrollSync`, `follow_link`, `resolve_link`, lệnh) cùng các bản
-generic của gpui sinh cho `MarkdownPreview` (`Context::spawn`/`listener`/`subscribe`,
-drop glue của `Div`). Phần mở rộng parser/renderer trong `markdown.rs` thêm khoảng 28 KB
-(`parse` +13 KB, `Renderer::block` +10 KB). Phần còn lại là inline xếp lại giữa các crate
-(ví dụ `lsp_types` −15 KB, `serde_json::value` +19 KB), cộng lại gần bằng không.
-`pulldown_cmark` không lớn thêm (−2,6 KB), không có crate hay feature mới, không thấy một
-generic nào bị nhân bản bất thường, nên không tối ưu. Vượt ngân sách 300 KB nhưng dưới trần
-500 KB: cần người dùng chấp nhận trước khi merge.
+Cause of the 413 KB difference (comparing `size -m` and `nm -m` of the two binaries, symbol names demangled with
+`c++filt`, grouped by module): `__text` +207 KB, the unwind/exception tables (`__eh_frame`,
+`__gcc_except_tab`, `__unwind_info`) +62 KB, `__DATA_CONST` +16 KB, and about +115 KB is
+the symbol table in `__LINKEDIT` (the binary is not stripped; +936 symbols, name table +106 KB). Within
+`__text`, functions whose names contain `markdown_preview`/`MarkdownPreview` take 118 KB: the
+module's code (+54 KB: the view, `ScrollSync`, `follow_link`, `resolve_link`, commands) plus the
+gpui generics instantiated for `MarkdownPreview` (`Context::spawn`/`listener`/`subscribe`,
+`Div` drop glue). The parser/renderer extension in `markdown.rs` adds about 28 KB
+(`parse` +13 KB, `Renderer::block` +10 KB). The rest is inlining reshuffled between crates
+(for example `lsp_types` −15 KB, `serde_json::value` +19 KB), summing to nearly zero.
+`pulldown_cmark` did not grow (−2.6 KB), there is no new crate or feature, and no
+generic was seen being unusually duplicated, so there is no optimization to do. It is over the 300 KB budget but under the
+500 KB ceiling: the user must accept it before merging.
