@@ -1,179 +1,178 @@
-# File mới (⌘N) và Save As (⇧⌘S)
+# New File (⌘N) and Save As (⇧⌘S)
 
-Ngày 2026-11-17. Trạng thái: đã triển khai (branch `claude/untitled-save-as`); kiểm tra thủ công §6 chưa làm. Mục thứ hai của tầng 1 trong `docs/roadmap.md`.
+Date 2026-11-17. Status: implemented (branch `claude/untitled-save-as`); manual check §6 not done yet. The second item of tier 1 in `docs/roadmap.md`.
 
-## 1. Mục đích
+## 1. Purpose
 
-Người chuyển từ VS Code quen bấm ⌘N để mở một tab trống, gõ code, rồi ⌘S để đặt tên và lưu vào
-project. Họ cũng quen ⇧⌘S để lưu file đang mở ra tên khác. Lucerna chưa có cả hai; muốn tạo file
-mới phải dùng Explorer → New File (đặt tên trước khi gõ).
+People moving from VS Code are used to pressing ⌘N to open an empty tab, typing code, then ⌘S to name
+it and save it into the project. They are also used to ⇧⌘S to save the open file under another name.
+Lucerna has neither yet; to create a new file they must use Explorer → New File (naming it before typing).
 
-Người dùng xác nhận ⌘N dùng để **tạo file mới sẽ lưu vào project**, không chủ yếu làm nháp.
+The user confirmed that ⌘N is for **creating a new file that will be saved into the project**, not
+mainly for scratch notes.
 
-**Mục tiêu:**
+**Goals:**
 
-- ⌘N mở tab Untitled; ⌘S trên tab đó hỏi chỗ lưu rồi biến tab thành file thật, giữ undo và con trỏ.
-- ⇧⌘S lưu file bất kỳ ra đường dẫn khác; tab chuyển sang file mới.
-- Không mất chữ: Untitled chưa lưu đi qua hot exit như file thường.
+- ⌘N opens an Untitled tab; ⌘S on that tab asks where to save and turns the tab into a real file, keeping undo and the cursor.
+- ⇧⌘S saves any file to another path; the tab switches to the new file.
+- No lost text: an unsaved Untitled goes through hot exit like a normal file.
 
-**Ngoài phạm vi:** đoán ngôn ngữ tự động (`workbench.editor.languageDetection`); dòng gợi ý "Select a
-language…" trên tab trống (`workbench.editor.empty.hint`); `:w tên` trong Vim; Save As tới nơi không
-phải ổ đĩa; mở Untitled từ CLI (`luc -n`); `workbench.editor.untitled.labelFormat` (luôn là
-`content`); Untitled mang sẵn đường dẫn đích (`associatedResource` của VS Code); Save Copy As.
+**Out of scope:** automatic language detection (`workbench.editor.languageDetection`); the "Select a
+language…" hint line on an empty tab (`workbench.editor.empty.hint`); `:w name` in Vim; Save As to a place that is not
+a disk; opening Untitled from the CLI (`luc -n`); `workbench.editor.untitled.labelFormat` (always
+`content`); an Untitled carrying a target path (`associatedResource` in VS Code); Save Copy As.
 
-**Anti-goal:** Untitled bị ghi ra đĩa thành file tên `untitled:Untitled-1`, bị đưa cho git, LSP,
-watcher; hay mất chữ trong Untitled khi thoát app mà không hỏi.
+**Anti-goal:** an Untitled being written to disk as a file named `untitled:Untitled-1`, being handed to git, LSP,
+the watcher; or losing text in an Untitled when the app quits without asking.
 
-## 2. Tham khảo
+## 2. References
 
-- **VS Code** (`src/vs/workbench/services/untitled/common/untitledTextEditorService.ts`): mọi tài
-  liệu định danh bằng URI. Untitled là `untitled:Untitled-N`, `N` là số nhỏ nhất từ 1 chưa dùng
-  (`do { … counter++ } while (mapResourceToModel.has(...))`). File service chỉ đọc/ghi scheme nó biết,
-  nên Untitled không thể vô tình ghi ra đĩa. Tên tab mặc định lấy dòng đầu
+- **VS Code** (`src/vs/workbench/services/untitled/common/untitledTextEditorService.ts`): every
+  document is identified by a URI. Untitled is `untitled:Untitled-N`, `N` the smallest number from 1 not yet used
+  (`do { … counter++ } while (mapResourceToModel.has(...))`). The file service only reads/writes schemes it knows,
+  so an Untitled cannot be accidentally written to disk. The default tab name takes the first line
   (`workbench.editor.untitled.labelFormat: "content"`). ⌘N = `workbench.action.files.newUntitledFile`,
-  ⇧⌘S = `workbench.action.files.saveAs`. Lưu Untitled mở hộp thoại Save As; Save All cũng hỏi từng
-  Untitled. Autosave bỏ qua Untitled. Hot exit sao lưu Untitled. `files.defaultLanguage` đặt ngôn ngữ
-  cho Untitled mới.
-- **Zed** (`crates/language/src/buffer.rs`): `Buffer.file: Option<Arc<dyn File>>`, Untitled là
-  `None` ("`None` when there is no path"); buffer định danh bằng id riêng. Save As gán file qua
-  `file_updated`. Tên tab cũng lấy dòng đầu. ⌘N = `workspace::NewFile`.
-- **Helix:** `Document.path: Option<PathBuf>`, định danh bằng `DocumentId`; `:new` tạo tài liệu
-  `path = None`, `:w <path>` gán đường dẫn.
+  ⇧⌘S = `workbench.action.files.saveAs`. Saving an Untitled opens the Save As dialog; Save All also asks for each
+  Untitled. Autosave skips Untitled. Hot exit backs up Untitled. `files.defaultLanguage` sets the language
+  for a new Untitled.
+- **Zed** (`crates/language/src/buffer.rs`): `Buffer.file: Option<Arc<dyn File>>`, Untitled is
+  `None` ("`None` when there is no path"); a buffer is identified by its own id. Save As assigns the file through
+  `file_updated`. The tab name also takes the first line. ⌘N = `workspace::NewFile`.
+- **Helix:** `Document.path: Option<PathBuf>`, identified by `DocumentId`; `:new` creates a document with
+  `path = None`, `:w <path>` assigns the path.
 
-## 3. Các cách đã cân nhắc
+## 3. Approaches considered
 
-| Cách | Đánh đổi | Kết quả |
+| Approach | Trade-off | Result |
 |---|---|---|
-| **A. Đường dẫn giả** `untitled:Untitled-N` (gần VS Code) | Nhỏ: `Documents`, tab, hot exit vốn khóa bằng đường dẫn nên phần lớn chạy nguyên. Rủi ro: chỗ nào chạm đĩa mà quên kiểm tra sẽ coi nó là file thật. Chặn bằng một hàm kiểm tra duy nhất và test cho từng chỗ | **Chọn** (người dùng) |
-| B. Kiểu riêng (path hoặc Untitled N), như Zed / Helix | An toàn nhất, compiler bắt mọi chỗ. Nhưng phải refactor `documents.rs` (~3000 dòng), tab, hot exit, mọi hàm nhận `&Path` | Bỏ: tốn gấp nhiều lần mà hành vi như nhau |
-| C. Không có Untitled: ⌘N hỏi tên ngay rồi mở file thật | Gần như miễn phí, nhưng lệch VS Code và bắt nghĩ tên trước khi gõ | Bỏ |
+| **A. A fake path** `untitled:Untitled-N` (close to VS Code) | Small: `Documents`, tabs and hot exit are already keyed by path, so most of it works as is. Risk: any place that touches the disk and forgets to check would treat it as a real file. Guarded by a single check function and a test for each place | **Chosen** (user) |
+| B. A separate type (path or Untitled N), like Zed / Helix | Safest, the compiler catches every place. But it requires refactoring `documents.rs` (~3000 lines), tabs, hot exit, every function that takes `&Path` | Dropped: many times the cost for the same behavior |
+| C. No Untitled: ⌘N asks for a name right away and opens a real file | Nearly free, but deviates from VS Code and forces thinking of a name before typing | Dropped |
 
-## 4. Thiết kế
+## 4. Design
 
-### 4.1 Định danh Untitled
+### 4.1 Untitled identity
 
-- Untitled có đường dẫn giả `untitled:Untitled-N` (một `Arc<Path>` tương đối, không bao giờ
-  ghép với thư mục gốc). `N` là số nhỏ nhất từ 1 chưa dùng **trong cửa sổ đó** (tab đã đóng trả số
-  lại).
-- Một hàm duy nhất `is_untitled(path: &Path) -> bool` (đường dẫn bắt đầu bằng `untitled:`). Mọi chỗ
-  chạm đĩa hay dịch vụ ngoài kiểm tra nó và bỏ qua Untitled:
-  - lưu (luôn đi đường Save As, §4.3), revert, autosave;
-  - watcher và xử lý thay đổi trên đĩa / xung đột;
-  - git (gutter, màu Explorer, diff);
-  - LSP (không mở, không gửi `didOpen`);
-  - Explorer: auto-reveal, đánh dấu file đã sửa;
-  - lệnh lấy đường dẫn: Copy Path, Copy Relative Path, Reveal in Finder, Open Containing Folder —
-    với Untitled thì không làm gì (menu chuột phải của tab, nếu có, hiện mờ);
-  - Markdown preview, trạng thái workspace (Untitled không ghi vào danh sách tab mở lại; hot exit
-    lo việc đó, §4.5), danh sách Recent.
-- Một file thật có tên bắt đầu bằng `untitled:` (hợp lệ trên macOS) phải luôn có đường dẫn tuyệt
-  đối, nên không trùng: `is_untitled` chỉ đúng với đường dẫn tương đối một thành phần.
+- An Untitled has the fake path `untitled:Untitled-N` (a relative `Arc<Path>`, never
+  joined with the root directory). `N` is the smallest number from 1 not yet used **in that window** (a closed
+  tab returns its number).
+- A single function `is_untitled(path: &Path) -> bool` (the path starts with `untitled:`). Every place that
+  touches the disk or an outside service checks it and skips Untitled:
+  - saving (always goes the Save As path, §4.3), revert, autosave;
+  - the watcher and handling of on-disk changes / conflicts;
+  - git (gutter, Explorer colors, diff);
+  - LSP (do not open, do not send `didOpen`);
+  - Explorer: auto-reveal, marking modified files;
+  - commands that take the path: Copy Path, Copy Relative Path, Reveal in Finder, Open Containing Folder —
+    for Untitled they do nothing (the tab's right-click menu, if any, shows them dimmed);
+  - Markdown preview, workspace state (Untitled is not written to the list of tabs to reopen; hot exit
+    handles that, §4.5), the Recent list.
+- A real file whose name starts with `untitled:` (valid on macOS) always has an absolute path, so there is no
+  collision: `is_untitled` is only true for a relative single-component path.
 
 ### 4.2 ⌘N — New File
 
-- Lệnh `workbench.action.files.newUntitledFile`, tiêu đề "File: New Untitled Text File", phím
-  `cmd+n`, menu File → "New File" (đầu menu, trên "New Window"). Chạy trong cửa sổ thư mục và cửa
-  sổ một file. **Không chạy ở Welcome và khi không có cửa sổ nào** (người dùng chọn): mục menu mờ,
-  phím không làm gì. Lý do: cửa sổ Welcome chưa có `Documents`, nhóm editor, hot exit; hỗ trợ nó cần
-  một kiểu cửa sổ mới không thư mục (và `WorkspaceKey` mới), gần gấp đôi việc, trong khi mục đích của
-  ⌘N là tạo file cho project đang mở.
-- Mở tab Untitled ghim (không phải preview) trong nhóm editor đang active, focus vào nó.
-- Ngôn ngữ: `files.defaultLanguage` nếu đặt (id ngôn ngữ, ví dụ `"rust"`), không thì Plain Text.
-  Thêm setting này vào `default-settings.json` với giá trị `""`.
-- Tên tab: dòng đầu không rỗng của nội dung, cắt khoảng trắng hai đầu, tối đa 40 ký tự (thêm `…` khi
-  cắt); nội dung rỗng thì `Untitled-N`. Tooltip / path bar hiện `Untitled-N`.
-- Icon tab theo ngôn ngữ hiện tại (Plain Text → icon file chữ).
+- Command `workbench.action.files.newUntitledFile`, titled "File: New Untitled Text File", key
+  `cmd+n`, menu File → "New File" (top of the menu, above "New Window"). Runs in a folder window and a
+  single-file window. **Does not run in Welcome and when there is no window** (user's choice): the menu item is dimmed,
+  the key does nothing. Reason: the Welcome window has no `Documents`, editor groups or hot exit; supporting it
+  needs a new kind of window with no folder (and a new `WorkspaceKey`), nearly double the work, while the point of
+  ⌘N is to create a file for the project that is open.
+- Opens a pinned Untitled tab (not a preview) in the active editor group, with focus on it.
+- Language: `files.defaultLanguage` if set (a language id, for example `"rust"`), otherwise Plain Text.
+  Add this setting to `default-settings.json` with the value `""`.
+- Tab name: the first non-empty line of the content, trimmed of whitespace at both ends, at most 40 characters (add `…` when
+  cut); empty content gives `Untitled-N`. The tooltip / path bar shows `Untitled-N`.
+- The tab icon follows the current language (Plain Text → the text-file icon).
 
-### 4.3 Lưu Untitled
+### 4.3 Saving an Untitled
 
-- `workbench.action.files.save` (⌘S), `:w` trong Vim, và Save trong hộp thoại đóng tab / thoát đều
-  đi đường Save As khi tab là Untitled.
-- Hộp thoại lưu native (`cx.prompt_for_new_path`):
-  - thư mục bắt đầu: thư mục gốc của project; cửa sổ một file thì thư mục chứa file đó;
-  - tên gợi ý: tên tab (§4.2) bỏ ký tự `/ \ : * ? " < > |` và ký tự điều khiển, cắt khoảng trắng;
-    rỗng thì `Untitled-N`. Không tự thêm đuôi.
-- Bấm Cancel: không có gì đổi, tab vẫn dirty. Nếu đang trong luồng đóng tab / thoát thì luồng đó dừng
-  như khi bấm Cancel ở hộp thoại Save / Don't Save / Cancel.
-- Lưu được: ghi file theo luồng lưu sẵn có (`files.trimTrailingWhitespace`, `insertFinalNewline`,
-  `files.eol`… như file thường; encoding UTF-8 không BOM). Sau đó **chính tab đó** thành file thật:
-  `Documents::rename(untitled, đích)` giữ undo, con trỏ, cuộn; ngôn ngữ, LSP, git, watcher chạy như
-  file vừa mở. Số `N` được trả lại.
-- Untitled đang hiện ở nhiều nhóm editor (chia màn hình): mọi view cùng thành file thật (một tài
-  liệu, `rename` chuyển mọi view).
-- Lưu ra ngoài thư mục gốc, hoặc trong cửa sổ một file: giống hệt khi mở một file ngoài thư mục hôm
-  nay (cửa sổ giữ nguyên kiểu, không thêm gì riêng cho trường hợp này). Quyết định của người viết
-  spec.
-- Đích trùng một file đang mở ở tab khác: tài liệu cũ của đường dẫn đó bị thay bằng nội dung vừa lưu
-  (như VS Code: hộp thoại macOS đã hỏi Replace). Tab cũ của đường dẫn đó đóng; tab Untitled giữ lại.
-- Lỗi ghi (quyền, ổ đầy): báo như lưu thường hiện nay, tab vẫn Untitled và dirty.
-- Format on save: chạy theo ngôn ngữ của **đường dẫn đích** nếu cơ chế format sẵn có làm được dễ;
-  không thì bỏ qua cho lần lưu đầu (format chưa có, xem roadmap — ghi nhận khi làm Format).
+- `workbench.action.files.save` (⌘S), `:w` in Vim, and Save in the close-tab / quit dialog all
+  go the Save As path when the tab is Untitled.
+- The native save dialog (`cx.prompt_for_new_path`):
+  - starting directory: the project's root directory; for a single-file window, the directory containing that file;
+  - suggested name: the tab name (§4.2) with the characters `/ \ : * ? " < > |` and control characters removed, whitespace trimmed;
+    if empty, `Untitled-N`. No extension is added automatically.
+- Pressing Cancel: nothing changes, the tab stays dirty. If it was in a close-tab / quit flow, that flow stops
+  as when Cancel is pressed in the Save / Don't Save / Cancel dialog.
+- If the save succeeds: write the file through the existing save flow (`files.trimTrailingWhitespace`, `insertFinalNewline`,
+  `files.eol`… as for a normal file; UTF-8 encoding without BOM). Then **that same tab** becomes a real file:
+  `Documents::rename(untitled, target)` keeps undo, cursor, scroll; language, LSP, git and the watcher work as for
+  a file just opened. The number `N` is returned.
+- An Untitled shown in several editor groups (split screen): all views become the real file together (one
+  document, `rename` moves every view).
+- Saving outside the root directory, or in a single-file window: exactly as opening a file outside the directory does
+  today (the window keeps its kind, nothing special added for this case). The spec writer's decision.
+- A target that matches a file already open in another tab: the old document for that path is replaced with the content just saved
+  (like VS Code: the macOS dialog already asked about Replace). The old tab for that path closes; the Untitled tab stays.
+- A write error (permissions, disk full): reported like a normal save today, the tab stays Untitled and dirty.
+- Format on save: runs according to the language of the **target path** if the existing format mechanism makes that easy;
+  otherwise skip it for the first save (format does not exist yet, see the roadmap — note it when doing Format).
 
 ### 4.4 ⇧⌘S — Save As
 
-- Lệnh `workbench.action.files.saveAs`, tiêu đề "File: Save As...", phím `shift+cmd+s`, menu File →
-  "Save As…" (ngay dưới "Save"). Chạy trên tab code đang active; tab khác (Search, diff…) thì không
-  làm gì.
-- Untitled: như §4.3.
-- File thật: hộp thoại bắt đầu ở thư mục của file, tên gợi ý là tên file hiện tại. Lưu nội dung hiện
-  tại (kể cả chưa lưu) ra đích. **Mọi tab** đang hiện tài liệu đó (kể cả ở nhóm khác) chuyển sang
-  file mới, giữ undo / con trỏ / cuộn — dùng `Documents::rename`. File cũ trên đĩa **không đổi** và
-  không còn mở ở đâu. Lệch VS Code có chủ ý (VS Code chỉ chuyển tab đang active, tab khác giữ file
-  cũ): làm theo VS Code phải tách một tài liệu thành hai, tốn nhiều cho trường hợp hiếm. Quyết định
-  của người viết spec.
-- Chọn đúng đường dẫn hiện tại: bằng Save thường.
+- Command `workbench.action.files.saveAs`, titled "File: Save As...", key `shift+cmd+s`, menu File →
+  "Save As…" (right under "Save"). Runs on the active code tab; other tabs (Search, diff…) do nothing.
+- Untitled: as §4.3.
+- A real file: the dialog starts in the file's directory, and the suggested name is the current file name. Saves the current
+  content (including unsaved) to the target. **Every tab** showing that document (including in other groups) switches to the
+  new file, keeping undo / cursor / scroll — using `Documents::rename`. The old file on disk is **unchanged** and
+  is no longer open anywhere. A deliberate deviation from VS Code (VS Code only switches the active tab, other tabs keep the
+  old file): following VS Code would require splitting one document into two, costly for a rare case. The spec
+  writer's decision.
+- Choosing exactly the current path: the same as a normal Save.
 
-### 4.5 Untitled khi đóng, thoát và hot exit
+### 4.5 Untitled on close, quit and hot exit
 
-- Autosave (`files.autoSave` mọi giá trị) bỏ qua Untitled.
-- Đóng tab Untitled (⌘W, nút ×, Close Others…):
-  - nội dung rỗng: đóng không hỏi;
-  - có nội dung: hỏi Save / Don't Save / Cancel như file dirty (`save.rs`, `CLOSE_ANSWERS`). Save đi
+- Autosave (every `files.autoSave` value) skips Untitled.
+- Closing an Untitled tab (⌘W, the × button, Close Others…):
+  - empty content: close without asking;
+  - with content: ask Save / Don't Save / Cancel like a dirty file (`save.rs`, `CLOSE_ANSWERS`). Save goes
     §4.3.
-- Untitled có nội dung luôn tính là dirty; rỗng thì không.
-- Thoát / đóng cửa sổ:
-  - `files.hotExit` bật (mặc định): không hỏi; Untitled có nội dung được sao lưu như file dirty. Mở
-    lại cửa sổ: các Untitled hiện lại **ở cuối nhóm editor** (theo cơ chế mở backup không có tab
-    hiện nay, `workbench.rs` ~622–649), đúng `Untitled-N`, đúng nội dung, ngôn ngữ, và vẫn dirty.
-    Không giữ đúng vị trí tab cũ: muốn vậy phải ghi Untitled vào danh sách tab mở lại, trái §4.1.
-    Quyết định của người viết spec.
-  - `files.hotExit: "off"`: hỏi Save All / Don't Save / Cancel như hiện nay; Save All đi §4.3 lần
-    lượt từng Untitled, Cancel ở bất kỳ hộp thoại nào dừng việc thoát.
-- Save All (`workbench.action.files.saveAll`): lưu file thường như cũ, rồi lần lượt hỏi chỗ lưu cho
-  từng Untitled có nội dung; Cancel một cái thì bỏ qua cái đó và đi tiếp.
-- Backup của Untitled: cùng định dạng và `BACKUP_VERSION` hiện tại; header ghi đường dẫn giả (đủ để
-  nhận ra Untitled), không có mtime / size gốc. Khôi phục không đọc đĩa và không đưa đường dẫn qua
-  `Documents::key()` theo kiểu file thường. Quyết định của người viết spec.
+- An Untitled with content always counts as dirty; an empty one does not.
+- Quit / close window:
+  - `files.hotExit` on (default): do not ask; an Untitled with content is backed up like a dirty file. On reopening
+    the window: the Untitled tabs reappear **at the end of the editor group** (via the existing mechanism for opening backups with no tab,
+    `workbench.rs` ~622–649), with the right `Untitled-N`, the right content, language, and still dirty.
+    The old tab position is not preserved: doing so would mean writing Untitled into the list of tabs to reopen, against §4.1.
+    The spec writer's decision.
+  - `files.hotExit: "off"`: ask Save All / Don't Save / Cancel as now; Save All goes §4.3 through each Untitled in
+    turn, and Cancel in any dialog stops the quit.
+- Save All (`workbench.action.files.saveAll`): saves normal files as before, then asks where to save
+  each Untitled with content in turn; Cancel on one skips that one and goes on.
+- An Untitled's backup: the same format and current `BACKUP_VERSION`; the header records the fake path (enough to
+  recognize an Untitled), with no original mtime / size. Restore does not read the disk and does not pass the path through
+  `Documents::key()` the way a normal file does. The spec writer's decision.
 
-### 4.6 Lệnh, phím, menu
+### 4.6 Commands, keys, menu
 
-| Lệnh | Tiêu đề | Phím | Menu |
+| Command | Title | Key | Menu |
 |---|---|---|---|
 | `workbench.action.files.newUntitledFile` | File: New Untitled Text File | `cmd+n` | File → New File |
 | `workbench.action.files.saveAs` | File: Save As... | `shift+cmd+s` | File → Save As… |
 
-Thêm dòng cho hai phím vào bảng `keys.rs` (`table_covers_every_default_binding`). Cập nhật
+Add lines for the two keys to the `keys.rs` table (`table_covers_every_default_binding`). Update
 `docs/keyboard-shortcuts.md`, `docs/features.md`, `docs/settings.md` (`files.defaultLanguage`),
 `CHANGELOG.md` (`[Unreleased]` → Added).
 
 ### 4.7 Vim
 
-`:w` / `:wq` / `:x` trên Untitled đi §4.3 (`:wq`, `:x` chỉ đóng sau khi lưu xong; Cancel thì không
-đóng). `:w tên` ngoài phạm vi.
+`:w` / `:wq` / `:x` on an Untitled go §4.3 (`:wq`, `:x` only close after the save completes; on Cancel they do not
+close). `:w name` is out of scope.
 
-## 5. Để người làm quyết định
+## 5. Left to the implementer
 
-- Đặt `is_untitled` ở đâu (gợi ý: `documents.rs` hoặc module nhỏ riêng) và danh sách chỗ chặn cụ thể
-  — §4.1 là danh sách tối thiểu; tìm thêm bằng grep mọi chỗ dùng đường dẫn tài liệu để chạm đĩa.
-- `Documents::key()` hiện đổi đường dẫn tương đối theo thư mục gốc: phải để Untitled đi qua nguyên.
-- Cách hot exit ghi số `N` và thứ tự tab (dùng lại cơ chế khôi phục tab hiện có nếu được).
+- Where to put `is_untitled` (suggestion: `documents.rs` or a small module of its own) and the concrete list of guard places
+  — §4.1 is the minimum list; find more by grepping every place that uses a document path to touch the disk.
+- `Documents::key()` currently turns a path relative to the root directory: Untitled must pass through it unchanged.
+- How hot exit records the number `N` and the tab order (reuse the existing tab-restore mechanism if possible).
 
-## 6. Kiểm tra
+## 6. Testing
 
-- Unit / gpui test cho: đánh số `N` (nhỏ nhất chưa dùng, trả lại khi đóng / lưu); tên tab theo dòng
-  đầu; mỗi chỗ chặn ở §4.1 (không có file `untitled:*` nào được tạo trên đĩa, không gọi git / LSP);
-  ⌘S trên Untitled với hộp thoại giả (trả đường dẫn / trả Cancel); Save As file thật (file cũ không
-  đổi, tab chuyển, undo còn); đóng Untitled rỗng không hỏi, có nội dung thì hỏi; hot exit khôi phục
-  Untitled; Save All với Untitled.
-- Thủ công: ⌘N → gõ → ⌘S → lưu `foo.rs` trong project → có màu, LSP, Explorer hiện file; ⇧⌘S một file
-  → file cũ còn nguyên; thoát với Untitled chưa lưu → mở lại còn nguyên.
+- Unit / gpui tests for: numbering `N` (the smallest unused, returned on close / save); the tab name from the first
+  line; each guard in §4.1 (no `untitled:*` file is created on disk, git / LSP are not called);
+  ⌘S on an Untitled with a fake dialog (returns a path / returns Cancel); Save As on a real file (the old file
+  unchanged, the tab switches, undo remains); closing an empty Untitled does not ask, with content it asks; hot exit restores an
+  Untitled; Save All with an Untitled.
+- Manual: ⌘N → type → ⌘S → save `foo.rs` in the project → it has color, LSP, Explorer shows the file; ⇧⌘S a file
+  → the old file stays intact; quit with an unsaved Untitled → reopen and it is intact.

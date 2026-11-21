@@ -1,52 +1,53 @@
-# Mở lại workspace gần nhất khi khởi động — thiết kế ngắn
+# Reopen the most recent workspace at startup — short design
 
-Ngày: 2026-11-15. Trạng thái: người dùng chọn "làm như Zed".
+Date: 2026-11-15. Status: the user chose "do it like Zed".
 
-> **Đã thay thế** bởi spec nhiều cửa sổ
-> (`2026-11-15-multi-window-design.md`, M12 và §6.6): `window.restoreWindows`
-> mặc định `"all"`, mở lại mọi cửa sổ trong `windows.json`; `recent.json`
-> chỉ còn là fallback khi danh sách cửa sổ rỗng.
+> **Superseded** by the multi-window spec
+> (`2026-11-15-multi-window-design.md`, M12 and §6.6): `window.restoreWindows`
+> defaults to `"all"`, reopening every window in `windows.json`; `recent.json`
+> is only a fallback when the window list is empty.
 
-## Ý định
+## Intent
 
-Mở một folder, thoát Lucerna, mở lại từ Dock thì Lucerna hiện Welcome
-thay vì folder vừa dùng. Người dùng muốn như Zed: khởi động mà không có
-đường dẫn thì mở lại workspace gần nhất.
+Open a folder, quit Lucerna, reopen it from the Dock, and Lucerna shows
+Welcome instead of the folder just used. The user wants it like Zed: a
+startup with no path reopens the most recent workspace.
 
-## Tham khảo
+## References
 
-- **Zed:** `restore_on_startup`, mặc định `"last_workspace"`: mở lại
-  workspace dùng gần nhất. `"last_session"` mở lại mọi cửa sổ, `"none"`
-  mở cửa sổ trống.
-- **VS Code:** `window.restoreWindows`, mặc định `"all"`: mở lại mọi cửa
-  sổ. `"one"` mở lại cửa sổ dùng gần nhất, `"folders"`, `"preserve"`,
-  `"none"`. Welcome (`workbench.startupEditor`) chỉ hiện khi không có gì
-  để mở lại.
+- **Zed:** `restore_on_startup`, default `"last_workspace"`: reopens the
+  most recently used workspace. `"last_session"` reopens every window,
+  `"none"` opens an empty window.
+- **VS Code:** `window.restoreWindows`, default `"all"`: reopens every
+  window. `"one"` reopens the most recently used window, `"folders"`,
+  `"preserve"`, `"none"`. Welcome (`workbench.startupEditor`) only shows
+  when there is nothing to reopen.
 
-## Thiết kế
+## Design
 
-- Hành vi theo Zed (`last_workspace`), tên setting theo VS Code (nguyên
-  tắc dự án): `window.restoreWindows`, mặc định `"one"`.
-  - `"none"`: như trước (Welcome hoặc hộp chọn folder theo
+- Behavior follows Zed (`last_workspace`), setting name follows VS Code
+  (a project principle): `window.restoreWindows`, default `"one"`.
+  - `"none"`: as before (Welcome or the folder prompt per
     `workbench.startupEditor`).
-  - Giá trị khác (`"one"`, `"all"`, `"folders"`, `"preserve"`): mở lại
-    **một** workspace, vì mỗi cửa sổ Lucerna là một tiến trình. Mở lại
-    nhiều cửa sổ để sau.
-- "Workspace gần nhất" là mục đầu tiên còn tồn tại trong `recent.json`
-  (folder hoặc file mở riêng), mở qua đúng đường mở thường
-  (`Router::open_path`).
-- Chỉ áp dụng khi khởi động không có đường dẫn (Dock, Finder mở app) và
-  không có yêu cầu mở file nào trong thời gian chờ ban đầu. `luc <path>`
-  và "Open With" vẫn mở đúng đường dẫn được yêu cầu.
-- Không có mục nào còn tồn tại: hiện Welcome như trước.
+  - Any other value (`"one"`, `"all"`, `"folders"`, `"preserve"`): reopen
+    **one** workspace, since each Lucerna window is a process. Reopening
+    several windows comes later.
+- "The most recent workspace" is the first entry in `recent.json` that
+  still exists (a folder or a standalone file), opened through the
+  normal open path (`Router::open_path`).
+- Applies only when startup has no path (Dock, Finder opening the app) and
+  no open-file request arrives during the initial wait. `luc <path>`
+  and "Open With" still open the requested path.
+- No entry still exists: show Welcome as before.
 
-## Giới hạn đã biết
+## Known limits
 
-Close Folder rồi thoát thì lần sau vẫn mở lại folder đó (danh sách gần
-đây không ghi việc đóng folder). VS Code `"one"` sẽ mở cửa sổ trống.
+Close Folder then quit still reopens that folder next time (the recent
+list does not record closing a folder). VS Code `"one"` would open an
+empty window.
 
-## Test
+## Tests
 
-`startup.rs`: `"none"` không mở lại; mặc định và các giá trị khác mở lại;
-chọn mục mới nhất còn tồn tại, bỏ qua mục đã bị xoá; danh sách rỗng thì
-không có gì.
+`startup.rs`: `"none"` does not reopen; the default and other values
+reopen; picks the newest entry that still exists, skipping deleted ones;
+an empty list gives nothing.

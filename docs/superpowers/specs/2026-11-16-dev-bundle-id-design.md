@@ -1,70 +1,74 @@
-# Bundle id riêng cho bản dev — thiết kế ngắn
+# A separate bundle id for dev builds — short design
 
-## Vì sao
+## Why
 
-Mở folder gần đây bằng App Exposé (Ctrl+↓) lúc được lúc không. Log cho
-thấy lần hỏng không có yêu cầu mở nào tới app đang chạy. Lúc đó app đang
-chạy là bản `target/release/Lucerna.app`. Với bản `/Applications/Lucerna.app`,
-lần nào cũng mở đúng (người dùng thử khoảng 15 lần ngày 2026-11-16, cộng ba
-lần `open -b`).
+Opening a recent folder with App Exposé (Ctrl+↓) works sometimes and not
+other times. The log shows that on failures no open request reached the
+running app. At that time the running app was the `target/release/Lucerna.app`
+build. With the `/Applications/Lucerna.app` build, it opened correctly every
+time (the user tried about 15 times on 2026-11-16, plus three
+`open -b` runs).
 
-Nguyên nhân: mọi bản build đều mang bundle id `dev.lucerna.Lucerna`
-(`bundle-app.sh` chép nguyên `Info.plist`). LaunchServices đang ghi nhận 6 bản
-như vậy, gồm bản trong `target/`, `~/LucernaBench.noindex`, DMG đã tháo và
-thư mục tạm của session khác. Khi macOS mở tài liệu theo bundle id, nó có thể
-chọn một bản khác bản đang chạy, kể cả bản đã bị xoá, nên yêu cầu mở không
-tới app.
+Cause: every build carries the bundle id `dev.lucerna.Lucerna`
+(`bundle-app.sh` copies `Info.plist` as is). LaunchServices has 6 such builds
+registered, including the one in `target/`, `~/LucernaBench.noindex`, an
+ejected DMG and another session's temp folder. When macOS opens a document
+by bundle id, it may pick a build other than the running one, even one that
+has been deleted, so the open request never reaches the app.
 
-## Mục tiêu
+## Goals
 
-- Bản chạy từ cây build (không cài) có bundle id và tên riêng, nên Ctrl+↓,
-  Dock và "Open With" của nó không lẫn với bản chính.
-- Bản cài vào `/Applications`, DMG và bản phát hành trên GitHub giữ nguyên
-  `dev.lucerna.Lucerna` / "Lucerna".
+- A build run from the build tree (not installed) has its own bundle id and
+  name, so its Ctrl+↓, Dock and "Open With" do not mix with the main build.
+- The build installed in `/Applications`, the DMG and the GitHub release
+  build keep `dev.lucerna.Lucerna` / "Lucerna".
 
-## Không làm
+## Non-goals
 
-- Không tách dữ liệu: bản dev vẫn dùng chung `~/Library/Application Support/Lucerna`,
-  log và socket `luc`, vì các đường dẫn này đặt tên cứng, không theo bundle
-  id. Chạy cùng lúc hai bản thì `luc` chỉ nói chuyện với một bản, như hiện
-  nay.
-- Không làm icon riêng cho bản dev.
-- Không sửa code mở folder và cách chọn cửa sổ (`window_choice`), vì đã đúng.
+- No data split: the dev build still shares `~/Library/Application Support/Lucerna`,
+  the log and the `luc` socket, because these paths are hard-coded, not
+  derived from the bundle id. Running two builds at once, `luc` talks to
+  only one of them, as it does today.
+- No separate icon for the dev build.
+- No change to the folder-opening code and window selection (`window_choice`),
+  since they are already correct.
 
-## Cách đã cân nhắc
+## Approaches considered
 
-1. **Bản dev có bundle id riêng (đã chọn).** Đây là cách Zed làm:
-   `dev.zed.Zed`, `dev.zed.Zed-Preview`, `dev.zed.Zed-Dev`. VS Code cũng
-   tách Insiders thành `com.microsoft.VSCodeInsiders`. Hạn chế: các bản dev
-   vẫn trùng id với nhau.
-2. Chỉ đổi cách làm việc: luôn `--install` rồi gỡ đăng ký các bản cũ bằng
-   `lsregister -u`. Bỏ vì dễ tái phát, do session khác cứ build ra bản mới.
-3. Cả 1 và thêm bước gỡ đăng ký các bản dev cũ. Để sau, nếu cách 1 chưa đủ.
+1. **The dev build has its own bundle id (chosen).** This is how Zed does it:
+   `dev.zed.Zed`, `dev.zed.Zed-Preview`, `dev.zed.Zed-Dev`. VS Code also
+   splits Insiders into `com.microsoft.VSCodeInsiders`. Limit: dev builds
+   still share an id with each other.
+2. Only change the workflow: always `--install` and then unregister old
+   builds with `lsregister -u`. Dropped because it is easy to regress, as
+   other sessions keep building new builds.
+3. Both 1 and a step that unregisters old dev builds. Later, if 1 is not enough.
 
-## Thiết kế
+## Design
 
-- `crates/lucerna/resources/macos/Info.plist`: `CFBundleIdentifier` và
-  `CFBundleName` (cùng `CFBundleDisplayName` nếu có) thành placeholder
-  `@BUNDLE_ID@` và `@BUNDLE_NAME@`.
-- `scripts/bundle-app.sh` có hai kênh, giống Zed (mặc định là dev, bản phát
-  hành phải nói rõ):
-  - mặc định: `dev.lucerna.Lucerna-Dev`, "Lucerna Dev";
-  - `--stable`: `dev.lucerna.Lucerna`, "Lucerna". `--install` tự bật
-    `--stable`.
-  - Tên thư mục `.app` và tên file binary giữ nguyên `Lucerna.app` / `luc`,
-    để các script và tài liệu đang trỏ tới chúng không phải đổi.
-- `scripts/make-dmg.sh` và `.github/workflows/release.yml` truyền `--stable`.
-- Giữ ba dòng log chẩn đoán đã thêm trong
-  `crates/lucerna-workbench/src/app.rs`: yêu cầu mở và mở lại từ hệ điều
-  hành, cùng các đường dẫn đọc được.
+- `crates/lucerna/resources/macos/Info.plist`: `CFBundleIdentifier` and
+  `CFBundleName` (plus `CFBundleDisplayName` if present) become the
+  placeholders `@BUNDLE_ID@` and `@BUNDLE_NAME@`.
+- `scripts/bundle-app.sh` has two channels, like Zed (dev is the default,
+  a release must say so explicitly):
+  - default: `dev.lucerna.Lucerna-Dev`, "Lucerna Dev";
+  - `--stable`: `dev.lucerna.Lucerna`, "Lucerna". `--install` turns on
+    `--stable` by itself.
+  - The `.app` folder name and the binary file name stay `Lucerna.app` / `luc`,
+    so the scripts and docs that point to them need no change.
+- `scripts/make-dmg.sh` and `.github/workflows/release.yml` pass `--stable`.
+- Keep the three diagnostic log lines already added in
+  `crates/lucerna-workbench/src/app.rs`: the open request and reopen from
+  the OS, plus the paths it could read.
 
-## Để người làm quyết định
+## Left to the implementer
 
-- Cách kiểm tra plist sau khi build: `plutil`, `defaults read`.
-- Cập nhật `docs/research/2026-11-09-app-bundle.md` để ghi lại hai kênh.
+- How to check the plist after a build: `plutil`, `defaults read`.
+- Update `docs/research/2026-11-09-app-bundle.md` to record the two channels.
 
-## Tham khảo
+## References
 
-- Zed: kênh phát hành (stable, preview, nightly, dev) quyết định bundle id
-  và tên app. Bản build mặc định là dev.
-- VS Code: Stable và Insiders có bundle id riêng nên cài song song được.
+- Zed: the release channel (stable, preview, nightly, dev) decides the bundle
+  id and app name. The default build is dev.
+- VS Code: Stable and Insiders have separate bundle ids so they can be
+  installed side by side.

@@ -1,220 +1,220 @@
-# Màn onboarding lần chạy đầu ("Get Started")
+# First-run onboarding screen ("Get Started")
 
-Ngày 2026-11-15. Trạng thái: đã triển khai (branch claude/interesting-kapitsa-5d4c92, commits 50d9583–e48d6b1); kiểm tra thủ công §9 chưa làm.
+Date 2026-11-15. Status: implemented (branch claude/interesting-kapitsa-5d4c92, commits 50d9583–e48d6b1); manual check §9 not done yet.
 
-Những chỗ khác spec khi triển khai:
-- `ONBOARDING_COMMANDS` không có lệnh Open… nào.
-- `number_stepper` trả về `(value, minus, plus)`.
-- File ▸ Open Recent không liệt kê mục nào trong cửa sổ onboarding.
-- Nút Get Started của Welcome dùng icon settings.
-- Test của router nằm trong `tests/welcome.rs`.
-- `settings.json` hỏng khi trang là gốc cửa sổ thì hiện một dòng cảnh báo.
-- **Bỏ chọn font family và ô code mẫu** (người dùng quyết định 2026-11-15, sau khi chạy thử): người dùng tự đặt `editor.fontFamily` trong `settings.json`. Trang chỉ còn cỡ chữ (− / +) và Vim trong phần EDITOR. Các mục về Font Family, `FontPicker`, `dropdown_button` và dòng mẫu font đã được bỏ khỏi spec này.
+Where the implementation differs from this spec:
+- `ONBOARDING_COMMANDS` has no Open… commands.
+- `number_stepper` returns `(value, minus, plus)`.
+- File ▸ Open Recent lists no entries in the onboarding window.
+- Welcome's Get Started button uses the settings icon.
+- The router tests live in `tests/welcome.rs`.
+- A broken `settings.json` shows a one-line warning when the page is the window root.
+- **Font family picker and the sample code box dropped** (user decision 2026-11-15, after a trial run): users set `editor.fontFamily` in `settings.json` themselves. The page keeps only the font size (− / +) and Vim in the EDITOR section. The Font Family entries, `FontPicker`, `dropdown_button` and the font sample line were removed from this spec.
 
-Spec này sửa mục W12 của `2026-11-12-welcome-design.md`: Welcome vẫn không có AI, đăng nhập, New File hay Clone Repository, nhưng **Lucerna có onboarding**, là một trang riêng chứ không phải một phần của Welcome.
+This spec amends item W12 of `2026-11-12-welcome-design.md`: Welcome still has no AI, sign-in, New File or Clone Repository, but **Lucerna has onboarding**, as a page of its own rather than a part of Welcome.
 
-## 1. Ý định
+## 1. Intent
 
-Zed có một trang onboarding riêng hiện ở lần chạy đầu, cho chọn theme và Vim. Lucerna sắp ra 0.1, và người dùng muốn người mới có một chỗ chỉnh vài thứ cơ bản ngay khi mở app: theme, font, Vim. Hiện nay người mới phải tự tìm `settings.json` hoặc Command Palette mới làm được.
+Zed has a dedicated onboarding page shown on first run, for choosing a theme and Vim. Lucerna is about to ship 0.1, and we want new users to have one place to adjust a few basics as soon as they open the app: theme, font, Vim. Today a new user has to find `settings.json` or the Command Palette to do any of it.
 
-**Mục tiêu:**
-- Lần đầu mở Lucerna (Dock, Finder, `luc` không đối số) thì hiện trang "Get Started", chỉnh được theme Sáng / Tối / Theo hệ thống, cỡ chữ editor, Vim mode, và có nút mở `settings.json`.
-- Mỗi thay đổi được ghi ngay vào `settings.json` của người dùng và thấy kết quả ngay.
-- Trang chỉ tự hiện một lần. Mở lại được bằng lệnh, từ menu Help, và từ Welcome.
-- Hợp với `window.restoreWindows`: người đã có workspace để mở lại thì không bị chặn bởi onboarding.
+**Goals:**
+- On the first launch of Lucerna (Dock, Finder, `luc` with no arguments) the "Get Started" page appears, where the user can pick the Light / Dark / System theme, the editor font size and Vim mode, and has a button to open `settings.json`.
+- Each change is written to the user's `settings.json` immediately and takes effect immediately.
+- The page appears automatically only once. It can be reopened with a command, from the Help menu, and from Welcome.
+- It fits with `window.restoreWindows`: a user who already has a workspace to reopen is not blocked by onboarding.
 
-**Không làm:** chọn keymap gốc (Lucerna chỉ theo phím VS Code), AI, đăng nhập, telemetry, import settings từ editor khác, font UI, chọn họ theme (Lucerna mới có một cặp theme mặc định).
+**Non-goals:** choosing a base keymap (Lucerna only follows VS Code keys), AI, sign-in, telemetry, importing settings from another editor, UI font, choosing a theme family (Lucerna has only one default theme pair so far).
 
-**Thất bại dù vẫn chạy được, nếu:**
-- trang hiện lại ở mỗi lần khởi động, hoặc chen vào trước workspace người dùng muốn mở lại;
-- đổi setting trên trang mà làm mất comment hay định dạng trong `settings.json`;
-- trang hiện giá trị khác với setting thật (ví dụ người dùng đã sửa tay file).
+**Fails even though it runs, if:**
+- the page shows again on every launch, or cuts in front of a workspace the user wants to reopen;
+- changing a setting on the page loses comments or formatting in `settings.json`;
+- the page shows a value different from the real setting (for example the user edited the file by hand).
 
-## 2. Tham khảo
+## 2. References
 
-Chi tiết ở `docs/research/2026-11-15-onboarding.md`. Tóm tắt:
-- **Zed:** onboarding là một tab trong workspace trống, một trang cuộn (từ bản 0.208), cột tối đa 780 px. Đầu trang có logo, "Welcome to Zed" và nút "Finish Setup" (`cmd-enter`), bấm thì tab được thay bằng Welcome. Các mục: Theme (toggle Light/Dark/System và ba ô xem trước vẽ bằng màu theme), Base Keymap, AI, Import Settings, Vim Mode, Trust, Telemetry. Mỗi control ghi ngay vào `settings.json`, không có Cancel. Tự hiện khi không có gì để khôi phục và khóa `first_open` chưa có; khóa được ghi ngay lúc trang mở. Mở kèm đường dẫn thì không hiện. Mở lại bằng `zed: open onboarding`; Welcome có nút "Return to Onboarding".
-- **VS Code:** walkthrough "Get started with VS Code" trên trang Welcome có bước chọn theme bằng thẻ ảnh. Overlay onboarding mới là modal phủ Welcome, chỉ hiện khi storage ứng dụng mới. Chọn theme khi `window.autoDetectColorScheme` bật thì ghi vào khóa theme ưa thích theo chế độ hệ thống.
-- **Lucerna chọn:** điều kiện "lần đầu", cách ghi settings ngay, nút Finish và bố cục trang theo Zed; tên setting và lệnh mở settings theo VS Code. Lệch khỏi Zed:
-  - chỉ một ô xem trước theme thay vì ba, vì Lucerna mới có một cặp theme;
-  - có cỡ chữ editor (bản Zed cũ có, bản mới bỏ), theo yêu cầu người dùng;
-  - có mục Help ▸ Get Started (Zed không có), để người dùng VS Code tìm được.
+Details in `docs/research/2026-11-15-onboarding.md`. Summary:
+- **Zed:** onboarding is a tab in an empty workspace, a scrolling page (since version 0.208), with a column at most 780 px wide. The top has the logo, "Welcome to Zed" and a "Finish Setup" button (`cmd-enter`); clicking it replaces the tab with Welcome. The sections: Theme (a Light/Dark/System toggle and three preview tiles drawn with the theme colors), Base Keymap, AI, Import Settings, Vim Mode, Trust, Telemetry. Each control writes to `settings.json` immediately, with no Cancel. It shows automatically when there is nothing to restore and the `first_open` key is not set; the key is written the moment the page opens. It does not show when launched with a path. Reopen with `zed: open onboarding`; Welcome has a "Return to Onboarding" button.
+- **VS Code:** the "Get started with VS Code" walkthrough on the Welcome page has a theme-picking step with image cards. The newer onboarding overlay is a modal over Welcome, shown only when application storage is new. Picking a theme while `window.autoDetectColorScheme` is on writes to the preferred theme key for the system mode.
+- **Lucerna's choice:** the "first time" condition, writing settings immediately, the Finish button and the page layout follow Zed; setting names and the command to open settings follow VS Code. Deviations from Zed:
+  - only one theme preview tile instead of three, because Lucerna has only one theme pair;
+  - an editor font size control (older Zed versions had it, newer ones dropped it), at the user's request;
+  - a Help ▸ Get Started entry (Zed has none), so VS Code users can find it.
 
-## 3. Quyết định
+## 3. Decisions
 
-| # | Quyết định | Lý do |
+| # | Decision | Reason |
 |---|---|---|
-| O1 | Trang là một view `OnboardingPage` dùng được ở **hai chỗ**: (a) làm **root view** của cửa sổ chưa mở thư mục, như Welcome; (b) làm **tab** `TabItem::Onboarding` trong workbench. Phần vẽ nội dung là một. | Người dùng chọn (cách A). Zed để trang trong tab; Lucerna không có workbench rỗng nên ở cửa sổ chưa mở thư mục trang phải là root, như Welcome (W1). |
-| O2 | Tự hiện khi khởi động **không có đường dẫn** (không đối số, không yêu cầu mở từ Finder trong thời gian chờ), **không có workspace để mở lại** (`window.restoreWindows` là `"none"` hoặc không có mục gần đây còn tồn tại), và **chưa có cờ** `onboarded`. | Theo Zed. Người cũ có workspace để mở lại thì không bị chặn. |
-| O3 | Cờ `onboarded: true` được ghi **ngay khi trang tự hiện**, không chờ bấm Finish. | Theo Zed: đóng cửa sổ hay thoát app thì lần sau không hiện lại. |
-| O4 | Onboarding đứng trước `workbench.startupEditor` ở lần đầu: khi O2 đúng thì hiện onboarding kể cả khi `startupEditor` là `"none"`. | Lần đầu thường chưa có settings. Người đặt `"none"` trước khi chạy lần đầu chỉ thấy trang một lần. |
-| O5 | Finish (`⌘Enter`): ở root thì đổi root sang Welcome (`window.replace_root`, như W1); ở tab thì đóng tab. | Zed thay trang bằng Welcome. Trong workbench Lucerna không có tab Welcome, nên đóng tab. |
-| O6 | Mỗi control ghi ngay vào `settings.json` người dùng, giữ comment (hàm sẵn có trong `theme_picker.rs`), rồi nạp lại cấu hình. Trang vẽ theo setting hiện hành sau khi gộp các lớp. Không có Undo/Cancel. | Theo Zed. Sửa tay file thì trang đổi theo. |
-| O7 | Theme: cụm ba nút **Light / Dark / System**. System ghi `window.autoDetectColorScheme: true`. Light/Dark ghi `window.autoDetectColorScheme: false` và `workbench.colorTheme` bằng giá trị đang có của `workbench.preferredLightColorTheme` / `workbench.preferredDarkColorTheme` (mặc định "Lucerna Light" / "Lucerna Dark"). | Khóa theo VS Code, như người dùng yêu cầu. Giữ theme ưa thích người dùng đã đặt. |
-| O8 | Lệnh `lucerna.openOnboarding`, tiêu đề "Help: Get Started", không có phím mặc định. Có trong menu Help ("Get Started", đứng đầu) và là một nút "Get Started" trên Welcome. | VS Code không có lệnh tương ứng (onboarding mới của nó ở nhóm Developer), nên dùng tiền tố `lucerna.` như `lucerna.openLogsFolder`. Zed có nút "Return to Onboarding" trên Welcome. |
-| O9 | Font size bằng nút − / + từ 6 tới 100, bước 1. Không chọn font family trên trang: người dùng tự đặt `editor.fontFamily` trong `settings.json`. | Người dùng quyết định 2026-11-15 sau khi chạy thử: danh sách font dài và ít người đổi font lúc mới cài. |
-| O10 | Vim mode là một **công tắc** (switch) ghi `vim.enabled`. | Zed dùng switch. |
-| O11 | Không chọn keymap gốc, AI, đăng nhập, telemetry, import, font UI. | Phạm vi người dùng đã chốt. |
+| O1 | The page is an `OnboardingPage` view usable in **two places**: (a) as the **root view** of a window with no folder open, like Welcome; (b) as a `TabItem::Onboarding` **tab** in the workbench. The content rendering is shared. | The user chose this (option A). Zed keeps the page in a tab; Lucerna has no empty workbench, so in a window with no folder the page has to be the root, like Welcome (W1). |
+| O2 | Shown automatically at startup with **no path** (no arguments, no open-from-Finder request during the wait), **no workspace to reopen** (`window.restoreWindows` is `"none"` or no recent entry still exists), and **no `onboarded` flag** yet. | Follows Zed. Returning users with a workspace to reopen are not blocked. |
+| O3 | The `onboarded: true` flag is written **the moment the page shows automatically**, without waiting for Finish. | Follows Zed: closing the window or quitting the app means it does not show again next time. |
+| O4 | On the first run, onboarding goes before `workbench.startupEditor`: when O2 holds, onboarding shows even if `startupEditor` is `"none"`. | The first run usually has no settings yet. Someone who set `"none"` before the first run only sees the page once. |
+| O5 | Finish (`⌘Enter`): at root, switch the root to Welcome (`window.replace_root`, like W1); in a tab, close the tab. | Zed replaces the page with Welcome. Lucerna's workbench has no Welcome tab, so it closes the tab. |
+| O6 | Each control writes to the user's `settings.json` immediately, keeping comments (an existing function in `theme_picker.rs`), then reloads the configuration. The page renders from the current setting after merging the layers. No Undo/Cancel. | Follows Zed. Editing the file by hand changes the page. |
+| O7 | Theme: a group of three buttons **Light / Dark / System**. System writes `window.autoDetectColorScheme: true`. Light/Dark write `window.autoDetectColorScheme: false` and `workbench.colorTheme` set to the current value of `workbench.preferredLightColorTheme` / `workbench.preferredDarkColorTheme` (defaults "Lucerna Light" / "Lucerna Dark"). | Keys follow VS Code, as the user asked. Keeps the preferred theme the user already set. |
+| O8 | Command `lucerna.openOnboarding`, titled "Help: Get Started", no default key. It is in the Help menu ("Get Started", first entry) and is a "Get Started" button on Welcome. | VS Code has no matching command (its new onboarding is in the Developer group), so it uses the `lucerna.` prefix like `lucerna.openLogsFolder`. Zed has a "Return to Onboarding" button on Welcome. |
+| O9 | Font size with − / + buttons from 6 to 100, step 1. No font family picker on the page: users set `editor.fontFamily` in `settings.json` themselves. | User decision 2026-11-15 after a trial run: the font list is long and few people change the font on a fresh install. |
+| O10 | Vim mode is a **switch** that writes `vim.enabled`. | Zed uses a switch. |
+| O11 | No base keymap, AI, sign-in, telemetry, import, UI font. | Scope the user settled. |
 
-**Thành công khi:**
-- Xóa `<data_dir>` (hoặc dùng một `HOME` mới), mở `Lucerna.app` từ Dock: hiện trang Get Started chiếm cả cửa sổ. Bấm Dark: app đổi sang Lucerna Dark ngay, `settings.json` có `"window.autoDetectColorScheme": false` và `"workbench.colorTheme": "Lucerna Dark"`, comment cũ còn nguyên.
-- Bấm + ở Font size: editor ở các cửa sổ khác to lên ngay, file có `"editor.fontSize": 15`.
-- Bật Vim mode: file có `"vim.enabled": true`; mở một thư mục thì editor ở Normal mode.
-- ⌘Enter: cửa sổ đổi sang Welcome, không có cửa sổ thứ hai.
-- Thoát rồi mở lại từ Dock khi chưa mở thư mục nào: hiện Welcome, không hiện onboarding.
-- Đã mở một thư mục, thoát, mở lại từ Dock: mở lại thư mục đó (restoreWindows), không hiện onboarding.
-- `luc ~/code` ở lần chạy đầu: mở thư mục, không hiện onboarding, cờ chưa ghi.
-- Trong workbench, chạy "Help: Get Started": mở tab Get Started; chạy lần nữa thì nhảy về tab đó. ⌘Enter đóng tab.
-- Sửa tay `"editor.fontSize": 20` trong `settings.json` khi trang đang mở: ô cỡ chữ hiện 20.
+**Success when:**
+- Delete `<data_dir>` (or use a fresh `HOME`) and open `Lucerna.app` from the Dock: the Get Started page fills the whole window. Click Dark: the app switches to Lucerna Dark immediately, `settings.json` has `"window.autoDetectColorScheme": false` and `"workbench.colorTheme": "Lucerna Dark"`, and the old comments are intact.
+- Click + on Font size: editors in other windows get bigger immediately, and the file has `"editor.fontSize": 15`.
+- Turn on Vim mode: the file has `"vim.enabled": true`; opening a folder puts the editor in Normal mode.
+- ⌘Enter: the window switches to Welcome, with no second window.
+- Quit and reopen from the Dock with no folder open: Welcome shows, not onboarding.
+- Open a folder, quit, reopen from the Dock: that folder reopens (restoreWindows), no onboarding.
+- `luc ~/code` on the first run: opens the folder, no onboarding, the flag is not written.
+- In the workbench, run "Help: Get Started": the Get Started tab opens; running it again jumps back to that tab. ⌘Enter closes the tab.
+- Hand-edit `"editor.fontSize": 20` in `settings.json` while the page is open: the font size box shows 20.
 
-## 4. Lần đầu và luồng khởi động
+## 4. First run and the startup flow
 
-`app.rs` `open_without_folder` hiện làm: đọc cấu hình người dùng → nếu `restores_last_workspace` và có `last_workspace` thì mở nó → nếu không thì `startup_choice` (Welcome hoặc hộp chọn thư mục). Thêm một bước:
+`app.rs` `open_without_folder` currently does: read the user config → if `restores_last_workspace` and there is a `last_workspace`, open it → otherwise `startup_choice` (Welcome or the folder prompt). Add one step:
 
 ```
 open_without_folder:
   watch_config(user_only)
-  nếu restores_last_workspace && có last_workspace → mở nó; return
-  nếu !onboarded(data_dir)                         → mark_onboarded(data_dir); Router::open_onboarding; return
+  if restores_last_workspace && has last_workspace → open it; return
+  if !onboarded(data_dir)                          → mark_onboarded(data_dir); Router::open_onboarding; return
   startup_choice → FolderPrompt | Welcome
 ```
 
-- **Cờ** nằm ở `<data_dir>/state.json`: `{ "version": 1, "onboarded": true }`. Module thuần `app_state_file.rs` (không gpui) có `load(path) -> AppFlags`, `mark_onboarded(data_dir)`. File không có hoặc thiếu khóa thì `onboarded = false`. File hỏng hoặc khác version thì đổi tên thành `.bak` như `recent.json`, coi là `onboarded = false`. Ghi bằng `write_atomic` sẵn có. Đọc và ghi đều ở luồng nền như `recent.rs`, trừ lần đọc lúc khởi động (một file nhỏ, đọc đồng bộ trước khi có cửa sổ, như `recent::load` ở `open_without_folder`).
-- Không có `HOME` (`default_data_dir()` là `None`): không hiện onboarding, đi thẳng `startup_choice`. Không có chỗ ghi cờ thì hiện mỗi lần sẽ gây phiền.
-- Ghi cờ lỗi: `tracing::warn` và vẫn hiện trang. Lần sau có thể hiện lại; chấp nhận được.
-- Các đường khác (`luc <path>`, Open With, `open_urls`) không đổi: không xét onboarding và không ghi cờ.
-- Chọn root lúc khởi động tách thành hàm thuần để test: `startup_screen(restore: Option<&RecentEntry>, onboarded: bool, has_data_dir: bool, choice: Startup) -> StartupScreen::{Restore(path), Onboarding, Welcome, FolderPrompt}`. Hàm `restores_last_workspace`, `last_workspace`, `startup_choice` trong `startup.rs` giữ nguyên; hàm mới nằm cạnh chúng.
+- The **flag** lives in `<data_dir>/state.json`: `{ "version": 1, "onboarded": true }`. A pure module `app_state_file.rs` (no gpui) has `load(path) -> AppFlags` and `mark_onboarded(data_dir)`. A missing file or missing key means `onboarded = false`. A corrupt or different-version file is renamed to `.bak` like `recent.json` and treated as `onboarded = false`. Written with the existing `write_atomic`. Reads and writes both happen on a background thread like `recent.rs`, except the startup read (a small file, read synchronously before any window exists, like `recent::load` in `open_without_folder`).
+- No `HOME` (`default_data_dir()` is `None`): do not show onboarding, go straight to `startup_choice`. With nowhere to write the flag, showing it every time would be annoying.
+- Writing the flag fails: `tracing::warn` and still show the page. It may show again next time; acceptable.
+- Other paths (`luc <path>`, Open With, `open_urls`) are unchanged: they do not consider onboarding and do not write the flag.
+- Choosing the root at startup is split into a pure function for testing: `startup_screen(restore: Option<&RecentEntry>, onboarded: bool, has_data_dir: bool, choice: Startup) -> StartupScreen::{Restore(path), Onboarding, Welcome, FolderPrompt}`. The functions `restores_last_workspace`, `last_workspace` and `startup_choice` in `startup.rs` stay as they are; the new function sits next to them.
 
-## 5. Trang Get Started
+## 5. The Get Started page
 
-### 5.1 Bố cục (theo Zed `basics_page.rs`, bỏ các mục ở O11)
+### 5.1 Layout (after Zed's `basics_page.rs`, minus the items dropped in O11)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ ● ● ●                       Lucerna                          │  title bar 34 px (chỉ khi là root)
+│ ● ● ●                       Lucerna                          │  title bar 34 px (only as root)
 ├──────────────────────────────────────────────────────────────┤
 │      [logo] Welcome to Lucerna                 [ Finish  ⌘↵ ]│  header
 │             Set up the basics. Change them any time.         │  muted
-│      ─────────────────────────────────────────────────────── │  đường kẻ border_variant
+│      ─────────────────────────────────────────────────────── │  border_variant rule
 │      THEME ───────────────────────────── [Light|Dark|System] │  section_header + segmented
 │      ┌──────────────────────────────┐                        │
 │      │ ▌▬▬  ▬▬▬▬▬                    │  theme_preview          │
-│      │ ▌▬   ▬▬ ▬▬▬▬                  │  (System: chia đôi)     │
+│      │ ▌▬   ▬▬ ▬▬▬▬                  │  (System: split in two) │
 │      └──────────────────────────────┘                        │
-│      Lucerna Dark                                            │  tên theme, muted
+│      Lucerna Dark                                            │  theme name, muted
 │      EDITOR ─────────────────────────────────────────────────│
 │      Font Size                            [ −   14   + ]     │  setting_row + number_stepper
 │      Vim Mode                                         ( ●)   │  setting_row + switch
-│      Enable Vim keybindings (vim.enabled)                    │  mô tả muted dưới nhãn
+│      Enable Vim keybindings (vim.enabled)                    │  muted description under the label
 │      ─────────────────────────────────────────────────────── │
 │      [⚙] Open Settings (JSON)                       ⌘,       │  list_button
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- Nền `editor_background`, không có status bar khi là root. Cột rộng tối đa **640 px** (giữa 512 px của Welcome và 780 px của Zed, vì Lucerna bỏ bớt mục), căn giữa ngang, padding `8×GRID`, các khối cách nhau `6×GRID`, cuộn dọc khi cửa sổ thấp (thanh cuộn chung của Lucerna).
-- Tiêu đề và logo dùng lại cách vẽ của Welcome (`mark-mono.svg`, cỡ 45 px, tiêu đề 20 px). Dòng phụ cỡ `UI_FONT_SIZE_SMALL`, màu `text_muted`.
-- Nút Finish dùng `primary_text_button` với phím hiển thị bên phải.
-- `section_header` và `list_button` dùng lại từ `ui.rs`.
-- Nút "Open Settings (JSON)" hiện phím của `workbench.action.openSettingsJson` theo keymap người dùng.
+- Background `editor_background`, no status bar when it is the root. The column is at most **640 px** wide (between Welcome's 512 px and Zed's 780 px, since Lucerna has fewer sections), centered horizontally, `8×GRID` padding, blocks spaced `6×GRID` apart, scrolls vertically when the window is short (Lucerna's shared scrollbar).
+- The title and logo reuse Welcome's rendering (`mark-mono.svg`, 45 px, 20 px title). The subtitle uses `UI_FONT_SIZE_SMALL` in `text_muted`.
+- The Finish button uses `primary_text_button` with the key shown on the right.
+- `section_header` and `list_button` are reused from `ui.rs`.
+- The "Open Settings (JSON)" button shows the key of `workbench.action.openSettingsJson` per the user's keymap.
 
-### 5.2 Component mới trong `ui.rs`
+### 5.2 New components in `ui.rs`
 
-Đặt tên và kích thước theo các component sẵn có (`GRID`, màu theme):
-- **`segmented_control(id, options, selected, cx)`**: các nút liền nhau, viền 1 px `border`, bo `GRID`, cao `6×GRID`. Nút chọn nền `element_selected`, nút khác hover `ghost_element_hover`. Trả từng nút có `on_click`.
-- **`switch(id, on, cx)`**: rộng `7×GRID`, cao `4×GRID`, bo tròn. Bật: nền `element_selected` (hoặc màu nhấn của theme nếu có), núm bên phải. Tắt: nền `element_background`, núm bên trái.
-- **`number_stepper(id, value, cx)`**: nút − / + (`icon_button`) hai bên con số; nút mờ khi chạm giới hạn.
-- **`setting_row(label, description, control)`**: nhãn cỡ `UI_FONT_SIZE`, mô tả cỡ `UI_FONT_SIZE_SMALL` màu `text_muted` dưới nhãn, control căn phải.
-- **`theme_preview(theme, cx)`**: vẽ một workspace thu nhỏ bằng màu của theme truyền vào (không dùng theme đang active): sidebar ~22% có 6 dòng, vùng editor có ~8 thanh "mã giả" tô bằng màu cú pháp (keyword, function, string, comment, type, variable). Độ rộng và thụt lề của thanh là bảng cố định, không ngẫu nhiên. Cao `30×GRID`, bo 8 px, viền 1 px. Ở System thì vẽ hai nửa: trái là theme sáng, phải là theme tối.
+Names and sizes follow the existing components (`GRID`, theme colors):
+- **`segmented_control(id, options, selected, cx)`**: adjoining buttons, 1 px `border` outline, `GRID` radius, `6×GRID` high. The selected button has the `element_selected` background; the others get `ghost_element_hover` on hover. Returns each button with an `on_click`.
+- **`switch(id, on, cx)`**: `7×GRID` wide, `4×GRID` high, fully rounded. On: `element_selected` background (or the theme's accent color if there is one), knob on the right. Off: `element_background` background, knob on the left.
+- **`number_stepper(id, value, cx)`**: − / + buttons (`icon_button`) on both sides of the number; a button dims when it hits its limit.
+- **`setting_row(label, description, control)`**: label at `UI_FONT_SIZE`, description at `UI_FONT_SIZE_SMALL` in `text_muted` under the label, control aligned right.
+- **`theme_preview(theme, cx)`**: draws a miniature workspace using the passed-in theme's colors (not the active theme): a sidebar of about 22% with 6 lines, an editor area with about 8 "pseudo-code" bars filled with syntax colors (keyword, function, string, comment, type, variable). The bar widths and indents come from a fixed table, not randomness. `30×GRID` high, 8 px radius, 1 px outline. For System it draws two halves: the light theme on the left, the dark theme on the right.
 
-Kiểm tra trong `ui.rs` trước khi tạo: nếu đã có component tương đương thì dùng lại.
+Check `ui.rs` before creating one: if an equivalent component already exists, reuse it.
 
 ### 5.3 Theme
 
-- **Trạng thái đang chọn:** `window.autoDetectColorScheme` đúng thì System; sai thì Light hoặc Dark theo appearance của theme `workbench.colorTheme`.
-- **Bấm** (O7):
-  - System: ghi `window.autoDetectColorScheme: true`.
-  - Light: ghi `window.autoDetectColorScheme: false` và `workbench.colorTheme` = giá trị của `workbench.preferredLightColorTheme` đọc **trực tiếp** từ store (không qua `configured_theme_name`, vì hàm đó trả `workbench.colorTheme` khi autodetect tắt), không có thì "Lucerna Light".
-  - Dark: tương tự với `preferredDarkColorTheme` / "Lucerna Dark".
-  - Bấm nút đang chọn thì không ghi gì.
-- **Ô xem trước** vẽ theme sẽ dùng với lựa chọn hiện tại: Light/Dark là `workbench.colorTheme`; System vẽ hai nửa preferred Light và preferred Dark. Dưới ô là tên theme (System: "Lucerna Light / Lucerna Dark").
-- Theme có tên không tìm thấy thì `get_or_default` như `apply_configured_theme`.
-- **Ghi hai khóa một lần:** viết `set_settings(text, &[(key, serde_json::Value)])` trong `theme_picker.rs` (tách thành `settings_edit.rs` nếu cần) dựa trên `set_string_setting`, mở rộng sang giá trị bool và số, và ghi file một lần để watcher chỉ thấy một thay đổi. `set_string_setting` gọi hàm mới.
+- **Selected state:** if `window.autoDetectColorScheme` is true it is System; if false it is Light or Dark according to the appearance of the `workbench.colorTheme` theme.
+- **Click** (O7):
+  - System: write `window.autoDetectColorScheme: true`.
+  - Light: write `window.autoDetectColorScheme: false` and `workbench.colorTheme` = the value of `workbench.preferredLightColorTheme` read **directly** from the store (not through `configured_theme_name`, since that function returns `workbench.colorTheme` when autodetect is off), or "Lucerna Light" if unset.
+  - Dark: likewise with `preferredDarkColorTheme` / "Lucerna Dark".
+  - Clicking the already-selected button writes nothing.
+- The **preview tile** draws the theme that would be used with the current choice: for Light/Dark it is `workbench.colorTheme`; for System it draws two halves, preferred Light and preferred Dark. Under the tile is the theme name (System: "Lucerna Light / Lucerna Dark").
+- A theme name that is not found falls back with `get_or_default`, like `apply_configured_theme`.
+- **Write two keys at once:** write `set_settings(text, &[(key, serde_json::Value)])` in `theme_picker.rs` (split out to `settings_edit.rs` if needed), built on `set_string_setting`, extended to bool and number values, and writing the file once so the watcher sees a single change. `set_string_setting` calls the new function.
 
 ### 5.4 Editor
 
-- **Font Size:** hiện `editor.fontSize` hiện hành (làm tròn). − / + ghi giá trị mới, giới hạn 6–100 (VS Code chấp nhận 6–100).
-- **Vim Mode:** công tắc theo `vim.enabled`, bấm thì ghi giá trị đảo. Các editor đang mở đổi theo cách sẵn có khi `vim.enabled` thay đổi.
-- Các thay đổi này chỉ ghi lớp người dùng. Nếu lớp workspace (`.lucerna/settings.json`) hoặc override ngôn ngữ đặt khóa đó thì trang hiện giá trị đã gộp, và giá trị vừa ghi có thể không thấy hiệu lực. Spec này **không** báo điều đó trên trang, vì `SettingsStore` không cho biết lớp nào đặt khóa và spec chỉ đổi `lucerna-workbench`. Ghi vào giới hạn đã biết (§10).
+- **Font Size:** shows the current `editor.fontSize` (rounded). − / + write the new value, limited to 6–100 (VS Code accepts 6–100).
+- **Vim Mode:** a switch following `vim.enabled`; clicking writes the inverted value. Open editors update through the existing mechanism when `vim.enabled` changes.
+- These changes only write the user layer. If the workspace layer (`.lucerna/settings.json`) or a language override sets that key, the page shows the merged value, and the value just written may not take effect. This spec does **not** report that on the page, because `SettingsStore` does not say which layer sets a key and the spec only changes `lucerna-workbench`. Recorded as a known limit (§10).
 
 ### 5.5 Open Settings (JSON)
 
-- Ở tab: chạy `workbench.action.openSettingsJson` như Command Palette.
-- Ở root (chưa có workbench): mở `settings.json` người dùng ở **cửa sổ mới** (`luc <user settings path>`, như "cửa sổ mới" của W7), để trang onboarding vẫn còn. File chưa tồn tại thì tạo bằng `USER_SETTINGS_TEMPLATE` trước.
+- In a tab: run `workbench.action.openSettingsJson` as the Command Palette does.
+- At root (no workbench yet): open the user's `settings.json` in a **new window** (`luc <user settings path>`, like the "new window" of W7), so the onboarding page stays. If the file does not exist yet, create it from `USER_SETTINGS_TEMPLATE` first.
 
-### 5.6 Bàn phím
+### 5.6 Keyboard
 
-- Thứ tự focus: Finish → Light → Dark → System → − → + → Vim Mode → Open Settings (JSON). Tab/⇧Tab và ↑/↓ chuyển focus; Enter hoặc Space bấm control đang focus; ←/→ trong cụm theme chuyển lựa chọn.
-- Focus ban đầu: nút theme đang chọn.
-- `⌘Enter` (lệnh `lucerna.onboarding.finish`, `when: onboardingFocus`) chạy Finish ở cả hai chế độ. `onboardingFocus` đúng khi focus nằm trong trang. Binding này không đụng `editor.action.insertLineAfter` (`editorTextFocus`) vì trang không có editor.
-- Ở root: phím toàn cục đi qua keymap người dùng như Welcome (`WELCOME_COMMANDS`), thêm `lucerna.openOnboarding`, `workbench.action.openSettingsJson`, `lucerna.onboarding.finish`.
-- Ở tab: phím của workbench chạy như ở các tab khác (⌘W đóng tab).
+- Focus order: Finish → Light → Dark → System → − → + → Vim Mode → Open Settings (JSON). Tab/⇧Tab and ↑/↓ move focus; Enter or Space activates the focused control; ←/→ in the theme group change the selection.
+- Initial focus: the selected theme button.
+- `⌘Enter` (command `lucerna.onboarding.finish`, `when: onboardingFocus`) runs Finish in both modes. `onboardingFocus` is true when focus is inside the page. This binding does not clash with `editor.action.insertLineAfter` (`editorTextFocus`) since the page has no editor.
+- At root: global keys go through the user keymap like Welcome (`WELCOME_COMMANDS`), adding `lucerna.openOnboarding`, `workbench.action.openSettingsJson`, `lucerna.onboarding.finish`.
+- In a tab: workbench keys work as on other tabs (⌘W closes the tab).
 
-## 6. Mở lại
+## 6. Reopening
 
-- **Lệnh** `lucerna.openOnboarding`:
-  - Trong workbench: mở hoặc kích hoạt tab `TabItem::Onboarding` (chỉ một bản trong cửa sổ, mở ở group đang active).
-  - Ở Welcome: đổi root sang onboarding.
-  - Ở onboarding root: không làm gì.
-- **Menu Help:** thêm "Get Started" (`lucerna.openOnboarding`) đứng đầu menu Help, sau đó là separator và các mục cũ. Cửa sổ Welcome bật mục này (thêm vào danh sách mục Welcome xử lý được trong `build_menus`).
-- **Welcome:** thêm nút "Get Started" vào GET STARTED, sau "Open Recent…", icon riêng (ví dụ `sparkles` hoặc `settings` từ Lucide nếu đã có trong `icons`), phím theo keymap.
-- **Tab:** tiêu đề "Get Started", không có dấu chưa lưu, không có path bar. Tab **không** được lưu vào workspace state; mở lại thư mục thì không có tab này.
+- **Command** `lucerna.openOnboarding`:
+  - In the workbench: open or activate the `TabItem::Onboarding` tab (only one per window, opened in the active group).
+  - In Welcome: switch the root to onboarding.
+  - In onboarding root: do nothing.
+- **Help menu:** add "Get Started" (`lucerna.openOnboarding`) as the first entry of the Help menu, followed by a separator and the old entries. The Welcome window enables this entry (add it to the list of entries Welcome handles in `build_menus`).
+- **Welcome:** add a "Get Started" button to GET STARTED, after "Open Recent…", with its own icon (for example `sparkles` or `settings` from Lucide if already in `icons`), key per the keymap.
+- **Tab:** title "Get Started", no unsaved dot, no path bar. The tab is **not** saved in the workspace state; reopening the folder does not bring this tab back.
 
-## 7. Kiến trúc mã
+## 7. Code architecture
 
-| File | Thay đổi |
+| File | Change |
 |---|---|
-| `onboarding.rs` (mới) | `OnboardingPage` (render §5, focus, phím), `OnboardingEvent::{Finish}`, `register_commands`. Biết mình là root hay tab qua một cờ `Host::{Window, Tab}` để vẽ title bar và chọn hành vi Open Settings. |
-| `app_state_file.rs` (mới) | Đọc/ghi `<data_dir>/state.json` (§4). Không gpui. |
-| `startup.rs` | Thêm `StartupScreen` và `startup_screen` (§4). |
-| `app.rs` | `Shown::Onboarding(WindowHandle<OnboardingPage>)`; `Router::open_onboarding`, đổi root Welcome ↔ Onboarding; `open_without_folder` theo §4. |
-| `welcome.rs` | Nút "Get Started"; `WelcomeEvent::OpenOnboarding`. |
-| `editor_groups/model.rs`, `editor_groups/view.rs` | `TabItem::Onboarding` (singleton như preview động), vẽ `OnboardingPage` trong pane. |
-| `workbench.rs` | Đăng ký lệnh; không lưu tab Onboarding vào workspace state. |
-| `app_menu.rs` | Mục Help ▸ Get Started; bật ở Welcome và Onboarding root. |
-| `ui.rs` | Các component ở §5.2. |
-| `theme_picker.rs` (hoặc `settings_edit.rs`) | `set_settings` ghi nhiều khóa, giá trị JSON bất kỳ (§5.3). |
-| `default-keybindings.json` | `cmd+enter` → `lucerna.onboarding.finish` khi `onboardingFocus`. |
+| `onboarding.rs` (new) | `OnboardingPage` (render §5, focus, keys), `OnboardingEvent::{Finish}`, `register_commands`. Knows whether it is root or tab through a `Host::{Window, Tab}` flag, to draw the title bar and choose the Open Settings behavior. |
+| `app_state_file.rs` (new) | Read/write `<data_dir>/state.json` (§4). No gpui. |
+| `startup.rs` | Add `StartupScreen` and `startup_screen` (§4). |
+| `app.rs` | `Shown::Onboarding(WindowHandle<OnboardingPage>)`; `Router::open_onboarding`, switching the root between Welcome ↔ Onboarding; `open_without_folder` per §4. |
+| `welcome.rs` | "Get Started" button; `WelcomeEvent::OpenOnboarding`. |
+| `editor_groups/model.rs`, `editor_groups/view.rs` | `TabItem::Onboarding` (singleton like the dynamic preview), render `OnboardingPage` in the pane. |
+| `workbench.rs` | Register the commands; do not save the Onboarding tab in the workspace state. |
+| `app_menu.rs` | Help ▸ Get Started entry; enabled in Welcome and Onboarding root. |
+| `ui.rs` | The components in §5.2. |
+| `theme_picker.rs` (or `settings_edit.rs`) | `set_settings` writing several keys, arbitrary JSON values (§5.3). |
+| `default-keybindings.json` | `cmd+enter` → `lucerna.onboarding.finish` when `onboardingFocus`. |
 
-Chỉ `lucerna-workbench` thay đổi; không thêm dependency.
+Only `lucerna-workbench` changes; no new dependency.
 
-## 8. Xử lý lỗi
+## 8. Error handling
 
-- `settings.json` đọc không được hoặc không parse được: không ghi, báo lỗi cấu hình như theme picker (`record_error`), control giữ giá trị cũ.
-- Chưa có `settings.json`: tạo từ `USER_SETTINGS_TEMPLATE` rồi ghi (như `write_string_setting`).
-- Mở cửa sổ settings (§5.5) thất bại: `tracing::error`, hiện `warning_row` ở đầu cột.
+- `settings.json` cannot be read or parsed: do not write, report a configuration error like the theme picker (`record_error`), the control keeps its old value.
+- No `settings.json` yet: create it from `USER_SETTINGS_TEMPLATE`, then write (like `write_string_setting`).
+- Opening the settings window (§5.5) fails: `tracing::error`, show a `warning_row` at the top of the column.
 
-## 9. Kiểm thử
+## 9. Testing
 
 - **Unit:**
-  - `app_state_file`: không có file → chưa onboarded; ghi rồi đọc; file hỏng → `.bak`; ghi nguyên tử.
-  - `startup_screen`: có restore → Restore; không restore, chưa onboarded → Onboarding; đã onboarded → theo `startupEditor`; không data dir → theo `startupEditor`; `startupEditor: none` lần đầu → Onboarding.
-  - `set_settings`: ghi bool, số, chuỗi; nhiều khóa một lần; giữ comment; thay khóa có sẵn; file rỗng.
-  - Theme: ánh xạ Light/Dark/System ra các khóa ghi (theo O7), với và không có preferred theme người dùng đặt; trạng thái chọn đọc từ setting.
+  - `app_state_file`: no file → not onboarded; write then read; corrupt file → `.bak`; atomic write.
+  - `startup_screen`: has restore → Restore; no restore, not onboarded → Onboarding; onboarded → per `startupEditor`; no data dir → per `startupEditor`; `startupEditor: none` on first run → Onboarding.
+  - `set_settings`: writes bool, number, string; several keys at once; keeps comments; replaces an existing key; empty file.
+  - Theme: the mapping of Light/Dark/System to the keys written (per O7), with and without a user-set preferred theme; the selected state is read from settings.
 - **GPUI test:**
-  - Trang vẽ đúng giá trị từ setting; sửa layer người dùng thì trang vẽ lại.
-  - Bấm Dark/System/+/Vim thì file người dùng có khóa đúng.
-  - ⌘Enter ở root phát Finish (Router đổi sang Welcome); ở tab thì đóng tab.
-  - `lucerna.openOnboarding` trong workbench mở một tab, gọi lần hai không mở thêm.
-  - Help menu có Get Started, bật ở cửa sổ Welcome.
-- **Thủ công (design-principles §1.1):** chạy app với `HOME` mới, đặt cạnh Zed (`zed: open onboarding`) so khoảng cách, cỡ chữ, nút, hover, switch. Thử chuỗi lần đầu → Finish → thoát → mở lại (Welcome) → mở thư mục → thoát → mở lại (thư mục).
+  - The page renders the right values from settings; editing the user layer makes the page re-render.
+  - Clicking Dark/System/+/Vim leaves the right keys in the user file.
+  - ⌘Enter at root emits Finish (the Router switches to Welcome); in a tab it closes the tab.
+  - `lucerna.openOnboarding` in the workbench opens one tab, and a second call opens no more.
+  - The Help menu has Get Started, enabled in the Welcome window.
+- **Manual (design-principles §1.1):** run the app with a fresh `HOME`, put it next to Zed (`zed: open onboarding`) and compare spacing, font size, buttons, hover, switch. Try the sequence first run → Finish → quit → reopen (Welcome) → open a folder → quit → reopen (the folder).
 
-## 10. Giới hạn đã biết
+## 10. Known limits
 
-- Không báo khi workspace hoặc override ngôn ngữ đè setting trang vừa ghi (§5.4).
-- Người dùng nâng cấp từ bản trước 0.1: chưa có `state.json`, nên nếu khi khởi động không có gì để mở lại (`restoreWindows: "none"` hoặc mọi mục gần đây đã mất) thì họ thấy onboarding **một lần**, dù đã có `settings.json`. Zed cũng vậy. Chấp nhận, vì Lucerna chưa phát hành và chỉ hiện một lần.
+- No warning when the workspace or a language override overrides the setting the page just wrote (§5.4).
+- A user upgrading from a pre-0.1 build has no `state.json` yet, so if at startup there is nothing to reopen (`restoreWindows: "none"` or every recent entry is gone) they see onboarding **once**, even though they already have a `settings.json`. Zed does the same. Accepted, because Lucerna has not been released yet and it only shows once.
 
-## 11. Để người làm quyết
+## 11. Left to the implementer
 
-- Icon cụ thể cho nút Get Started.
-- Bảng thanh "mã giả" trong ô xem trước, miễn trông giống code và dùng đủ màu cú pháp.
-- Dòng phụ dưới tiêu đề có thể chỉnh chữ.
+- The specific icon for the Get Started button.
+- The table of "pseudo-code" bars in the preview tile, as long as it looks like code and uses all the syntax colors.
+- The subtitle under the heading may have its wording adjusted.

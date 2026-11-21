@@ -36,7 +36,7 @@ Non-goals: changing the Explorer's name check; git rename detection.
 2. Rejected: make the Explorer ignore documents in the deleted/not-found
    state. Hides the symptom; the preview still points at a gone file.
 
-## Tham khảo
+## References
 
 VS Code: a Markdown preview follows its resource when the file is renamed
 (the preview is retargeted with the editor). Behaviour follows VS Code.

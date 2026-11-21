@@ -1,78 +1,83 @@
-# Find & Replace trong file
+# Find & Replace in a file
 
-Ngày: 2026-11-17. Trạng thái: đã duyệt.
+Date: 2026-11-17. Status: approved.
 
-## Mục đích
+## Purpose
 
-Người chuyển từ VS Code sang quen bấm ⌥⌘F để thay chữ trong file đang mở. Lucerna mới chỉ có thanh
-tìm (⌘F), nên họ phải mở lại VS Code. Spec này thêm ô Replace vào thanh tìm có sẵn, cùng Replace
-(một match) và Replace All. Hành vi, lệnh và phím theo VS Code; giao diện theo Zed.
+People moving from VS Code are used to pressing ⌥⌘F to replace text in the open file. Lucerna only has
+the find bar (⌘F) so far, so they have to go back to VS Code. This spec adds a Replace box to the
+existing find bar, along with Replace (one match) and Replace All. Behavior, commands and keys follow
+VS Code; the UI follows Zed.
 
-Logic thay thế (đọc chuỗi Replace, khai triển `$1`, giữ hoa thường) nằm ngoài UI và không dùng gpui,
-để mục kế tiếp trong lộ trình, Replace trong project (tab Search), dùng lại được.
+The replacement logic (reading the Replace string, expanding `$1`, preserving case) lives outside the
+UI and does not use gpui, so the next item on the roadmap, Replace in project (the Search tab), can
+reuse it.
 
-## Mục tiêu
+## Goals
 
-- ⌥⌘F (`editor.action.startFindReplaceAction`) mở thanh tìm kèm hàng Replace.
-- Replace một match (`editor.action.replaceOne`) và Replace All (`editor.action.replaceAll`), mỗi
-  lệnh là một bước undo.
-- Chuỗi Replace theo cú pháp VS Code ở chế độ regex: `$0` `$&` `$1…$99` `$$` `\n` `\t` `\\`
+- ⌥⌘F (`editor.action.startFindReplaceAction`) opens the find bar with a Replace row.
+- Replace one match (`editor.action.replaceOne`) and Replace All (`editor.action.replaceAll`), each
+  command is one undo step.
+- The Replace string follows VS Code syntax in regex mode: `$0` `$&` `$1…$99` `$$` `\n` `\t` `\\`
   `\u` `\U` `\l` `\L`.
-- Toggle Preserve Case (`AB`) như VS Code.
-- Phím tắt cho các toggle: ⌥⌘C, ⌥⌘W, ⌥⌘R, ⌥⌘P.
+- A Preserve Case toggle (`AB`) like VS Code.
+- Shortcuts for the toggles: ⌥⌘C, ⌥⌘W, ⌥⌘R, ⌥⌘P.
 
-## Không làm (lần này)
+## Non-goals (this time)
 
-- Find in Selection (⌥⌘L) và giới hạn Replace All trong vùng chọn.
-- Lịch sử chuỗi Replace (↑/↓ trong ô), lưu toggle theo workspace.
-- Ô Replace nhiều dòng (Ctrl+Enter chèn xuống dòng). Muốn xuống dòng thì dùng `\n` ở chế độ regex.
-- Các setting `editor.find.*`.
-- Replace trong project: spec riêng, dùng lại module ở đây.
+- Find in Selection (⌥⌘L) and limiting Replace All to the selection.
+- Replace string history (↑/↓ in the box), saving toggles per workspace.
+- A multi-line Replace box (Ctrl+Enter inserts a newline). To get a newline, use `\n` in regex mode.
+- The `editor.find.*` settings.
+- Replace in project: a separate spec, reusing the module here.
 
-## Không được xảy ra
+## Must not happen
 
-- Replace All mà phải bấm undo nhiều lần mới quay lại được.
-- Thay sai chỗ vì danh sách match đã cũ (file vừa đổi, hoặc tìm nền chưa xong).
-- UI bị treo khi Replace All trên file lớn.
-- Thay chữ trong view read-only (preview của picker, file không đọc được).
+- A Replace All that takes several undo presses to get back.
+- Replacing in the wrong place because the match list is stale (the file just changed, or the
+  background search has not finished).
+- The UI freezing during Replace All on a large file.
+- Replacing text in a read-only view (a picker preview, an unreadable file).
 
-## Tham khảo
+## References
 
-Đọc từ nhánh main của `microsoft/vscode`, `zed-industries/zed` và `helix-editor/helix` (2026-11-17).
+Read from the main branch of `microsoft/vscode`, `zed-industries/zed` and `helix-editor/helix` (2026-11-17).
 
 ### VS Code
 
-- **Chuỗi Replace** (`src/vs/editor/contrib/find/browser/replacePattern.ts`, `parseReplaceString`):
-  - Chỉ phân tích khi bật regex. Tắt regex thì chuỗi là chữ thường, kể cả `\n` và `$1`.
-  - `$$` → `$`. `$0` và `$&` → cả match. `$1`…`$9` là nhóm.
-  - Hai chữ số được đọc tham lam: `$NN` là nhóm NN. Nếu không có nhóm NN thì dùng nhóm N rồi chữ
-    `0`, nên `$10` khi chỉ có một nhóm thành nhóm 1 + `"0"`.
-  - Không có nhóm nào khớp chỉ số thì giữ nguyên `$` và các chữ số (`$5` khi có 2 nhóm → `"$5"`).
-    Nhóm có nhưng không tham gia match → chuỗi rỗng.
-  - `$` ở cuối chuỗi, hoặc `$` đi trước ký tự khác, giữ nguyên.
-  - `\\` → `\`, `\n` → LF, `\t` → tab. Escape lạ như `\q` giữ nguyên `\q`; `\` đứng cuối cũng giữ.
-  - `\u` `\l` đổi hoa/thường một ký tự, `\U` `\L` đổi cả phần; chúng tác động lên mảnh `$n`/`$&`
-    ngay sau và có thể chồng nhau (`\u\L$1`). Bản thân chúng không sinh ra chữ.
-- **Preserve case** (`src/vs/base/common/search.ts`, `buildReplaceStringWithCasePreserved`), xét
-  chữ đã match:
-  1. Nếu cả match lẫn chuỗi thay đều có `-` với cùng số đoạn thì xử lý từng đoạn rồi nối lại bằng
-     `-`. `_` cũng vậy. Nếu cả `-` lẫn `_` đều thỏa thì bỏ qua bước này.
-  2. Match toàn chữ hoa → chuỗi thay viết hoa hết.
-  3. Match toàn chữ thường → viết thường hết.
-  4. Ký tự đầu của match là chữ hoa → viết hoa ký tự đầu của chuỗi thay, phần còn lại giữ nguyên.
-  5. Ký tự đầu là chữ thường → viết thường ký tự đầu.
-  6. Còn lại: giữ nguyên.
+- **Replace string** (`src/vs/editor/contrib/find/browser/replacePattern.ts`, `parseReplaceString`):
+  - Only parsed when regex is on. With regex off, the string is literal text, including `\n` and `$1`.
+  - `$$` → `$`. `$0` and `$&` → the whole match. `$1`…`$9` are groups.
+  - Two digits are read greedily: `$NN` is group NN. If there is no group NN then group N followed by
+    the digit `0` is used, so `$10` with only one group becomes group 1 + `"0"`.
+  - If no group matches the index, `$` and the digits are kept as is (`$5` with 2 groups → `"$5"`).
+    A group that exists but did not take part in the match → empty string.
+  - A `$` at the end of the string, or a `$` followed by another character, is kept.
+  - `\\` → `\`, `\n` → LF, `\t` → tab. An unknown escape like `\q` keeps `\q`; a trailing `\` is kept too.
+  - `\u` `\l` change the case of one character, `\U` `\L` change the whole part; they act on the
+    `$n`/`$&` piece right after them and may stack (`\u\L$1`). They produce no text themselves.
+- **Preserve case** (`src/vs/base/common/search.ts`, `buildReplaceStringWithCasePreserved`), looking
+  at the matched text:
+  1. If both the match and the replacement contain `-` with the same number of segments, handle each
+     segment and rejoin with `-`. Likewise for `_`. If both `-` and `_` qualify, skip this step.
+  2. Match is all uppercase → the replacement is fully uppercased.
+  3. Match is all lowercase → fully lowercased.
+  4. The match's first character is uppercase → uppercase the replacement's first character, keep the rest.
+  5. The first character is lowercase → lowercase the first character.
+  6. Otherwise: keep as is.
 
-  Preserve case chạy cả khi tắt regex.
-- **Replace một match** (`findModel.ts` `replace()`): lấy match kế tiếp tính từ đầu selection.
-  - Nếu selection trùng đúng match đó thì thay nó (một bước undo), rồi chọn match sau chỗ vừa chèn.
-  - Nếu không thì chỉ chọn match đó. Vậy lần bấm đầu chọn, lần thứ hai thay.
-- **Replace All** (`replaceAll()`): tìm mọi match, không giới hạn số lượng, rồi gom thành một lệnh
-  và một bước undo. Selection được giữ qua các edit. Với từ 19999 match trở lên, nó thay cả file
-  bằng `String.replace`.
-- **Lệnh và phím (macOS):**
+  Preserve case also runs when regex is off.
+- **Replace one match** (`findModel.ts` `replace()`): take the next match counting from the start of
+  the selection.
+  - If the selection coincides exactly with that match, replace it (one undo step), then select the
+    match after the inserted text.
+  - Otherwise just select that match. So the first press selects, the second replaces.
+- **Replace All** (`replaceAll()`): find every match, with no limit on the count, then bundle them into
+  one command and one undo step. The selection is kept across the edits. With 19999 or more matches,
+  it replaces the whole file using `String.replace`.
+- **Commands and keys (macOS):**
 
-  | Lệnh | Phím | Khi |
+  | Command | Key | When |
   |---|---|---|
   | `editor.action.startFindReplaceAction` | ⌥⌘F | |
   | `editor.action.replaceOne` | ⇧⌘1 | `findWidgetVisible` |
@@ -84,157 +89,163 @@ Logic thay thế (đọc chuỗi Replace, khai triển `$1`, giữ hoa thường
   | `toggleFindRegex` | ⌥⌘R | `editorFocus` |
   | `togglePreserveCase` | ⌥⌘P | `editorFocus` |
 
-  Trên Windows và Linux: Ctrl+H, Ctrl+Shift+1, Ctrl+Alt+Enter, Alt+C/W/R/P.
+  On Windows and Linux: Ctrl+H, Ctrl+Shift+1, Ctrl+Alt+Enter, Alt+C/W/R/P.
 - **Widget** (`findWidget.ts`):
-  - Có nút chevron bên trái để mở hoặc gập hàng Replace.
-  - ⌥⌘F focus ô Replace nếu ô Find đang có focus hoặc vừa được điền từ selection; nếu không thì
-    focus ô Find.
-  - ⌘F khi thanh đang mở thì giữ hàng Replace; khi thanh đang ẩn thì mở mà không có hàng Replace.
-  - Editor read-only: không mở được Replace, nút chevron bị tắt.
-  - Nút Replace và Replace All bị tắt khi ô Find trống.
-  - Chuỗi Replace được giữ theo từng editor qua các lần đóng/mở, và không bao giờ điền từ selection.
-  - Tab trong ô Replace chuyển focus sang toggle trong ô Find; Shift+Tab chuyển về ô Find.
+  - A chevron button on the left opens or collapses the Replace row.
+  - ⌥⌘F focuses the Replace box if the Find box has focus or was just filled from the selection;
+    otherwise it focuses the Find box.
+  - ⌘F when the bar is open keeps the Replace row; when the bar is hidden it opens without the Replace row.
+  - Read-only editor: Replace cannot be opened, the chevron button is disabled.
+  - The Replace and Replace All buttons are disabled when the Find box is empty.
+  - The Replace string is kept per editor across closing/opening, and is never filled from the selection.
+  - Tab in the Replace box moves focus to the toggles in the Find box; Shift+Tab moves back to the Find box.
 
 ### Zed
 
-- **Bố cục** (`crates/search/src/buffer_search.rs`):
-  - Hàng 1: ô query có toggle CaseSensitive / WholeWord / Regex nằm trong ô. Tiếp theo là các nút
-    icon: Toggle Replace (`IconName::Replace`, hiện trạng thái bật), Search Selection, Select All
-    Matches. Sau đó là nhóm `‹ › n/m`, và nút Close ở bên phải.
-  - Hàng 2 (khi bật replace): ô replace (placeholder "Replace with…") rộng bằng ô query, rồi hai nút
-    **icon**: `ReplaceNext` ("Replace Next Match") và `ReplaceAll` ("Replace All Matches").
-- **Phím:** trong ô replace, Enter là `search::ReplaceNext` và ⌘Enter là `search::ReplaceAll`.
-  ⇧⌘H là `search::ToggleReplace`. ⌥⌘C/W/X bật tắt toggle; ⌥⌘X cho regex khác với ⌥⌘R của VS Code.
-- **Hành vi:**
-  - `replace_next` luôn thay match đang active, không cần selection trùng match, rồi chọn match
-    kế.
-  - Cả replace một match lẫn replace all đều là một transaction.
-  - Khai triển chuỗi: tắt regex thì là chữ thường. Bật regex thì chỉ bỏ escape cho `\\` `\n` `\t`,
-    rồi gọi `Captures::expand` của `fancy_regex`.
-  - Zed không có case modifier và không có preserve case.
+- **Layout** (`crates/search/src/buffer_search.rs`):
+  - Row 1: the query box with the CaseSensitive / WholeWord / Regex toggles inside the box. Next are
+    icon buttons: Toggle Replace (`IconName::Replace`, shows its on state), Search Selection, Select
+    All Matches. Then the `‹ › n/m` group, and the Close button on the right.
+  - Row 2 (when replace is on): the replace box (placeholder "Replace with…") as wide as the query
+    box, then two **icon** buttons: `ReplaceNext` ("Replace Next Match") and `ReplaceAll` ("Replace
+    All Matches").
+- **Keys:** in the replace box, Enter is `search::ReplaceNext` and ⌘Enter is `search::ReplaceAll`.
+  ⇧⌘H is `search::ToggleReplace`. ⌥⌘C/W/X toggle the toggles; ⌥⌘X for regex differs from VS Code's ⌥⌘R.
+- **Behavior:**
+  - `replace_next` always replaces the active match, with no need for the selection to coincide with
+    the match, then selects the next match.
+  - Both replace one match and replace all are a single transaction.
+  - String expansion: with regex off it is literal text. With regex on it only unescapes `\\` `\n`
+    `\t`, then calls `fancy_regex`'s `Captures::expand`.
+  - Zed has no case modifiers and no preserve case.
 
 ### Helix
 
-Helix không có giao diện find/replace. Người dùng chọn cả file (`%`), chọn mọi match regex (`s`),
-rồi gõ chữ mới vào tất cả con trỏ (`c`). Vì chữ được gõ chứ không khai triển nên không có tham
-chiếu nhóm.
+Helix has no find/replace UI. The user selects the whole file (`%`), selects every regex match (`s`),
+then types the new text into all cursors (`c`). Since the text is typed rather than expanded, there
+are no group references.
 
-### Crate `regex`
+### The `regex` crate
 
-`Captures::expand` khác VS Code ở mấy điểm sau:
+`Captures::expand` differs from VS Code in these ways:
 
-- Tên nhóm là chuỗi dài nhất gồm `[_0-9A-Za-z]`, nên `$1a` là nhóm tên "1a" (rỗng), trong khi
-  VS Code hiểu là nhóm 1 + `a`.
-- Nhóm không tồn tại → rỗng, trong khi VS Code giữ `$5`.
-- Không có `$&`, `\n` hay `\u`.
+- A group name is the longest string of `[_0-9A-Za-z]`, so `$1a` is a group named "1a" (empty), while
+  VS Code reads it as group 1 + `a`.
+- A nonexistent group → empty, while VS Code keeps `$5`.
+- There is no `$&`, `\n` or `\u`.
 
-### Lucerna chọn
+### Lucerna's choice
 
-| Phần | Theo | Vì sao |
+| Part | Follows | Why |
 |---|---|---|
-| Cú pháp chuỗi Replace, Preserve Case | VS Code | Hành vi theo VS Code; Zed thiếu case modifier và Preserve Case. Tự viết bộ phân tích (không chép code VS Code, ghi nguồn trong comment), không dùng `expand`. |
-| Replace một match | VS Code | Hành vi. Trong Lucerna thanh tìm đã chọn sẵn match active, nên thực tế lần bấm đầu đã thay, giống cảm giác của Zed. |
-| Một bước undo cho mỗi lệnh | Cả hai | |
-| Lệnh, phím, key context | VS Code | ⌥⌘R cho regex (không phải ⌥⌘X của Zed). |
-| Bố cục hai hàng, nút toggle sau ô query, hai nút icon | Zed | Giao diện. VS Code đặt chevron ở mép trái. |
-| Toggle `AB` trong ô Replace | VS Code | Zed không có Preserve Case; đặt trong ô giống `Aa` `ab` `.*`. |
+| Replace string syntax, Preserve Case | VS Code | Behavior follows VS Code; Zed lacks case modifiers and Preserve Case. Write our own parser (do not copy VS Code code, cite the source in a comment), not using `expand`. |
+| Replace one match | VS Code | Behavior. In Lucerna the find bar already selects the active match, so in practice the first press already replaces, matching Zed's feel. |
+| One undo step per command | Both | |
+| Commands, keys, key contexts | VS Code | ⌥⌘R for regex (not Zed's ⌥⌘X). |
+| Two-row layout, toggle buttons after the query box, two icon buttons | Zed | UI. VS Code puts the chevron on the left edge. |
+| The `AB` toggle in the Replace box | VS Code | Zed has no Preserve Case; placed inside the box like `Aa` `ab` `.*`. |
 
-## Thiết kế
+## Design
 
-### 1. Module `lucerna_project::replace` (không gpui)
+### 1. Module `lucerna_project::replace` (no gpui)
 
-Đặt cạnh `build_pattern` (crate này đã dùng `regex` và là nơi Search của project sống). Gồm:
+Placed next to `build_pattern` (this crate already uses `regex` and is where the project Search
+lives). It contains:
 
-- `ReplacePattern::parse(text: &str, is_regex: bool) -> ReplacePattern`. Tắt regex thì là chữ
-  tĩnh. Bật regex thì là danh sách mảnh (chữ, nhóm N, cả match, cùng case op), theo đúng các quy tắc
-  VS Code ở trên.
-- `ReplacePattern::expand(&self, caps: &regex::Captures) -> String`, kèm fallback `$NN` → nhóm N +
-  chữ số, và giữ `$N` khi không có nhóm.
-- `ReplacePattern::is_static()`: không cần captures, để đi đường nhanh.
-- `preserve_case(matched: &str, replacement: &str) -> String`: sáu quy tắc ở trên.
+- `ReplacePattern::parse(text: &str, is_regex: bool) -> ReplacePattern`. With regex off it is static
+  text. With regex on it is a list of pieces (text, group N, the whole match, plus case ops), exactly
+  following the VS Code rules above.
+- `ReplacePattern::expand(&self, caps: &regex::Captures) -> String`, with the `$NN` → group N + digit
+  fallback, and keeping `$N` when the group does not exist.
+- `ReplacePattern::is_static()`: needs no captures, for the fast path.
+- `preserve_case(matched: &str, replacement: &str) -> String`: the six rules above.
 - `replace_all(text: &str, regex: &Regex, pattern: &ReplacePattern, preserve_case: bool)
-  -> Vec<(Range<usize>, String)>`: mỗi match **không rỗng** cho một edit, theo thứ tự, tọa độ byte
-  trước khi sửa. Bỏ match rỗng để khớp với những gì thanh tìm tô sáng và đếm (`find_in_snapshot`
-  cũng bỏ). Đây là quyết định của Lucerna.
-- `replacement_at(text, regex, range, pattern, preserve_case) -> Option<String>`: chuỗi thay cho một
-  match đã biết. Trả `None` nếu regex không còn khớp đúng `range`.
+  -> Vec<(Range<usize>, String)>`: each **non-empty** match gives one edit, in order, with byte
+  coordinates from before the edit. Empty matches are dropped to agree with what the find bar
+  highlights and counts (`find_in_snapshot` drops them too). This is Lucerna's decision.
+- `replacement_at(text, regex, range, pattern, preserve_case) -> Option<String>`: the replacement for
+  a known match. Returns `None` if the regex no longer matches exactly `range`.
 
-Regex lấy từ `build_regex` hiện có (cùng cờ case, whole word, multi-line như find). Unit test phủ
-từng quy tắc VS Code ở mục Tham khảo, kể cả ví dụ tiếng Việt cho Preserve Case (`Đường` → hoa
-chữ đầu).
+The regex comes from the existing `build_regex` (the same case, whole word and multi-line flags as
+find). Unit tests cover each VS Code rule in the References section, including a Vietnamese example
+for Preserve Case (`Đường` → capitalize the first letter).
 
-### 2. Thanh tìm (`find_widget.rs`)
+### 2. The find bar (`find_widget.rs`)
 
-`FindWidget` thêm: `replace_input: Entity<TextInput>` (placeholder `Replace`),
-`replace_visible: bool` và `preserve_case: bool`. Chuỗi Replace nằm trong widget, nên được giữ qua
-các lần đóng/mở của view đó.
+`FindWidget` adds: `replace_input: Entity<TextInput>` (placeholder `Replace`),
+`replace_visible: bool` and `preserve_case: bool`. The Replace string lives in the widget, so it is
+kept across closing/opening of that view.
 
-Bố cục, dùng `search_toolbar`, `search_bar_row`, `search_query_box`, `toggle_button`,
-`bar_icon_button` và `bar_separator` trong `ui.rs`:
+Layout, using `search_toolbar`, `search_bar_row`, `search_query_box`, `toggle_button`,
+`bar_icon_button` and `bar_separator` in `ui.rs`:
 
 ```
 [Find…………………  Aa ab .*] [⇄] │ ‹ › 3/19          │ ×
 [Replace……………  AB       ] │ [replace next] [replace all]
 ```
 
-- **Hàng 1** giữ như hiện tại, chỉ thêm nút icon Toggle Replace ngay sau ô query (tooltip
-  `Toggle Replace`, sáng khi bật). View read-only không có nút này.
-- **Hàng 2** chỉ hiện khi `replace_visible`:
-  - Ô Replace dùng `input_box` qua `search_query_column`, nên rộng bằng ô query. Toggle `AB`
-    (`Preserve Case`) nằm trong ô.
-  - Sau đó là `bar_separator` và hai `bar_icon_button`: `Replace Next Match` và
-    `Replace All Matches`. Hai nút tắt (không bấm được, màu mờ) khi ô Find trống, regex lỗi hoặc
-    không có match.
-- **Icon:** thêm hai file Lucide nguyên bản `replace.svg` và `replace-all.svg` vào
-  `assets/icons/` (ISC, đã có `LICENSE-lucide`).
-  - `replace` dùng cho Toggle Replace, `replace-all` cho Replace All.
-  - Replace Next cần một icon Lucide khác (gợi ý `arrow-right-to-line`); người làm chọn, miễn là
-    khác icon toggle.
-- **Vim:** khi thanh mở cho `/` hoặc `?`, hàng Replace và nút toggle ẩn.
+- **Row 1** stays as it is now, adding only a Toggle Replace icon button right after the query box
+  (tooltip `Toggle Replace`, lit when on). A read-only view does not have this button.
+- **Row 2** only shows when `replace_visible`:
+  - The Replace box uses `input_box` through `search_query_column`, so it is as wide as the query box.
+    The `AB` toggle (`Preserve Case`) sits inside the box.
+  - Then a `bar_separator` and two `bar_icon_button`s: `Replace Next Match` and
+    `Replace All Matches`. Both buttons are disabled (not clickable, dim color) when the Find box is
+    empty, the regex is invalid or there is no match.
+- **Icons:** add two unmodified Lucide files `replace.svg` and `replace-all.svg` to
+  `assets/icons/` (ISC, `LICENSE-lucide` already exists).
+  - `replace` is for Toggle Replace, `replace-all` for Replace All.
+  - Replace Next needs another Lucide icon (suggestion: `arrow-right-to-line`); the implementer
+    picks, as long as it differs from the toggle icon.
+- **Vim:** when the bar is opened for `/` or `?`, the Replace row and the toggle button are hidden.
 
-### 3. Hành vi
+### 3. Behavior
 
-- **⌥⌘F** (`editor.action.startFindReplaceAction`, nhãn `Replace`):
-  - Nếu view read-only thì làm như ⌘F.
-  - Nếu không, mở thanh và đặt `replace_visible = true`. Ô Find được điền từ selection một dòng,
-    như ⌘F.
-  - Focus sang ô Replace nếu ô Find đã có focus trước đó hoặc vừa được điền từ selection; nếu không
-    thì focus ô Find.
-- **⌘F:** thanh đang ẩn thì mở với `replace_visible = false`. Thanh đang mở thì giữ nguyên hàng
-  Replace.
-- **Nút Toggle Replace:** đảo `replace_visible`. Bật thì focus ô Replace, tắt thì focus ô Find.
-- **Tab / Shift+Tab:** Tab trong ô Find chuyển sang ô Replace (khi hàng Replace đang hiện);
-  Shift+Tab trong ô Replace chuyển về ô Find. VS Code đi qua cả các toggle; Lucerna chỉ nhảy giữa
-  hai ô, vì toggle đã có phím tắt.
-- **Replace một match** (`editor.action.replaceOne`, nhãn `Replace`):
-  - Không làm gì nếu view read-only, hàng Replace đang ẩn, hoặc đang có tìm nền.
-  - Lấy match active. Nếu selection trùng đúng range của nó thì tính chuỗi thay bằng
-    `replacement_at` trên snapshot hiện tại, rồi áp dụng một `EditPlan` có `stop_before` và
+- **⌥⌘F** (`editor.action.startFindReplaceAction`, label `Replace`):
+  - If the view is read-only, act like ⌘F.
+  - Otherwise, open the bar and set `replace_visible = true`. The Find box is filled from a
+    one-line selection, like ⌘F.
+  - Focus goes to the Replace box if the Find box already had focus beforehand or was just filled from
+    the selection; otherwise focus the Find box.
+- **⌘F:** when the bar is hidden, open it with `replace_visible = false`. When the bar is open, keep
+  the Replace row as it is.
+- **Toggle Replace button:** flips `replace_visible`. Turning on focuses the Replace box, turning off
+  focuses the Find box.
+- **Tab / Shift+Tab:** Tab in the Find box moves to the Replace box (when the Replace row is shown);
+  Shift+Tab in the Replace box moves back to the Find box. VS Code goes through the toggles too;
+  Lucerna only jumps between the two boxes, since the toggles already have shortcuts.
+- **Replace one match** (`editor.action.replaceOne`, label `Replace`):
+  - Does nothing if the view is read-only, the Replace row is hidden, or a background search is running.
+  - Take the active match. If the selection coincides exactly with its range, compute the replacement
+    with `replacement_at` on the current snapshot, then apply one `EditPlan` with `stop_before` and
     `stop_after`.
-  - Sau đó match active là match đầu tiên bắt đầu từ cuối chỗ vừa chèn trở đi; nếu không còn thì
-    quay về match đầu. Match này được chọn và cuộn tới.
-  - Nếu selection không trùng (người dùng đã di chuyển con trỏ) thì chỉ chọn match gần nhất, như
-    `next`.
-- **Replace All** (`editor.action.replaceAll`, nhãn `Replace All`):
-  - Gọi `replace_all` trên snapshot hiện tại, rồi áp dụng một `EditPlan` duy nhất có `stop_before`
-    và `stop_after`.
-  - Selection được đưa qua các edit, như VS Code giữ selection. Cách làm là việc của người làm,
-    miễn con trỏ không nhảy lung tung.
-  - File lớn hơn `BACKGROUND_SEARCH_BYTES` thì tính edit trên background executor rồi chỉ áp dụng
-    nếu `revision` của view chưa đổi. Nếu đã đổi thì bỏ, không thay gì.
-  - Không giới hạn số match.
-  - Sau khi thay, thanh tìm lại (tự động khi revision đổi) và thường sẽ ra `0/0`.
-- **Toggle:** `toggleFindCaseSensitive`, `toggleFindWholeWord`, `toggleFindRegex` và
-  `togglePreserveCase` đổi toggle trên widget của view đang active. Nếu view chưa có widget thì tạo
-  widget mà không hiện, để lần mở sau dùng trạng thái mới, giống VS Code giữ state khi widget ẩn.
-- **Read-only:** cả hai lệnh replace đều không làm gì (`transact` cũng đã chặn). Nút Toggle Replace
-  không hiện.
+  - After that the active match is the first match starting from the end of the inserted text
+    onward; if none is left, wrap to the first match. This match is selected and scrolled into view.
+  - If the selection does not coincide (the user moved the cursor), just select the nearest match,
+    like `next`.
+- **Replace All** (`editor.action.replaceAll`, label `Replace All`):
+  - Call `replace_all` on the current snapshot, then apply a single `EditPlan` with `stop_before`
+    and `stop_after`.
+  - The selection is carried through the edits, like VS Code keeping the selection. How is up to the
+    implementer, as long as the cursor does not jump around.
+  - A file larger than `BACKGROUND_SEARCH_BYTES` computes the edits on the background executor and
+    applies them only if the view's `revision` has not changed. If it has changed, drop them and
+    replace nothing.
+  - No limit on the number of matches.
+  - After replacing, the bar searches again (automatically when the revision changes) and will
+    usually show `0/0`.
+- **Toggles:** `toggleFindCaseSensitive`, `toggleFindWholeWord`, `toggleFindRegex` and
+  `togglePreserveCase` change the toggle on the active view's widget. If the view has no widget yet,
+  create the widget without showing it, so the next open uses the new state, like VS Code keeping
+  state while the widget is hidden.
+- **Read-only:** both replace commands do nothing (`transact` already blocks it too). The Toggle
+  Replace button is not shown.
 
-### 4. Lệnh, phím, key context, menu
+### 4. Commands, keys, key contexts, menu
 
-- **Key context mới:** `replaceInputFocussed` (tên theo VS Code), bật khi ô Replace có focus. Đặt
-  cùng chỗ với `findWidgetVisible` trong `workbench.rs`.
-- **Thêm vào cuối `default-keybindings.json`**, gom một khối:
+- **New key context:** `replaceInputFocussed` (name follows VS Code), on when the Replace box has
+  focus. Placed with `findWidgetVisible` in `workbench.rs`.
+- **Append to the end of `default-keybindings.json`**, as one block:
 
   ```json
   { "key": "alt+cmd+f", "command": "editor.action.startFindReplaceAction", "when": "editorFocus" },
@@ -248,42 +259,44 @@ Bố cục, dùng `search_toolbar`, `search_bar_row`, `search_query_box`, `toggl
   { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus" }
   ```
 
-  - ⌥⌘C/W/R đã dùng cho `searchViewletFocus` và `filesExplorerFocus`. `editorFocus` không trùng với
-    hai context đó, nên không xung đột. Người làm kiểm tra lại bằng test keymap.
-  - Enter trong ô Replace phải thắng xử lý Enter hiện có của `FindWidget::key_down`, vốn chỉ dành
-    cho ô Find.
-  - Nếu `editorFocus` không phủ focus trong thanh tìm (cần kiểm tra bằng test), dùng đúng context
-    mà `closeFindWidget` đang dựa vào.
-- **Menu Edit:** thêm `Replace` (`editor.action.startFindReplaceAction`) ngay sau `Find`. Chỉ thêm
-  một dòng, vì session ⌘N cũng sửa `app_menu.rs`.
-- **Nhãn trong Command Palette:** `Replace`, `Replace One`, `Replace All`,
+  - ⌥⌘C/W/R are already used for `searchViewletFocus` and `filesExplorerFocus`. `editorFocus` does
+    not overlap with those two contexts, so there is no conflict. The implementer re-checks with a
+    keymap test.
+  - Enter in the Replace box must win over the existing Enter handling in `FindWidget::key_down`,
+    which is only for the Find box.
+  - If `editorFocus` does not cover focus inside the find bar (needs checking with a test), use
+    exactly the context that `closeFindWidget` relies on.
+- **Edit menu:** add `Replace` (`editor.action.startFindReplaceAction`) right after `Find`. Add just
+  one line, because the ⌘N session is also editing `app_menu.rs`.
+- **Labels in the Command Palette:** `Replace`, `Replace One`, `Replace All`,
   `Toggle Case Sensitive`, `Toggle Whole Word`, `Toggle Use Regular Expression`,
-  `Toggle Preserve Case`. VS Code dùng nhãn `Replace` cho cả `replaceOne`; Lucerna đổi thành
-  `Replace One` để palette không có hai dòng `Replace`.
-- **Tài liệu:**
-  - `docs/keyboard-shortcuts.md` và `CHANGELOG.md`: chỉ thêm dòng, không sửa dòng cũ, vì session
-    ⌘N cũng sửa hai file này.
-  - `docs/roadmap.md`: đánh dấu mục này đã xong.
-  - `docs/design-principles.md` §1.1: bỏ câu ví dụ "bỏ Replace vì Lucerna chỉ để xem code", vì
-    câu này đã lỗi thời.
+  `Toggle Preserve Case`. VS Code uses the label `Replace` for `replaceOne` too; Lucerna changes it to
+  `Replace One` so the palette does not have two `Replace` lines.
+- **Docs:**
+  - `docs/keyboard-shortcuts.md` and `CHANGELOG.md`: only add lines, do not edit old lines, because the
+    ⌘N session also edits these two files.
+  - `docs/roadmap.md`: mark this item done.
+  - `docs/design-principles.md` §1.1: drop the example sentence "drop Replace because Lucerna is only
+    for viewing code", since it is outdated.
 
-### 5. Test
+### 5. Tests
 
-- **`lucerna-project`:** unit test cho `ReplacePattern` (mọi quy tắc ở mục Tham khảo),
-  `preserve_case` và `replace_all` (match rỗng, Unicode, nhiều dòng).
-- **`lucerna-workbench`** (gpui test, theo kiểu test find hiện có):
-  - ⌥⌘F hiện hàng Replace; ⌘F khi thanh ẩn thì không.
-  - Replace một match thay đúng match active, chuyển sang match kế, và một lần undo trả lại.
-  - Selection không trùng match thì chỉ chọn.
-  - Replace All thay hết và một lần undo trả lại hết.
-  - Có `$1` khi bật regex; có Preserve Case.
-  - View read-only không đổi.
-  - Enter và ⌘Enter trong ô Replace.
-  - Các toggle qua phím.
-  - Replace All trên file lớn hơn 1 MB.
+- **`lucerna-project`:** unit tests for `ReplacePattern` (every rule in the References section),
+  `preserve_case` and `replace_all` (empty matches, Unicode, multiple lines).
+- **`lucerna-workbench`** (gpui tests, in the style of the existing find tests):
+  - ⌥⌘F shows the Replace row; ⌘F when the bar is hidden does not.
+  - Replace one match replaces exactly the active match, moves to the next match, and one undo
+    restores it.
+  - A selection that does not coincide with a match only selects.
+  - Replace All replaces everything and one undo restores everything.
+  - `$1` with regex on; with Preserve Case.
+  - A read-only view does not change.
+  - Enter and ⌘Enter in the Replace box.
+  - The toggles via keys.
+  - Replace All on a file larger than 1 MB.
 
-## Còn để người làm quyết
+## Still left to the implementer
 
-- Icon Lucide cho Replace Next.
-- Cách đưa selection qua edit của Replace All.
-- Tên hàm và cấu trúc bên trong module `replace`.
+- The Lucide icon for Replace Next.
+- How to carry the selection through Replace All's edits.
+- Function names and the internal structure of the `replace` module.

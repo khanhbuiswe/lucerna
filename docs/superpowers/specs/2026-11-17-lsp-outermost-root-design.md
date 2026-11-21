@@ -1,111 +1,110 @@
-# LSP: root mặc định là thư mục ngoài cùng
+# LSP: the default root is the outermost directory
 
-Thay đổi nhỏ. Ngày 2026-11-17.
+Small change. Date 2026-11-17.
 
-## Vì sao
+## Why
 
-Mở dự án Laravel (`noti.one`, code ở `apps/api`) rồi go-to-definition vào
-`apps/api/vendor/laravel/framework/...` làm Lucerna khởi động intelephense thứ
-hai. Lý do: root của server là thư mục **gần nhất** có marker, mà mỗi gói trong
-`vendor/` đều có `composer.json`, nên root thành `vendor/laravel/framework`.
-Server thứ hai index lại từ đầu, không thấy code app, và hiện thành dòng "trùng"
-trong popover LSP.
+Open a Laravel project (`noti.one`, code in `apps/api`) and then go-to-definition into
+`apps/api/vendor/laravel/framework/...`, and Lucerna starts a second
+intelephense. The reason: the server's root is the **nearest** directory that has a marker, and every package in
+`vendor/` has a `composer.json`, so the root becomes `vendor/laravel/framework`.
+The second server re-indexes from scratch, does not see the app code, and shows up as a "duplicate" row in the
+LSP popover.
 
-Không riêng PHP. Mọi hệ sinh thái tải thư viện vào trong dự án, mỗi gói kèm
-marker, đều bị:
+It is not only PHP. Every ecosystem that downloads libraries into the project, each package with its own
+marker, is hit:
 
-- `node_modules/<gói>/package.json`: typescript-language-server, vtsls,
+- `node_modules/<package>/package.json`: typescript-language-server, vtsls,
   vue-language-server, vscode-css, vscode-html.
-- `deps/<gói>/mix.exs`: elixir-ls.
-- `.build/checkouts/<gói>/Package.swift`: sourcekit-lsp.
-- `build/packages/<gói>/gleam.toml`: gleam.
-- `_build/default/lib/<gói>/rebar.config`: elp.
+- `deps/<package>/mix.exs`: elixir-ls.
+- `.build/checkouts/<package>/Package.swift`: sourcekit-lsp.
+- `build/packages/<package>/gleam.toml`: gleam.
+- `_build/default/lib/<package>/rebar.config`: elp.
 
-VS Code, Zed và Helix đều không chọn "gần nhất" (xem Tham khảo). Lucerna là
-ngoại lệ, và các spec cũ không ghi lý do chọn "gần nhất".
+VS Code, Zed and Helix all do not pick "nearest" (see References). Lucerna is
+the exception, and the old specs do not record why "nearest" was chosen.
 
-## Mục tiêu
+## Goals
 
-- Nhảy vào code thư viện nằm trong dự án không sinh thêm server.
-- Root mặc định khớp Helix: thư mục ngoài cùng có marker, từ file lên tới root
-  workspace.
+- Jumping into library code that lives inside the project does not spawn another server.
+- The default root matches Helix: the outermost directory with a marker, from the file up to the
+  workspace root.
 
-## Không làm
+## Non-goals
 
-- Dùng chung một process cho nhiều workspace folder (`didChangeWorkspaceFolders`,
-  như Helix). Lớn hơn, để sau.
-- Setting chia monorepo thành nhiều root kiểu `workspace-lsp-roots` của Helix.
-- Danh sách thư mục thư viện cần bỏ qua (cách A); không cần nữa khi chọn ngoài
-  cùng.
-- Sửa popover để phân biệt hai dòng trùng tên server.
+- Sharing one process across several workspace folders (`didChangeWorkspaceFolders`,
+  like Helix). Bigger, later.
+- A setting that splits a monorepo into several roots like Helix's `workspace-lsp-roots`.
+- A list of library directories to skip (approach A); no longer needed once outermost is chosen.
+- Changing the popover to tell apart two rows with the same server name.
 
-## Cách làm
+## Approach
 
-Các cách đã cân nhắc:
+Approaches considered:
 
-- **A.** Bỏ qua `vendor/`, `node_modules/`, `deps/`... khi tìm root. Sửa mọi
-  server nhưng phải giữ danh sách thư mục viết sẵn.
-- **B.** Dùng lại server đang chạy nếu root của nó chứa file. Phụ thuộc thứ tự
-  mở file.
-- **C.** Chỉ cho intelephense/phpactor chọn ngoài cùng. Sửa một dòng dữ liệu,
-  nhưng JS/TS, Elixir, Swift... vẫn bị.
-- **D.** Đổi mặc định của mọi server sang ngoài cùng, như Helix. Một chỗ sửa,
-  không cần danh sách thư mục. Đánh đổi: monorepo JS/Python chạy một server cho
-  cả repo (VS Code và Helix cũng vậy). **Người dùng chọn cách này.**
+- **A.** Skip `vendor/`, `node_modules/`, `deps/`... when looking for the root. Fixes every
+  server but has to keep a hard-coded directory list.
+- **B.** Reuse a running server if its root contains the file. Depends on the order files
+  are opened.
+- **C.** Only let intelephense/phpactor pick outermost. A one-line data change,
+  but JS/TS, Elixir, Swift... are still hit.
+- **D.** Change every server's default to outermost, like Helix. One place to change,
+  no directory list needed. Trade-off: a JS/Python monorepo runs one server for
+  the whole repo (VS Code and Helix do the same). **The user chose this approach.**
 
-Thay đổi:
+Changes:
 
-- `RootSearch` trong `crates/lucerna-lsp/src/adapters.rs`: `#[default]` chuyển
-  từ `Nearest` sang `Outermost`. `Nearest` vẫn giữ, người dùng đặt được qua
-  `lsp.<server>.root_search: "nearest"` (setting `lsp` merge vào bảng mặc định).
-- `servers.json`: gopls giữ `"ordered"` (ưu tiên `go.work` rồi `go.mod`, đúng ý
-  Go). rust-analyzer giữ dòng `"outermost"` dù giờ trùng mặc định,
-  vì nó nói rõ ý định (quyết định của mình).
-- Test trong `crates/lucerna-lsp/tests/adapters.rs`:
-  - Sửa `ts_nearest_package_json`: monorepo có `package.json` ở gốc và
-    `packages/web` giờ ra root là gốc. Đổi tên theo hành vi mới.
-  - Sửa vế thứ hai của `glob_marker_finds_sln`: có cả `a.sln` ở gốc và
-    `src/App/App.csproj` thì giờ ra gốc.
-  - Mới: intelephense, file trong `apps/api/vendor/laravel/framework/` và file
-    trong `apps/api/app/` ra cùng root, cả khi có và không có `.git` ở gốc.
-  - Mới: typescript-language-server, file trong
-    `node_modules/<gói>/` ra cùng root với file của dự án.
-  - Mới: đặt `root_search: "nearest"` qua setting thì vẫn ra thư mục gần nhất.
-- Quyết định của mình: không sửa các spec cũ (lịch sử). Ghi một dòng vào
-  `docs/research/2026-11-11-lsp-server-table.md` rằng Helix chọn marker ngoài
-  cùng, để lần sau khỏi tra lại.
+- `RootSearch` in `crates/lucerna-lsp/src/adapters.rs`: `#[default]` moves
+  from `Nearest` to `Outermost`. `Nearest` stays, and users can set it through
+  `lsp.<server>.root_search: "nearest"` (the `lsp` setting merges into the default table).
+- `servers.json`: gopls keeps `"ordered"` (prefer `go.work`, then `go.mod`, as Go intends).
+  rust-analyzer keeps its `"outermost"` line even though it now matches the default,
+  because it states the intent (my decision).
+- Tests in `crates/lucerna-lsp/tests/adapters.rs`:
+  - Fix `ts_nearest_package_json`: a monorepo with `package.json` at the top and
+    `packages/web` now gets the top as root. Rename it to match the new behavior.
+  - Fix the second half of `glob_marker_finds_sln`: with both `a.sln` at the top and
+    `src/App/App.csproj`, it now gives the top.
+  - New: intelephense, a file in `apps/api/vendor/laravel/framework/` and a file
+    in `apps/api/app/` get the same root, both with and without a `.git` at the top.
+  - New: typescript-language-server, a file in
+    `node_modules/<package>/` gets the same root as the project's file.
+  - New: setting `root_search: "nearest"` through settings still gives the nearest directory.
+- My decision: do not edit the old specs (history). Add one line to
+  `docs/research/2026-11-11-lsp-server-table.md` saying Helix picks the outermost marker, so
+  nobody has to look it up again.
 
-Hệ quả cần biết:
+Consequences to know:
 
-- `.git` chỉ còn là marker khi nó là marker duy nhất của server (yaml, json,
-  bash). Mười lăm server có `.git` kèm marker dự án (intelephense, phpactor,
-  ruby-lsp, jdtls, sourcekit-lsp, lua, css/html...) bỏ `.git`, vì với cách tìm
-  ngoài cùng, `.git` ở gốc repo sẽ luôn thắng `composer.json`, `Gemfile`,
-  `pom.xml` ở thư mục con. Không có marker nào thì vẫn dùng root workspace, như
-  trước. (Phát hiện khi review; test `git_is_only_ever_a_sole_root_marker`.)
-- Elixir umbrella lấy `mix.exs` ở gốc umbrella, Maven/Gradle nhiều module lấy
-  `pom.xml`/`settings.gradle` cha. Đó là root mà các server này muốn.
-- Server đang chạy với root cũ không tự đổi; người dùng cần Restart hoặc mở lại
-  app. Bảng mặc định nằm trong binary nên thay đổi đến cùng bản build mới.
+- `.git` is only a marker when it is the server's only marker (yaml, json,
+  bash). Fifteen servers that had `.git` alongside a project marker (intelephense, phpactor,
+  ruby-lsp, jdtls, sourcekit-lsp, lua, css/html...) drop `.git`, because with the outermost
+  search, a `.git` at the repo root would always beat the `composer.json`, `Gemfile`,
+  `pom.xml` in subdirectories. With no marker at all, the workspace root is still used, as
+  before. (Found during review; test `git_is_only_ever_a_sole_root_marker`.)
+- An Elixir umbrella takes the umbrella's top `mix.exs`, a multi-module Maven/Gradle takes the parent
+  `pom.xml`/`settings.gradle`. That is the root these servers want.
+- A server already running with the old root does not change by itself; the user needs to Restart or reopen the
+  app. The default table is inside the binary, so the change arrives with the new build.
 
-## Tham khảo
+## References
 
-- **VS Code:** extension intelephense (`src/extension.ts`) tạo một
-  `LanguageClient` cho cả cửa sổ, không truyền root riêng; file trong `vendor/`
-  đi vào cùng server đó.
+- **VS Code:** the intelephense extension (`src/extension.ts`) creates one
+  `LanguageClient` for the whole window, without passing a separate root; files in `vendor/`
+  go into that same server.
 - **Zed:** `crates/project/src/manifest_tree.rs`.
-  - Server không khai báo manifest dùng root của worktree
-    (`root_for_path_or_worktree_root`). Extension PHP không khai báo manifest,
-    nên mỗi worktree có một intelephense.
-  - Server có manifest chọn thư mục **ngoài cùng**: `CargoManifestProvider`
-    (`crates/languages/src/rust.rs`), `PyprojectTomlManifestProvider` (đổi sang
-    ngoài cùng ở PR #53781 cho workspace uv/Poetry).
-  - Không có luật riêng cho `vendor/`/`node_modules/`.
-- **Helix:** `find_lsp_workspace` trong `helix-lsp/src/lib.rs`.
-  - Đi từ thư mục của file lên, mỗi marker gặp được ghi đè kết quả trước, nên
-    thư mục **cao nhất** có marker thắng. Dừng ở root workspace hoặc ở một thư
-    mục trong `workspace-lsp-roots`. Không có marker thì dùng root workspace.
-  - Không có luật riêng cho thư mục thư viện.
-  - `try_add_doc` trong `helix-lsp/src/client.rs`: root trùng client đang chạy
-    thì dùng lại; root khác mà server hỗ trợ nhiều workspace folder thì thêm
-    folder qua `didChangeWorkspaceFolders` thay vì mở process mới.
+  - A server that declares no manifest uses the worktree's root
+    (`root_for_path_or_worktree_root`). The PHP extension declares no manifest,
+    so each worktree has one intelephense.
+  - A server with a manifest picks the **outermost** directory: `CargoManifestProvider`
+    (`crates/languages/src/rust.rs`), `PyprojectTomlManifestProvider` (changed to
+    outermost in PR #53781 for uv/Poetry workspaces).
+  - There is no special rule for `vendor/`/`node_modules/`.
+- **Helix:** `find_lsp_workspace` in `helix-lsp/src/lib.rs`.
+  - Walks up from the file's directory, each marker met overrides the earlier result, so the
+    **highest** directory with a marker wins. Stops at the workspace root or at a
+    directory in `workspace-lsp-roots`. With no marker, uses the workspace root.
+  - There is no special rule for library directories.
+  - `try_add_doc` in `helix-lsp/src/client.rs`: a root equal to a running client is
+    reused; a different root where the server supports several workspace folders adds a
+    folder through `didChangeWorkspaceFolders` instead of opening a new process.

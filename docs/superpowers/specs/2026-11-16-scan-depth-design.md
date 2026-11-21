@@ -1,93 +1,103 @@
-# Giới hạn độ sâu khi quét cây file — thiết kế ngắn
+# Depth limit when scanning the file tree — short design
 
-Ngày: 2026-11-16. Trạng thái: đã duyệt. Người dùng chọn "làm như Zed".
+Date: 2026-11-16. Status: approved. The user chose "do it like Zed".
 
-## Ý định
+## Intent
 
-Mở `~` (hoặc một thư mục lớn không phải repo) thì Lucerna quét toàn bộ cây
-ngay lập tức: tốn CPU, RAM, và đọc vào mọi thư mục con. Người dùng muốn xử
-lý giống Zed.
+Opening `~` (or a large directory that is not a repo) makes Lucerna scan
+the entire tree immediately: it costs CPU, RAM, and reads into every
+subdirectory. The user wants it handled like Zed.
 
-## Tham khảo
+## References
 
-Nghiên cứu ngày 2026-11-16 (nhánh main của Zed, VS Code):
+Research dated 2026-11-16 (Zed's main branch, VS Code):
 
-- **Zed** (`crates/worktree/src/worktree.rs`, PR #62583, 2026-08): quét
-  eager toàn cây, nhưng thư mục **nằm ngoài git repo** ở độ sâu ≥
-  `file_scan_depth` (mặc định 5) được ghi là `UnloadedDir` và không quét
-  vào. Thư mục đó được tải khi người dùng expand nó, hoặc khi mở một file
-  bên trong. Chạm giới hạn thì hiện một thông báo ở thanh trạng thái. Khi
-  đi ngược lên tìm `.git`/`.gitignore`, Zed dừng ở `$HOME`.
-- Zed **không** chặn hộp thoại quyền của macOS (TCC): `~/Desktop`,
-  `~/Library`, `~/Pictures/Photos Library.photoslibrary` chỉ sâu 1–2 cấp
-  nên vẫn bị quét. Issue #20913, #48746 vẫn mở.
-- **VS Code**: Explorer chỉ đọc thư mục khi expand; không có setting giới
-  hạn độ sâu. Find in Files và Cmd+P vẫn duyệt toàn cây bằng ripgrep.
+- **Zed** (`crates/worktree/src/worktree.rs`, PR #62583, 2026-08): scans
+  the whole tree eagerly, but directories **outside a git repo** at depth ≥
+  `file_scan_depth` (default 5) are recorded as `UnloadedDir` and not
+  scanned into. Such a directory is loaded when the user expands it, or
+  when a file inside it is opened. Hitting the limit shows a notice in the
+  status bar. When walking up looking for `.git`/`.gitignore`, Zed stops
+  at `$HOME`.
+- Zed does **not** prevent macOS's permission prompts (TCC): `~/Desktop`,
+  `~/Library`, `~/Pictures/Photos Library.photoslibrary` are only 1–2
+  levels deep so they still get scanned. Issues #20913 and #48746 are
+  still open.
+- **VS Code**: the Explorer only reads a directory when it is expanded;
+  there is no depth-limit setting. Find in Files and Cmd+P still walk the
+  whole tree with ripgrep.
 
-## Lucerna hôm nay
+## Lucerna today
 
-- `lucerna-project/src/worktree.rs`: `Worker::scan` duyệt toàn cây bằng
-  `walk_builder` (`ignore::WalkBuilder`), không giới hạn độ sâu.
-- `walk_builder` bật `.parents(true)`: đọc `.gitignore` ở mọi thư mục cha,
-  tới tận `/`.
-- `search.rs` tự duyệt toàn cây bằng cùng `walk_builder`.
-- Watcher là `notify` đệ quy (FSEvents trên macOS).
+- `lucerna-project/src/worktree.rs`: `Worker::scan` walks the whole tree
+  with `walk_builder` (`ignore::WalkBuilder`), with no depth limit.
+- `walk_builder` turns on `.parents(true)`: reads `.gitignore` in every
+  parent directory, all the way up to `/`.
+- `search.rs` walks the whole tree itself with the same `walk_builder`.
+- The watcher is a recursive `notify` (FSEvents on macOS).
 
-## Cách làm đã cân nhắc
+## Approaches considered
 
-1. **Như Zed: quét eager, giới hạn độ sâu ngoài repo** (chọn). Ít đổi mô
-   hình nhất: snapshot vẫn là danh sách đầy đủ của phần đã tải.
-2. Như VS Code: chỉ đọc khi expand. Quick Open và search phải duyệt riêng,
-   đổi nhiều; không phải hướng người dùng chọn.
-3. Như (1) cộng loại trừ thư mục TCC của macOS. Zed không làm; để sau nếu
-   người dùng muốn.
+1. **Like Zed: scan eagerly, limit depth outside repos** (chosen). Changes
+   the model the least: the snapshot is still the full list of what has
+   been loaded.
+2. Like VS Code: only read on expand. Quick Open and search would need to
+   walk separately, a big change; not the direction the user chose.
+3. Like (1) plus excluding macOS's TCC directories. Zed does not do it;
+   later if the user wants it.
 
-## Thiết kế
+## Design
 
-- **Setting `files.scanDepth`**, mặc định `5`. VS Code không có setting
-  tương đương, nên tên theo kiểu `files.*` của VS Code (quyết định của
-  người viết spec). `0` hoặc âm: không giới hạn.
-- **Quét**: một thư mục ở độ sâu ≥ `files.scanDepth` tính từ root, và
-  không nằm trong git repo nào, được ghi vào snapshot với kiểu mới
-  `EntryKind::UnloadedDir` và không duyệt vào trong. Thư mục trong git repo
-  (root nằm trong repo, hoặc chính nó/thư mục cha của nó trong root có
-  `.git`) luôn quét đủ.
-- **Tải khi cần**:
-  - Expand một `UnloadedDir` trong Explorer: worker đọc thư mục đó một
-    cấp; thư mục con tiếp tục là `UnloadedDir` nếu vẫn vượt giới hạn.
-  - Mở một file bên trong (CLI, Reveal, nhảy tới định nghĩa): tải các thư
-    mục trên đường dẫn tới file đó.
-  - Đã tải thì giữ cho tới khi rescan toàn bộ; rescan tải lại những thư
-    mục đang expand.
-- **Quick Open, Find in Files**: chỉ thấy phần đã tải, như Zed. Search
-  dùng cùng quy tắc độ sâu (bỏ qua `UnloadedDir`) thay vì duyệt toàn cây.
-- **Watcher**: giữ FSEvents đệ quy; sự kiện bên trong `UnloadedDir` bị bỏ
-  qua, trừ việc tạo/xoá chính thư mục đó.
-- **Thư mục cha**: khi root nằm dưới `$HOME`, tìm `.gitignore` và git repo
-  ở thư mục cha dừng tại `$HOME` (gồm cả `$HOME`), không đi lên tiếp.
-- **Thông báo**: lần đầu một lượt quét gặp giới hạn, thanh trạng thái hiện
+- **Setting `files.scanDepth`**, default `5`. VS Code has no equivalent
+  setting, so the name follows VS Code's `files.*` style (the spec
+  writer's decision). `0` or negative: no limit.
+- **Scan**: a directory at depth ≥ `files.scanDepth` from the root that is
+  not inside any git repo is recorded in the snapshot with the new kind
+  `EntryKind::UnloadedDir` and not walked into. A directory inside a git
+  repo (the root is inside a repo, or it itself/its parent within the root
+  has `.git`) is always scanned in full.
+- **Load on demand**:
+  - Expanding an `UnloadedDir` in the Explorer: the worker reads that
+    directory one level; subdirectories stay `UnloadedDir` if they still
+    exceed the limit.
+  - Opening a file inside one (CLI, Reveal, go to definition): load the
+    directories along the path to that file.
+  - Once loaded it is kept until a full rescan; a rescan reloads the
+    directories that are expanded.
+- **Quick Open, Find in Files**: only see what has been loaded, like Zed.
+  Search uses the same depth rule (skipping `UnloadedDir`) instead of
+  walking the whole tree.
+- **Watcher**: keep the recursive FSEvents; events inside an
+  `UnloadedDir` are ignored, except for creating/deleting that directory
+  itself.
+- **Parent directories**: when the root is under `$HOME`, look for
+  `.gitignore` and a git repo in parent directories stopping at `$HOME`
+  (including `$HOME`), not going further up.
+- **Notice**: the first time a scan hits the limit, the status bar shows
   `Some folders deeper than 5 levels load when expanded`
-  (số lấy theo setting).
-- Mọi phần trên không phụ thuộc nền tảng.
+  (the number follows the setting).
+- None of the above depends on the platform.
 
-## Không làm
+## Non-goals
 
-- Không chặn hộp thoại quyền macOS. Mở `~` vẫn có thể bật hộp thoại Photos,
-  Desktop… như Zed. Nếu muốn, làm cách (3) ở spec sau.
-- Không đổi việc mở lại `~` khi khởi động (Zed cũng mở lại).
+- Not preventing macOS permission prompts. Opening `~` can still trigger
+  the Photos, Desktop… prompts like Zed. If wanted, do approach (3) in a
+  later spec.
+- No change to reopening `~` at startup (Zed reopens it too).
 
-## Test
+## Tests
 
-- `worktree.rs`: cây sâu 7 cấp không có `.git` → cấp 5 trở xuống là
-  `UnloadedDir`; cùng cây có `.git` → quét đủ; `files.scanDepth: 0` → quét
-  đủ; expand một `UnloadedDir` tải đúng một cấp; tải theo đường dẫn file.
-- `search.rs`: file trong `UnloadedDir` không có trong kết quả.
-- Thư mục cha: `.gitignore` phía trên `$HOME` (HOME giả trong test) không
-  áp dụng.
-- Explorer: `UnloadedDir` hiện như thư mục đóng và expand được.
+- `worktree.rs`: a 7-level-deep tree with no `.git` → level 5 and below
+  are `UnloadedDir`; the same tree with `.git` → scanned in full;
+  `files.scanDepth: 0` → scanned in full; expanding an `UnloadedDir`
+  loads exactly one level; loading by file path.
+- `search.rs`: a file inside an `UnloadedDir` is not in the results.
+- Parent directories: a `.gitignore` above `$HOME` (a fake HOME in the
+  test) does not apply.
+- Explorer: an `UnloadedDir` shows as a closed folder and can be expanded.
 
-## Để người làm quyết
+## Left to the implementer
 
-Cách đánh dấu "trong git repo" khi duyệt song song, cách thay
-`.parents(true)` để dừng ở `$HOME`, và cách hiện thông báo bằng thành phần
-có sẵn trong `ui.rs`/`status_message.rs`.
+How to mark "inside a git repo" during the parallel walk, how to replace
+`.parents(true)` to stop at `$HOME`, and how to show the notice with the
+existing components in `ui.rs`/`status_message.rs`.

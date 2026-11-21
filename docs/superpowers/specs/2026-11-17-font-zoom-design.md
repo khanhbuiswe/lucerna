@@ -1,79 +1,79 @@
-# Zoom cỡ chữ code (⌘+ / ⌘− / ⌘0)
+# Code font size zoom (⌘+ / ⌘− / ⌘0)
 
-Ngày 2026-11-17. Trạng thái: đã triển khai (branch `claude/font-zoom`); kiểm tra thủ công §6 chưa làm. Mục đầu tiên của tầng 1 trong `docs/roadmap.md`.
+Date 2026-11-17. Status: implemented (branch `claude/font-zoom`); manual check §6 not done yet. The first item of tier 1 in `docs/roadmap.md`.
 
-## 1. Mục đích
+## 1. Purpose
 
-Người chuyển từ VS Code bấm ⌘+ để đọc code to hơn (màn hình lớn, trình chiếu, mỏi mắt).
+People moving from VS Code press ⌘+ to read code bigger (large screen, presenting, eye strain).
 
-**Hiện trạng** (sửa lại sau khi duyệt; bản đầu viết nhầm là chưa có lệnh): đã có
-`editor.action.fontZoomIn` / `fontZoomOut` (⌘= / ⌘−, menu View → Zoom In / Zoom Out), nhưng chỉ
-đổi `CodeView` đang active (`CodeView::zoom`, kẹp 6–40). Tab khác, tab mở sau, tab diff và terminal
-giữ cỡ cũ. Chưa có ⌘0, ⌘+, chưa báo cỡ mới.
+**Current state** (corrected after approval; the first draft wrongly said there was no command): there already are
+`editor.action.fontZoomIn` / `fontZoomOut` (⌘= / ⌘−, menu View → Zoom In / Zoom Out), but they only
+change the active `CodeView` (`CodeView::zoom`, clamped 6–40). Other tabs, tabs opened later, diff tabs and the terminal
+keep the old size. There is no ⌘0, no ⌘+, and no feedback on the new size.
 
-**Mục tiêu:** ⌘= / ⌘+ / ⌘− / ⌘0 phóng to, thu nhỏ, đặt lại cỡ chữ code ở mọi view, mọi cửa sổ.
+**Goal:** ⌘= / ⌘+ / ⌘− / ⌘0 zoom in, zoom out and reset the code font size in every view and every window.
 
-**Ngoài phạm vi:** zoom toàn bộ giao diện (`window.zoomLevel`); ⌘ + lăn chuột (`editor.mouseWheelZoom`);
-lưu mức zoom qua lần mở app sau.
+**Out of scope:** zooming the whole UI (`window.zoomLevel`); ⌘ + mouse wheel (`editor.mouseWheelZoom`);
+saving the zoom level across app launches.
 
-**Anti-goal:** zoom làm thay đổi `settings.json` của người dùng.
+**Anti-goal:** zooming changes the user's `settings.json`.
 
-## 2. Tham khảo
+## 2. References
 
 - **Zed** (`assets/keymaps/default-macos.json`): `cmd-=` / `cmd-+` → `zed::IncreaseBufferFontSize`,
-  `cmd--` → `DecreaseBufferFontSize`, `cmd-0` → `ResetBufferFontSize`, đều `{ "persist": false }`:
-  không ghi settings, mất khi khởi động lại. Ở Welcome và Onboarding, các phím này đổi cỡ chữ UI.
-  Terminal của Zed dùng `buffer_font_size` khi không đặt cỡ riêng.
-- **VS Code:** ⌘= / ⌘− zoom cả cửa sổ (`workbench.action.zoomIn`, ghi `window.zoomLevel`). Riêng
-  editor có `editor.action.fontZoomIn` / `fontZoomOut` / `fontZoomReset`, không có phím mặc định,
-  không lưu qua lần khởi động.
-- **Helix:** chạy trong terminal, không có zoom.
+  `cmd--` → `DecreaseBufferFontSize`, `cmd-0` → `ResetBufferFontSize`, all `{ "persist": false }`:
+  nothing is written to settings, lost on restart. In Welcome and Onboarding, these keys change the UI font size.
+  Zed's terminal uses `buffer_font_size` when it has no size of its own.
+- **VS Code:** ⌘= / ⌘− zoom the whole window (`workbench.action.zoomIn`, writes `window.zoomLevel`). The
+  editor alone has `editor.action.fontZoomIn` / `fontZoomOut` / `fontZoomReset`, with no default keys,
+  not saved across launches.
+- **Helix:** runs in a terminal, has no zoom.
 
-## 3. Các cách đã cân nhắc
+## 3. Approaches considered
 
-| Cách | Đánh đổi | Kết quả |
+| Approach | Trade-off | Result |
 |---|---|---|
-| A. Zoom toàn UI như VS Code | Đúng nguyên tắc "hành vi theo VS Code", nhưng ~634 chỗ `px(...)` cố định trong `lucerna-workbench` phải đổi sang một hệ số chung | Bỏ, để sau nếu có người xin |
-| **B. Chỉ cỡ chữ code như Zed** | Nhỏ, chỉ đụng chỗ đọc `editor.fontSize`. Lệch VS Code ở phím ⌘+ (VS Code zoom cả cửa sổ) | **Chọn** |
+| A. Zoom the whole UI like VS Code | Matches the "behavior follows VS Code" principle, but ~634 fixed `px(...)` spots in `lucerna-workbench` would have to change to a shared factor | Dropped, later if someone asks |
+| **B. Only the code font size, like Zed** | Small, only touches where `editor.fontSize` is read. Deviates from VS Code on the ⌘+ key (VS Code zooms the whole window) | **Chosen** |
 
-Lệch VS Code có chủ ý: phím ⌘+ gọi lệnh font zoom của editor thay vì zoom cửa sổ, vì Lucerna chưa
-có zoom cửa sổ và người bấm ⌘+ gần như luôn muốn đọc code to hơn.
+A deliberate deviation from VS Code: the ⌘+ key calls the editor's font zoom command instead of zooming the window, because Lucerna has
+no window zoom and someone pressing ⌘+ almost always wants to read code bigger.
 
-## 4. Thiết kế
+## 4. Design
 
-- **Lệnh** (ID của VS Code): `editor.action.fontZoomIn`, `editor.action.fontZoomOut`,
-  `editor.action.fontZoomReset`. Có trong command palette với tên "Editor Font Zoom In",
+- **Commands** (VS Code IDs): `editor.action.fontZoomIn`, `editor.action.fontZoomOut`,
+  `editor.action.fontZoomReset`. In the command palette as "Editor Font Zoom In",
   "Editor Font Zoom Out", "Editor Font Zoom Reset".
-- **Phím mặc định** (theo Zed, đổi được trong `keybindings.json`): `cmd+=` và `shift+cmd+=` (⌘+
-  trên bàn phím US) → in, `cmd+-` → out, `cmd+0` → reset. Không có `when`, chạy ở mọi nơi trong
-  cửa sổ. Menu View thêm "Reset Zoom".
-- **Trạng thái:** một độ lệch nguyên (px) dùng chung cho cả tiến trình, mọi cửa sổ. Cỡ chữ thật =
-  `editor.fontSize` + độ lệch, kẹp trong 6–100 (cùng giới hạn với bước cỡ chữ ở onboarding,
-  `FONT_SIZE_MIN` / `FONT_SIZE_MAX`). Mỗi lần bấm ±1 px. Đã chạm giới hạn thì không làm gì.
-- **Không lưu:** độ lệch chỉ sống trong bộ nhớ; không ghi `settings.json`, không vào app state.
-- **Settings thắng:** khi `editor.fontSize` ở lớp User đổi (người dùng sửa `settings.json`), độ
-  lệch về 0. Đổi ở lớp Workspace không reset (quyết định của người viết plan: hiếm, và zoom vẫn cộng
-  lên cỡ mới).
-- **Áp dụng cho:** mọi chỗ vẽ code theo `editor.fontSize` (editor, tab diff, các danh sách excerpt,
-  log language server), và terminal khi `terminal.integrated.fontSize` là `null`. Markdown preview
-  không đổi. Giới hạn 6–40 cũ ở các chỗ này đổi thành 6–100. Cỡ chữ UI (sidebar, tab, status bar,
-  Quick Open) không đổi.
-- **Phản hồi:** sau mỗi lần bấm, status bar hiện tạm "Font Size: N" qua cơ chế `status_message`
-  sẵn có.
-- **Đổi cỡ giữ vị trí:** dòng ở đầu khung nhìn vẫn ở đầu khung nhìn sau khi đổi cỡ (như khi đổi
-  `editor.fontSize` hiện nay; nếu hiện chưa giữ thì làm cho giữ).
-- **Vim:** không ảnh hưởng, các phím đều có ⌘.
+- **Default keys** (following Zed, changeable in `keybindings.json`): `cmd+=` and `shift+cmd+=` (⌘+
+  on a US keyboard) → in, `cmd+-` → out, `cmd+0` → reset. No `when`, works everywhere in the
+  window. The View menu adds "Reset Zoom".
+- **State:** one integer offset (px) shared across the whole process, all windows. The real font size =
+  `editor.fontSize` + the offset, clamped to 6–100 (the same limits as the onboarding font size step,
+  `FONT_SIZE_MIN` / `FONT_SIZE_MAX`). Each press is ±1 px. At the limit, do nothing.
+- **Not saved:** the offset lives only in memory; nothing is written to `settings.json`, nothing goes into app state.
+- **Settings win:** when `editor.fontSize` in the User layer changes (the user edits `settings.json`), the
+  offset goes back to 0. A change in the Workspace layer does not reset it (the plan writer's decision: rare, and the zoom still adds
+  onto the new size).
+- **Applies to:** everywhere that draws code by `editor.fontSize` (editor, diff tabs, excerpt lists,
+  language server log), and the terminal when `terminal.integrated.fontSize` is `null`. Markdown preview
+  is unchanged. The old 6–40 limit in these places becomes 6–100. UI font sizes (sidebar, tabs, status bar,
+  Quick Open) are unchanged.
+- **Feedback:** after each press, the status bar briefly shows "Font Size: N" through the existing
+  `status_message` mechanism.
+- **Resizing keeps position:** the line at the top of the viewport stays at the top of the viewport after the size changes (as when changing
+  `editor.fontSize` today; if it does not hold that today, make it hold).
+- **Vim:** not affected, all the keys carry ⌘.
 
-## 5. Để người làm quyết định
+## 5. Left to the implementer
 
-- Cách đưa cỡ chữ đã zoom tới các view: plan chọn một global GPUI `FontZoom` (module
-  `font_zoom.rs`), `WindowSettings` observe global đó rồi `notify`, nên mọi view đang observe
-  settings tự đọc lại.
-- Khi terminal đã có cỡ riêng (`terminal.integrated.fontSize` khác `null`) thì terminal không zoom.
-  Đây là quyết định của người viết spec (như Zed: terminal theo buffer chỉ khi không đặt riêng).
+- How to get the zoomed font size to the views: the plan picks a GPUI global `FontZoom` (module
+  `font_zoom.rs`), `WindowSettings` observes that global and then `notify`s, so every view already observing
+  settings re-reads on its own.
+- When the terminal already has its own size (`terminal.integrated.fontSize` is not `null`) the terminal does not zoom.
+  This is the spec writer's decision (like Zed: the terminal follows the buffer only when it has no size of its own).
 
-## 6. Kiểm tra
+## 6. Testing
 
-- Unit test: bước ±1, kẹp 6–100, reset, settings đổi thì độ lệch về 0.
-- Thủ công trên app: ⌘+ ở editor, diff tab, terminal; hai cửa sổ cùng đổi; khởi động lại thì về cỡ
-  trong settings; `settings.json` không đổi.
+- Unit tests: the ±1 step, clamping to 6–100, reset, the offset going to 0 when settings change.
+- Manual in the app: ⌘+ in the editor, a diff tab, the terminal; two windows change together; after a restart it returns to the size
+  in settings; `settings.json` does not change.

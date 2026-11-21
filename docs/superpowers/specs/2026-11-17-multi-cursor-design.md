@@ -1,106 +1,106 @@
 # Phase 4.3: Multi-cursor
 
-Ngày 2026-11-17. Trạng thái: đã triển khai.
+Date 2026-11-17. Status: implemented.
 
-Spec cha: [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md) §8, §14, §17. Nghiên cứu VS Code / Zed: [docs/research/2026-11-11-editing.md](../../research/2026-11-11-editing.md) §3. Spec này chốt phạm vi và cách làm của bước 4.3; chỗ nào khác spec cha thì spec này thắng.
+Parent spec: [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md) §8, §14, §17. VS Code / Zed research: [docs/research/2026-11-11-editing.md](../../research/2026-11-11-editing.md) §3. This spec settles the scope and approach of step 4.3; where it differs from the parent spec, this spec wins.
 
-## 1. Ý định
+## 1. Intent
 
-Bước tiếp theo trên roadmap (§1.3 spec Phase 1): V2 đã xong, và 4.5 (completion, snippet) cần multi-cursor cho placeholder cùng số. Người dùng chủ yếu đọc và chỉnh nhẹ code do agent viết; ⌘D, ⌥-click, chọn cột là những thao tác sửa hàng loạt nhanh nhất mà người quen VS Code dùng hằng ngày.
+The next step on the roadmap (§1.3 of the Phase 1 spec): V2 is done, and 4.5 (completion, snippets) needs multi-cursor for same-numbered placeholders. Users mostly read and lightly edit code written by agents; ⌘D, ⌥-click and column select are the fastest bulk-edit actions that people used to VS Code use every day.
 
-## 2. Mục tiêu, không làm, phản mục tiêu
+## 2. Goals, non-goals, anti-goals
 
-**Mục tiêu**
-- Mọi lệnh 4.3 trong bảng §14.1 của spec cha chạy như VS Code, với phím mặc định macOS của VS Code.
-- ⌥-click thêm / bỏ con trỏ, ⌥-kéo thêm một vùng chọn, ⇧⌥-kéo chọn cột.
-- Escape: nhiều selection → còn selection chính; một selection không rỗng → con trỏ.
-- Paste theo `editor.multiCursorPaste`.
-- Bốn setting: `editor.multiCursorModifier`, `editor.multiCursorMergeOverlapping`, `editor.multiCursorPaste`, `editor.multiCursorLimit` (mặc định như §14.2 spec cha; xem §5.3 về `selectedTextMatchMode`).
-- Status bar có nhiều selection thì hiện như VS Code: `N selections`, thêm ` (M characters selected)` khi có chữ chọn; một selection có chữ thì `Ln x, Col y (M selected)`.
-- `block_selection` trong `CodeView` bị bỏ. Chọn cột (cả `<C-v>` của Vim) là nhiều selection thật.
+**Goals**
+- Every 4.3 command in the §14.1 table of the parent spec works like VS Code, with VS Code's default macOS keys.
+- ⌥-click adds / removes a cursor, ⌥-drag adds a selection range, ⇧⌥-drag does a column select.
+- Escape: several selections → only the primary selection remains; one non-empty selection → a cursor.
+- Paste follows `editor.multiCursorPaste`.
+- Four settings: `editor.multiCursorModifier`, `editor.multiCursorMergeOverlapping`, `editor.multiCursorPaste`, `editor.multiCursorLimit` (defaults as in §14.2 of the parent spec; see §5.3 about `selectedTextMatchMode`).
+- With several selections, the status bar shows it like VS Code: `N selections`, plus ` (M characters selected)` when text is selected; one selection with text shows `Ln x, Col y (M selected)`.
+- `block_selection` in `CodeView` is removed. Column select (including Vim's `<C-v>`) is real multiple selections.
 
-**Không làm (bước này)**
-- Toán tử Vim trên Visual Block (`d`, `c`, `I`, `A` trên khối), register Blockwise. Người dùng đã chọn để thành bước riêng. `<C-v>` vẫn chỉ chọn và `y` như hiện nay, chỉ đổi cách lưu và vẽ.
-- `editor.columnSelection` (chế độ chọn cột bật tắt), chuột giữa kéo chọn cột, `editor.action.selectAllMatches` (⌥Enter trong thanh Find), lệnh `cursorRedo`.
-- Vim chạy motion / toán tử trên nhiều con trỏ (như Zed). Phần này làm lại lõi `lucerna-vim`, gộp vào bước Visual Block sau. Bước này chỉ làm cách A ở §5.2 "Vim".
+**Non-goals (this step)**
+- Vim operators on Visual Block (`d`, `c`, `I`, `A` on a block), the Blockwise register. The user chose to make it a separate step. `<C-v>` still only selects and does `y` as it does now, only the storage and drawing change.
+- `editor.columnSelection` (the toggleable column select mode), middle-mouse drag column select, `editor.action.selectAllMatches` (⌥Enter in the Find bar), the `cursorRedo` command.
+- Vim running motions / operators on multiple cursors (like Zed). That reworks the core of `lucerna-vim`, folded into the later Visual Block step. This step only does approach A in §5.2 "With Vim enabled".
 
-**Phản mục tiêu**
-- Gõ chữ chậm đi khi có nhiều con trỏ (mục tiêu: 1000 con trỏ vẫn gõ không giật; xem §15 spec cha).
-- ⌘D treo luồng UI trên file lớn.
-- Thanh Find và ⌘D khớp chữ khác nhau với cùng tùy chọn.
-- Hành vi một con trỏ hiện nay (click, kéo, ⌘-click đi tới định nghĩa, Vim) thay đổi khi không dùng phím bổ trợ của multi-cursor.
+**Anti-goals**
+- Typing gets slower when there are many cursors (target: 1000 cursors still type without stutter; see §15 of the parent spec).
+- ⌘D freezes the UI thread on a large file.
+- The Find bar and ⌘D match different text with the same options.
+- Today's single-cursor behavior (click, drag, ⌘-click go to definition, Vim) changes when the multi-cursor modifier keys are not used.
 
-## 3. Ràng buộc
+## 3. Constraints
 
-- Hành vi, phím, setting theo VS Code; giao diện theo Zed (`docs/design-principles.md`). Chuỗi hiển thị tiếng Anh.
-- Chỉ `lucerna-workbench` dùng gpui. Logic selection nằm trong `lucerna-editor`, test không cần cửa sổ.
-- Không chép code GPL của Zed. Code phỏng theo VS Code (MIT) ghi dòng `Adapted from microsoft/vscode …` như `clipboard.rs`.
-- `cargo deny check` phải qua; không thêm dependency mới (regex đã có trong workspace).
+- Behavior, keys and settings follow VS Code; UI follows Zed (`docs/design-principles.md`). Displayed strings are English.
+- Only `lucerna-workbench` uses gpui. Selection logic lives in `lucerna-editor`, tests need no window.
+- Do not copy Zed's GPL code. Code adapted from VS Code (MIT) carries a `Adapted from microsoft/vscode …` line like `clipboard.rs`.
+- `cargo deny check` must pass; no new dependencies (regex is already in the workspace).
 
-## 4. Cách làm (Approaches)
+## 4. Approaches
 
-| Cách | Đánh đổi | Kết quả |
+| Approach | Trade-off | Result |
 |---|---|---|
-| **A. Logic trong `lucerna-editor::multicursor`, tìm bằng regex dùng chung với thanh Find, bỏ `block_selection`** | Một mô hình selection; ⌘D khớp giống thanh Find (như VS Code); test thuần Rust. Phải sửa chỗ Vim gọi `set_block_selection` và đường vẽ khối. | **Người dùng chọn.** |
-| B. Như A nhưng tìm bằng Aho-Corasick (như Zed, spec cha ghi vậy) | Nhanh hơn khi rất nhiều kết quả, nhưng thêm dependency và khớp khác thanh Find. Regex literal đã đủ nhanh. | Loại. |
-| C. Giữ `block_selection`, đổi thành selection khi bắt đầu sửa | Ít thay đổi, nhưng hai mô hình selection song song, trái hợp đồng §13.5 spec cha, làm khó bước Visual Block sau. | Loại. |
+| **A. Logic in `lucerna-editor::multicursor`, search by regex shared with the Find bar, remove `block_selection`** | One selection model; ⌘D matches like the Find bar (like VS Code); pure Rust tests. The place where Vim calls `set_block_selection` and the block drawing path must be changed. | **The user chose this.** |
+| B. Like A but search with Aho-Corasick (like Zed, as the parent spec says) | Faster with very many results, but adds a dependency and matches differently from the Find bar. Literal regex is already fast enough. | Rejected. |
+| C. Keep `block_selection`, convert it to a selection when editing begins | Fewer changes, but two parallel selection models, against contract §13.5 of the parent spec, and it makes the later Visual Block step harder. | Rejected. |
 
-## 5. Thiết kế
+## 5. Design
 
 ### 5.1 `lucerna-editor`
 
-**Tìm kiếm dùng chung.** Chuyển `find_in_snapshot` và `build_regex` từ `lucerna-workbench/src/find_widget.rs` vào module mới `lucerna-editor::find` (thêm `regex` vào `lucerna-editor`, đã có trong workspace). Thanh Find và ⌘D cùng gọi module này. *(Quyết định của Claude.)*
-- **Cả từ** theo ranh giới từ của editor (`words.rs`, ngữ nghĩa `editor.wordSeparators` của VS Code; VS Code dùng cách này cho cả Find lẫn ⌘D từ bản 1.44), không theo `\b` của regex: lấy kết quả của regex không có `\b` rồi lọc kết quả có hai đầu là ranh giới từ. Nhờ vậy `$foo` (PHP) hay `foo-bar` (CSS) khớp được. Thanh Find đổi theo: đây là thay đổi có chủ đích, gần VS Code hơn; test Find hiện có với chữ thường phải qua, test nào dựa vào `\b` thì sửa kỳ vọng và ghi lý do. Tìm trong project (`lucerna-project::search::build_pattern`, ripgrep) giữ nguyên `\b`.
-- **API mới cho ⌘D:** `find_next(snap, query, from, backwards) -> Option<Range>` tìm từ một offset, quay vòng, dừng ở kết quả hợp lệ đầu tiên, đọc theo chunk của rope, không copy cả buffer. `find_in_snapshot` hiện copy cả buffer và gom mọi kết quả nên không dùng cho ⌘D. Với regex literal trên rope, một lần ⌘D trên file vài chục MB vẫn dưới một frame nếu kết quả gần; trường hợp xấu (kết quả duy nhất ở xa trong file rất lớn) builder đo, vượt ngưỡng thì chạy nền như thanh Find (`BACKGROUND_SEARCH_BYTES`).
-- **⌘D và thanh Find:** khi thanh Find đang mở ở view đó, ⌘D (lần đầu từ con trỏ rỗng) đặt chữ tìm của thanh Find thành từ vừa chọn, như VS Code; thanh Find đóng thì không đụng. Tùy chọn của thanh Find không bị đổi. *(Quyết định của Claude.)*
+**Shared search.** Move `find_in_snapshot` and `build_regex` from `lucerna-workbench/src/find_widget.rs` into a new module `lucerna-editor::find` (add `regex` to `lucerna-editor`, already in the workspace). The Find bar and ⌘D both call this module. *(Claude's decision.)*
+- **Whole word** follows the editor's word boundaries (`words.rs`, the semantics of VS Code's `editor.wordSeparators`; VS Code uses this for both Find and ⌘D since version 1.44), not the regex `\b`: take the results of a regex without `\b` and then filter for results whose two ends are word boundaries. This lets `$foo` (PHP) or `foo-bar` (CSS) match. The Find bar changes accordingly: this is a deliberate change, closer to VS Code; the existing Find tests with lowercase text must pass, and any test that relies on `\b` gets its expectation fixed with the reason noted. Project search (`lucerna-project::search::build_pattern`, ripgrep) keeps `\b`.
+- **New API for ⌘D:** `find_next(snap, query, from, backwards) -> Option<Range>` searches from an offset, wraps around, stops at the first valid result, reads rope chunk by chunk, without copying the whole buffer. `find_in_snapshot` currently copies the whole buffer and collects every result, so it is not used for ⌘D. With a literal regex on a rope, one ⌘D on a file of a few tens of MB is still under a frame if the result is near; for the bad case (the only result far away in a very large file) the builder measures, and above the threshold runs in the background like the Find bar (`BACKGROUND_SEARCH_BYTES`).
+- **⌘D and the Find bar:** when the Find bar is open in that view, ⌘D (the first time from an empty cursor) sets the Find bar's search text to the word just selected, like VS Code; when the Find bar is closed, it is left alone. The Find bar's options are not changed. *(Claude's decision.)*
 
-**Module `multicursor`.** Hàm thuần nhận `(snapshot, &SelectionSet, …)` trả về `SelectionSet` mới (hoặc `None` khi không có gì đổi). Mỗi selection mới lấy id từ `next_id()`, nên "selection mới nhất" là id lớn nhất.
+**Module `multicursor`.** Pure functions taking `(snapshot, &SelectionSet, …)` and returning a new `SelectionSet` (or `None` when nothing changes). Each new selection gets its id from `next_id()`, so "the newest selection" is the largest id.
 
 - `add_next_match(snap, set, opts) / add_previous_match`
-  - Có selection rỗng → mỗi selection rỗng mở thành từ dưới nó, selection có chữ giữ nguyên; lần này không tìm thêm (VS Code). Phiên bắt đầu như vậy khớp cả từ + phân biệt hoa thường.
-  - Mọi selection có chữ: chữ tìm là chữ của selection mới nhất; các selection không cùng chữ thì không làm gì (VS Code). Phiên bắt đầu từ chữ người dùng tự chọn dùng tùy chọn hoa thường / cả từ hiện tại của thanh Find (không lấy regex: chữ luôn là literal), như VS Code.
-  - Tìm từ cuối (hoặc đầu, chiều ngược) selection mới nhất bằng `find_next`, quay vòng, bỏ kết quả chồng selection có sẵn. Hết kết quả mới → không đổi.
-- `move_to_next_match / move_to_previous_match`: như trên nhưng bỏ selection mới nhất rồi thêm kết quả kế. Chỉ còn một selection thì giống ⌘D nhưng thay luôn selection đó.
-- `select_all_matches` (⇧⌘L và `changeAll` ⌘F2): mọi kết quả của chữ chọn (hoặc từ dưới con trỏ); selection chứa con trỏ chính ban đầu giữ là chính. Có thể nhiều kết quả: chạy ở nền khi file vượt ngưỡng (builder chọn ngưỡng, ví dụ như thanh Find đang làm), cắt ở `multiCursorLimit`.
-- `insert_cursor_above / below`: mỗi selection có một con trỏ mới ở dòng trên / dưới head của nó (như VS Code và Zed), giữ cột hiển thị mục tiêu (`Goal::Column`, tính theo tab) qua dòng ngắn; trùng thì gộp. Dòng là dòng hiển thị khi word wrap bật (VS Code dùng dòng view); builder có thể làm theo dòng buffer trước nếu đơn giản hơn nhiều, ghi rõ trong plan. Bấm chiều ngược lại ngay sau đó xóa lớp con trỏ vừa thêm (stack các lớp, theo spec cha và Zed; VS Code không có). Stack bị xóa khi selection đổi bởi đường khác. *(Mô hình stack theo lớp là quyết định của Claude.)*
-- `cursors_at_line_ends` (⇧⌥I): theo VS Code — selection rỗng bị bỏ khỏi tập kết quả; mỗi dòng của selection không rỗng được một con trỏ ở cuối dòng, riêng dòng cuối: con trỏ ở cuối selection nếu nó dừng giữa dòng, không có con trỏ nếu nó dừng ở cột 1. Không còn gì → giữ nguyên.
-- `column_select(snap, from: (row, visual_col), to: (row, visual_col))`: một selection mỗi dòng từ `from.row` tới `to.row`, theo cột hiển thị (tab tính đủ chiều rộng). Dòng ngắn hơn cột bắt đầu → con trỏ rỗng ở cuối dòng (VS Code). Hướng của từng selection theo chiều kéo. Selection chính là dòng có `to`.
-  - ⇧⌥⌘ + ←/→/↑/↓/PageUp/PageDown dùng trạng thái `ColumnSelectData { from, to }` (như VS Code) giữ trong `CodeView`; lần đầu `from` = con trỏ chính. Trạng thái bị xóa khi selection đổi bởi đường khác.
-- `remove_secondary(set)`: còn selection chính. `cancel_selection(set)`: một selection → con trỏ ở head.
-- `toggle_cursor_at(set, offset)`: ⌥-click. Có con trỏ / selection phụ chứa `offset` → bỏ nó (không bỏ selection cuối cùng); không có → thêm con trỏ, thành chính.
-- Mọi hàm tạo selection cắt ở `multiCursorLimit`; lệnh trả về cờ "bị cắt" để workbench báo.
-- `editor.multiCursorMergeOverlapping: false`: `from_selections(…, merge)` đã có tham số, nhưng `remap`, `clear_selection` và các chỗ gọi khác đang truyền cứng `true`. Setting phải tới mọi chỗ đó (ví dụ `SelectionSet` giữ cờ merge, hoặc truyền qua `EditConfig`; builder chọn).
+  - With an empty selection → each empty selection expands to the word under it, selections with text stay as they are; no further search this time (VS Code). A session that starts this way matches whole word + case sensitive.
+  - Every selection has text: the search text is the text of the newest selection; if the selections do not all have the same text, do nothing (VS Code). A session that starts from text the user selected themselves uses the Find bar's current case / whole-word options (not regex: the text is always literal), like VS Code.
+  - Search from the end (or the start, in the backward direction) of the newest selection with `find_next`, wrapping around, skipping results that overlap an existing selection. No new result → no change.
+- `move_to_next_match / move_to_previous_match`: as above but dropping the newest selection and then adding the next result. With only one selection it is like ⌘D but replaces that selection.
+- `select_all_matches` (⇧⌘L and `changeAll` ⌘F2): every result of the selected text (or the word under the cursor); the selection containing the original primary cursor stays primary. There may be many results: run in the background when the file passes a threshold (the builder picks the threshold, for example as the Find bar does now), cut at `multiCursorLimit`.
+- `insert_cursor_above / below`: each selection gets one new cursor on the line above / below its head (like VS Code and Zed), keeping the target display column (`Goal::Column`, counted in tabs) across short lines; duplicates merge. The line is the display line when word wrap is on (VS Code uses the view line); the builder may do buffer lines first if that is much simpler, stating so in the plan. Pressing the opposite direction right after removes the layer of cursors just added (a stack of layers, per the parent spec and Zed; VS Code does not have it). The stack is cleared when the selection changes by another path. *(The layered stack model is Claude's decision.)*
+- `cursors_at_line_ends` (⇧⌥I): per VS Code — an empty selection is dropped from the result set; each line of a non-empty selection gets a cursor at the line end, except the last line: the cursor is at the selection end if it stops mid-line, and there is no cursor if it stops at column 1. Nothing left → keep as is.
+- `column_select(snap, from: (row, visual_col), to: (row, visual_col))`: one selection per line from `from.row` to `to.row`, by display column (a tab counts its full width). A line shorter than the starting column → an empty cursor at the line end (VS Code). Each selection's direction follows the drag direction. The primary selection is the line with `to`.
+  - ⇧⌥⌘ + ←/→/↑/↓/PageUp/PageDown use the state `ColumnSelectData { from, to }` (like VS Code) kept in `CodeView`; the first time `from` = the primary cursor. The state is cleared when the selection changes by another path.
+- `remove_secondary(set)`: only the primary selection remains. `cancel_selection(set)`: one selection → a cursor at the head.
+- `toggle_cursor_at(set, offset)`: ⌥-click. If a cursor / secondary selection contains `offset` → remove it (never remove the last selection); if none → add a cursor, which becomes primary.
+- Every function that creates selections cuts at `multiCursorLimit`; the command returns a "was cut" flag so the workbench can report it.
+- `editor.multiCursorMergeOverlapping: false`: `from_selections(…, merge)` already has the parameter, but `remap`, `clear_selection` and other callers hard-code `true`. The setting must reach all those places (for example `SelectionSet` holds the merge flag, or pass it through `EditConfig`; the builder chooses).
 
-**Clipboard.** Sửa `copy` / `cut` theo VS Code: chỉ khi **mọi** selection rỗng mới lấy cả dòng; có selection không rỗng thì selection rỗng góp chuỗi rỗng. Cần cho chọn cột qua dòng ngắn và `y` của `<C-v>`.
+**Clipboard.** Fix `copy` / `cut` to follow VS Code: only when **every** selection is empty does it take whole lines; if some selection is non-empty, empty selections contribute an empty string. Needed for column select across short lines and Vim `<C-v>`'s `y`.
 
-**Paste.** `paste` nhận `multi_cursor_paste: Spread | Full`. `Spread` (mặc định) giữ hành vi hiện có: chia theo `pieces` khi số mảnh bằng số selection; thêm trường hợp VS Code: clipboard từ ngoài (không có `pieces`) mà số dòng bằng số selection thì chia theo dòng. `Full`: mỗi selection nhận cả chữ.
+**Paste.** `paste` takes `multi_cursor_paste: Spread | Full`. `Spread` (default) keeps the existing behavior: split by `pieces` when the number of pieces equals the number of selections; plus a VS Code case: a clipboard from outside (with no `pieces`) whose line count equals the number of selections is split by line. `Full`: each selection receives the whole text.
 
 ### 5.2 `lucerna-workbench`
 
-**Bỏ `block_selection`.** `set_block_selection` thay bằng một hàm đặt `SelectionSet` nhiều dòng (dùng `column_select` hoặc trực tiếp từ `block_ranges` của Vim). Xóa đường vẽ khối trong `element/paint.rs`, nhánh khối trong `copy_selection`, `clipboard_text`, phần remap khi sửa. `visible_selections` vẽ mọi selection như nhau. Vim: `sync_view` đặt nhiều selection cho `VimSelection::Block`, giữ con trỏ khối của Vim ở đúng chỗ (overlay), và chỗ `has_block_selection()` ở `vim.rs:604` (lúc tắt Vim) đổi thành "Vim đang ở Visual Block", để con trỏ người dùng tự thêm không bị gộp khi tắt Vim.
+**Remove `block_selection`.** `set_block_selection` is replaced by a function that sets a multi-line `SelectionSet` (using `column_select` or directly from Vim's `block_ranges`). Delete the block drawing path in `element/paint.rs`, the block branch in `copy_selection`, `clipboard_text`, and the remap part when editing. `visible_selections` draws every selection the same. Vim: `sync_view` sets multiple selections for `VimSelection::Block`, keeps Vim's block cursor in the right place (overlay), and the `has_block_selection()` spot at `vim.rs:604` (when Vim is turned off) becomes "Vim is in Visual Block", so cursors the user added themselves are not merged when Vim is turned off.
 
-**Vim bật (người dùng chọn cách A).** Hiện mỗi phím Vim gọi `sync_view` và gộp về một con trỏ, nên con trỏ phụ mất ngay ở phím kế. Quy tắc mới:
-- Khi Vim ở Normal hoặc Visual (không phải `<C-v>`), mọi lệnh tạo selection của bước này (⌘D, ⌘K ⌘D, ⇧⌘L, ⌘F2, ⌥⌘↑/↓, ⇧⌥I, chọn cột bằng phím, ⌥-click, ⌥-kéo, ⇧⌥-kéo) chạy như khi tắt Vim rồi **đưa Vim vào Insert**, giữ nguyên `SelectionSet` vừa tạo. Gõ chữ thay chữ chọn / chèn ở mọi con trỏ qua đường gõ của editor; cả lần Insert là một bước undo như hiện có. Status bar hiện `-- INSERT --`, con trỏ là thanh.
-- Trong Insert, các lệnh trên chạy bình thường, Vim không gộp selection.
-- Escape trong Insert: gộp về selection chính rồi về Normal như hiện nay (con trỏ lùi một ký tự). Một lần Escape là đủ, không cần hai bước như khi tắt Vim.
-- `<C-v>` vẫn là Visual Block của Vim (nhiều selection, chỉ `y`), không vào Insert.
-- `.` và macro: lần Insert bắt đầu từ lệnh multi-cursor được ghi như phím Insert thường; lệnh multi-cursor không được ghi lại vào `.` / macro ở bước này (hạn chế ghi trong doc, sửa ở bước Vim sau).
+**With Vim enabled (the user chose approach A).** Today each Vim key calls `sync_view` and collapses to one cursor, so the secondary cursors vanish at the next key. New rules:
+- When Vim is in Normal or Visual (not `<C-v>`), every selection-creating command of this step (⌘D, ⌘K ⌘D, ⇧⌘L, ⌘F2, ⌥⌘↑/↓, ⇧⌥I, column select by keys, ⌥-click, ⌥-drag, ⇧⌥-drag) runs as when Vim is off and then **puts Vim into Insert**, keeping the `SelectionSet` just created. Typing replaces the selected text / inserts at every cursor through the editor's typing path; the whole Insert session is one undo step as it is today. The status bar shows `-- INSERT --`, the cursor is a bar.
+- In Insert, the commands above run normally, and Vim does not collapse the selections.
+- Escape in Insert: collapse to the primary selection and then go to Normal as now (the cursor steps back one character). One Escape is enough, not two steps as when Vim is off.
+- `<C-v>` is still Vim's Visual Block (multiple selections, only `y`), and does not enter Insert.
+- `.` and macros: an Insert session that starts from a multi-cursor command is recorded like a normal Insert key; the multi-cursor command itself is not recorded into `.` / macros in this step (a limitation documented in the docs, fixed in the later Vim step).
 
-**Vẽ.** Đã vẽ mọi selection và mọi caret. Thêm: caret phụ cùng màu caret chính (Zed); con trỏ nhấp nháy đồng bộ. Không đổi gì khác về giao diện.
+**Drawing.** Every selection and every caret is already drawn. Add: the secondary carets use the same color as the primary caret (Zed); the cursors blink in sync. Nothing else changes in the UI.
 
-**Chuột** (`element.rs` `mouse_down` / `mouse_drag`):
-- Phím thêm con trỏ = ⌥ khi `multiCursorModifier: alt`, ⌘ khi `ctrlCmd`. Phím còn lại một mình làm việc "đi tới định nghĩa" (⌘-click hiện nay). ⌘⌥-click giữ nghĩa "đi tới định nghĩa, mở bên cạnh" ở cả hai chế độ (như VS Code), không thêm con trỏ.
-- Phím thêm con trỏ + click → `toggle_cursor_at`. + kéo → thêm một selection mới đi theo chuột (các selection khác giữ nguyên). Double/triple-click cùng phím → thêm một từ / dòng.
-- ⇧⌥-kéo (luôn ⇧⌥, như VS Code) → `column_select` từ chỗ bấm tới chuột.
-- Click thường vẫn thay mọi selection bằng một.
+**Mouse** (`element.rs` `mouse_down` / `mouse_drag`):
+- The add-cursor key = ⌥ when `multiCursorModifier: alt`, ⌘ when `ctrlCmd`. The other key alone does "go to definition" (today's ⌘-click). ⌘⌥-click keeps the meaning "go to definition, open to the side" in both modes (like VS Code), and does not add a cursor.
+- The add-cursor key + click → `toggle_cursor_at`. + drag → add a new selection that follows the mouse (the other selections stay). Double/triple-click with the same key → add a word / line.
+- ⇧⌥-drag (always ⇧⌥, like VS Code) → `column_select` from where it was pressed to the mouse.
+- A plain click still replaces all selections with one.
 
-**Lệnh và phím** (thêm vào `default-keybindings.json`, `when` như VS Code):
+**Commands and keys** (added to `default-keybindings.json`, `when` as in VS Code):
 
-| Lệnh | Phím |
+| Command | Key |
 |---|---|
 | `editor.action.addSelectionToNextFindMatch` | ⌘D (`editorFocus`) |
 | `editor.action.moveSelectionToNextFindMatch` | ⌘K ⌘D |
-| `editor.action.addSelectionToPreviousFindMatch`, `editor.action.moveSelectionToPreviousFindMatch` | — (có trong command palette) |
+| `editor.action.addSelectionToPreviousFindMatch`, `editor.action.moveSelectionToPreviousFindMatch` | — (in the command palette) |
 | `editor.action.selectHighlights` | ⇧⌘L |
 | `editor.action.changeAll` | ⌘F2 (`editorTextFocus && !editorReadonly`) |
 | `editor.action.insertCursorAbove` / `insertCursorBelow` | ⌥⌘↑ / ⌥⌘↓ |
@@ -109,43 +109,43 @@ Bước tiếp theo trên roadmap (§1.3 spec Phase 1): V2 đã xong, và 4.5 (c
 | `removeSecondaryCursors` | Escape (`editorHasMultipleSelections && textInputFocus`) |
 | `cancelSelection` | Escape (`editorHasSelection && textInputFocus`) |
 
-Context key mới: `editorHasMultipleSelections`, `editorHasSelection`. Escape của Find / hover / Vim giữ thứ tự ưu tiên hiện có (Find đang mở thì Escape đóng Find trước, như VS Code). Khi Vim bật, Escape đi vào Vim như hiện nay; Vim Normal chỉ có một con trỏ nên không đụng.
+New context keys: `editorHasMultipleSelections`, `editorHasSelection`. Escape for Find / hover / Vim keeps the existing priority order (with Find open, Escape closes Find first, like VS Code). When Vim is on, Escape goes into Vim as now; Vim Normal has only one cursor so it does not interfere.
 
-⌘D chỉ là lệnh editor khi editor có focus; `filesExplorer.duplicate` vẫn giữ ⌘D trong Explorer.
+⌘D is only an editor command when the editor has focus; `filesExplorer.duplicate` keeps ⌘D in the Explorer.
 
-**Lịch sử con trỏ.** Mọi lệnh ở đây đổi selection qua đường hiện có, nên ⌘U (`cursorUndo`) hoàn tác được ⌘D, ⌥-click…, như VS Code.
+**Cursor history.** Every command here changes the selection through the existing path, so ⌘U (`cursorUndo`) can undo ⌘D, ⌥-click…, like VS Code.
 
-**Cuộn.** Sau ⌘D / ⌘K ⌘D / thêm con trỏ trên-dưới: cuộn tới selection mới nhất nếu nó ngoài màn hình (như `reveal` hiện có). ⇧⌘L không cuộn.
+**Scrolling.** After ⌘D / ⌘K ⌘D / adding a cursor above-below: scroll to the newest selection if it is off screen (like the existing `reveal`). ⇧⌘L does not scroll.
 
-**Giới hạn.** Vượt `multiCursorLimit` → giữ đúng giới hạn và hiện thông báo status bar `The number of cursors has been limited to N.` (chữ VS Code).
+**Limit.** Past `multiCursorLimit` → keep exactly the limit and show a status bar notice `The number of cursors has been limited to N.` (VS Code's wording).
 
-**Status bar.** `DocumentStatus.cursor` (documents.rs) tính như §2. Đếm ký tự theo char, chạy mỗi frame nên chỉ đếm khi selection đổi (cache theo `selection_generation`), không copy chữ.
+**Status bar.** `DocumentStatus.cursor` (documents.rs) is computed as in §2. Count characters by char; it runs every frame so only count when the selection changes (cache by `selection_generation`), without copying text.
 
-### 5.3 Setting
+### 5.3 Settings
 
-Thêm vào `default-settings.json` và đọc vào `EditConfig` / config view:
+Add to `default-settings.json` and read into `EditConfig` / the config view:
 
-| Setting | Mặc định | Giá trị |
+| Setting | Default | Values |
 |---|---|---|
 | `editor.multiCursorModifier` | `"alt"` | `"alt"`, `"ctrlCmd"` |
 | `editor.multiCursorMergeOverlapping` | `true` | bool |
 | `editor.multiCursorPaste` | `"spread"` | `"spread"`, `"full"` |
-| `editor.multiCursorLimit` | `10000` | số ≥ 1 |
+| `editor.multiCursorLimit` | `10000` | number ≥ 1 |
 
-`editor.selectedTextMatchMode` (spec cha §14.2 và nghiên cứu có ghi) bị bỏ: không xác nhận được setting này có trong VS Code. Hành vi luôn là "lấy tùy chọn của thanh Find" như mô tả ở §5.1. *(Quyết định của Claude.)*
+`editor.selectedTextMatchMode` (noted in §14.2 of the parent spec and in the research) is dropped: it could not be confirmed that this setting exists in VS Code. The behavior is always "take the Find bar's options" as described in §5.1. *(Claude's decision.)*
 
-## 6. Kiểm thử
+## 6. Testing
 
-- `lucerna-editor`: unit test cho mỗi hàm ở §5.1 bằng `marked` (chuỗi có đánh dấu selection) như các module 4.2: quay vòng, bỏ chồng, chữ khác nhau, dòng ngắn, tab, Unicode nhiều byte, giới hạn, copy/cut/paste trộn rỗng và không rỗng, paste dòng ngoài.
-- `lucerna-workbench` (gpui test): ⌘D ba lần rồi gõ; ⌥-click thêm rồi bỏ; ⇧⌥-kéo qua dòng ngắn rồi gõ; Escape hai bước; Vim bật: ⌘D ⌘D vào Insert, gõ ở hai chỗ, Escape về Normal một con trỏ, `u` hoàn tác cả lần gõ; `multiCursorModifier: ctrlCmd` đổi vai trò ⌥/⌘-click; ⌘U sau ⌘D; Vim `<C-v>` chọn rồi `y` cho cùng chữ như trước (test hiện có phải qua không sửa kết quả mong đợi).
-- Hiệu năng: đo gõ với 1000 con trỏ và ⇧⌘L trên file lớn trong `editor-benchmark`, ghi vào `docs/perf-checklist.md`.
+- `lucerna-editor`: unit tests for each function in §5.1 using `marked` (strings with selection markers) like the 4.2 modules: wrap-around, skipping overlaps, different texts, short lines, tabs, multi-byte Unicode, the limit, copy/cut/paste mixing empty and non-empty, pasting outside lines.
+- `lucerna-workbench` (gpui tests): ⌘D three times then type; ⌥-click to add then remove; ⇧⌥-drag across short lines then type; two-step Escape; Vim on: ⌘D ⌘D enters Insert, type in two places, Escape back to Normal with one cursor, `u` undoes the whole typing; `multiCursorModifier: ctrlCmd` swaps the roles of ⌥/⌘-click; ⌘U after ⌘D; Vim `<C-v>` select then `y` gives the same text as before (the existing tests must pass without changing their expected results).
+- Performance: measure typing with 1000 cursors and ⇧⌘L on a large file in `editor-benchmark`, recorded in `docs/perf-checklist.md`.
 
-## 7. Để builder quyết
+## 7. Left to the builder
 
-- Ngưỡng chạy nền cho ⇧⌘L, cách cache số ký tự ở status bar.
-- Chia plan thành task (gợi ý: find dùng chung → multicursor thuần → clipboard/paste → bỏ `block_selection` + Vim → chuột → lệnh/phím/setting → status bar → đo).
-- Tên hàm, cấu trúc module trong `lucerna-editor`.
+- The background threshold for ⇧⌘L, how to cache the character count in the status bar.
+- Splitting the plan into tasks (suggestion: shared find → pure multicursor → clipboard/paste → remove `block_selection` + Vim → mouse → commands/keys/settings → status bar → measuring).
+- Function names, the module structure in `lucerna-editor`.
 
-## 8. Sau khi giao
+## 8. After delivery
 
-Cập nhật bảng roadmap §1.3 (4.3 xong), dòng trạng thái của spec cha, README nếu có liệt kê tính năng; sửa câu "Aho-Corasick" ở §8 spec cha cho khớp §4, bỏ `editor.selectedTextMatchMode` khỏi §8 và §14.2 spec cha và ghi chú vào `docs/research/2026-11-11-editing.md` §3.
+Update the roadmap table §1.3 (4.3 done), the status line of the parent spec, the README if it lists features; fix the "Aho-Corasick" sentence in §8 of the parent spec to match §4, remove `editor.selectedTextMatchMode` from §8 and §14.2 of the parent spec and add a note to `docs/research/2026-11-11-editing.md` §3.
