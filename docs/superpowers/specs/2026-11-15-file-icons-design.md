@@ -1,139 +1,139 @@
-# Icon file có màu (Seti) và icon trên tab
+# Colored file icons (Seti) and icons on tabs
 
-Ngày: 2026-11-15. Trạng thái: đã triển khai (nhánh `claude/file-icons`, 2026-11-15).
-Tham khảo: `docs/research/2026-11-15-file-icons.md`.
+Date: 2026-11-15. Status: Implemented (branch `claude/file-icons`, 2026-11-15).
+References: `docs/research/2026-11-15-file-icons.md`.
 
-## Mục đích
+## Purpose
 
-Người dùng chuyển từ VS Code quen nhìn màu và hình icon để nhận ra loại file ngay, cả trong cây file lẫn trên hàng tab (icon TS xanh, cá voi Docker, bánh răng cho `.env`). Lucerna hiện vẽ mọi icon một màu nhạt với 10 hình chung chung, và tab file không có icon. Tính năng này đưa bộ icon Seti của VS Code vào làm mặc định và thêm icon vào tab file.
+Users coming from VS Code are used to recognizing a file's type at a glance by the color and shape of its icon, both in the file tree and on the tab row (a blue TS icon, the Docker whale, a gear for `.env`). Lucerna currently draws every icon in one pale color with 10 generic shapes, and file tabs have no icon. This feature brings VS Code's Seti icon set in as the default and adds icons to file tabs.
 
-## Mục tiêu
+## Goals
 
-1. Icon theme dựng sẵn mới tên **"Seti"**, là mặc định (`workbench.iconTheme: "Seti"`). Mỗi loại file có hình và màu như Seti của VS Code, kèm bộ màu riêng cho theme sáng.
-2. Tab file hiện icon của icon theme đang dùng, bên trái tên. Setting `workbench.editor.showIcons` (mặc định `true`) tắt được.
-3. Mọi chỗ đang vẽ icon file qua `ResolvedIcons::file` (Explorer, ô tạo/đổi tên file, picker Locations, danh sách excerpt trong Search/References) tự có màu, không cần sửa từng chỗ.
-4. Lucide vẫn chọn được trong picker icon theme. Icon theme từ extension Zed vẫn chạy như cũ.
+1. A new built-in icon theme named **"Seti"**, which is the default (`workbench.iconTheme: "Seti"`). Each file type has the shape and color of VS Code's Seti, plus its own color set for light themes.
+2. File tabs show the icon of the active icon theme, to the left of the name. The setting `workbench.editor.showIcons` (default `true`) turns it off.
+3. Everywhere that already draws a file icon through `ResolvedIcons::file` (Explorer, the new/rename file box, the Locations picker, the excerpt lists in Search/References) gets color automatically, without editing each place.
+4. Lucide can still be chosen in the icon theme picker. Icon themes from Zed extensions keep working as before.
 
-## Không làm
+## Non-goals
 
-- Không thêm theme "Minimal" hay lựa chọn "None" của VS Code.
-- Không thêm icon file vào breadcrumbs. Breadcrumbs hiện chỉ có icon loại symbol.
-- Không thêm `tabs.git_status` hay icon chẩn đoán trên tab kiểu Zed.
-- Không có language ID lúc chạy. Ánh xạ theo ngôn ngữ được đổi sẵn thành tên file, đuôi file và mẫu tên file khi sinh dữ liệu.
-- Không đổi Quick Open. Nó hiện chưa có icon.
+- No VS Code "Minimal" theme or "None" option.
+- No file icon in breadcrumbs. Breadcrumbs currently have only symbol-kind icons.
+- No `tabs.git_status` or Zed-style diagnostic icon on tabs.
+- No language ID at runtime. The mapping by language is converted ahead of time into file names, file extensions and file name patterns when generating the data.
+- No change to Quick Open. It has no icons at the moment.
 
-## Không được xảy ra
+## Must not happen
 
-- Icon nhạt đến khó thấy trên theme sáng. Màu dùng cho theme sáng phải có tương phản ít nhất 3:1 với nền Lucerna Light (`#ffffff`).
-- Mỗi lần vẽ hàng Explorer hay tab lại phải parse hay tra bảng chậm. Bảng Seti chỉ dựng một lần.
-- Chép code từ crate GPL của Zed.
+- Icons so pale they are hard to see on light themes. The colors used for light themes must have at least 3:1 contrast with the Lucerna Light background (`#ffffff`).
+- Every Explorer row or tab paint having to parse or do a slow table lookup. The Seti table is built only once.
+- Copying code from Zed's GPL crates.
 
-## Ràng buộc
+## Constraints
 
-- Giấy phép: SVG lấy từ `jesseweed/seti-ui` (MIT), bảng màu và ánh xạ lấy từ `microsoft/vscode/extensions/theme-seti` (MIT). Giữ nguyên văn hai file license trong thư mục asset, thêm hai dòng vào `ASSETS` trong `scripts/gen-licenses.py`, và ghi nguồn trong `THIRD_PARTY_NOTICES.md` nếu repo đang dùng file đó.
-- Chỉ `lucerna-workbench` được dùng GPUI. `lucerna-theme` chỉ giữ tên icon và màu, không giữ byte SVG, giống cách Lucide đang làm (`IconSource::Builtin(&'static str)` → `icons::lucide_svg`).
-- Không có giả định riêng cho macOS.
-- Asset nhúng bằng `include_bytes!` như Lucide. Tổng SVG Seti khoảng 175 KB, chấp nhận được.
+- License: the SVGs come from `jesseweed/seti-ui` (MIT), the color table and mapping come from `microsoft/vscode/extensions/theme-seti` (MIT). Keep the two license files verbatim in the asset folder, add two lines to `ASSETS` in `scripts/gen-licenses.py`, and credit the sources in `THIRD_PARTY_NOTICES.md` if the repo uses that file.
+- Only `lucerna-workbench` may use GPUI. `lucerna-theme` keeps only icon names and colors, not SVG bytes, the way Lucide does today (`IconSource::Builtin(&'static str)` → `icons::lucide_svg`).
+- No macOS-specific assumptions.
+- Assets are embedded with `include_bytes!` as Lucide's are. The Seti SVGs total about 175 KB, which is acceptable.
 
-## Các cách đã cân nhắc
+## Approaches considered
 
-| Cách | Được | Mất |
+| Approach | Gains | Costs |
 |---|---|---|
-| **A. Đóng gói Seti làm mặc định** (đã chọn) | Giống VS Code, đúng ảnh người dùng gửi; mỗi icon một màu nên khớp cách GPUI tô `svg()`; có bộ màu sáng/tối; MIT | Thêm khoảng 170 SVG và một bảng ánh xạ cần sinh bằng script |
-| B. Tô màu icon Lucide theo loại file | Ít việc nhất, nét vẽ đồng nhất | Chỉ 10 hình; `.ts` và `.rs` cùng hình, chỉ khác màu; không giống VS Code |
-| C. Đóng gói Material Icon Theme | Icon rất đầy đủ, nhiều màu | Hơn 1000 file, nặng vài MB, rối mắt, ngược với UI tối giản |
+| **A. Bundle Seti as the default** (chosen) | Same as VS Code, matches the image the user sent; one color per icon so it fits how GPUI tints `svg()`; has light/dark color sets; MIT | About 170 more SVGs and a mapping table that must be generated by a script |
+| B. Color the Lucide icons by file type | Least work, consistent drawing style | Only 10 shapes; `.ts` and `.rs` share a shape and differ only in color; not like VS Code |
+| C. Bundle Material Icon Theme | Very complete icons, many colors | Over 1000 files, several MB, visually busy, contrary to the minimal UI |
 
-Người dùng chọn A.
+The user chose A.
 
-Lệch khỏi Zed: Zed mặc định dùng icon một màu và tắt icon trên tab (`tabs.file_icons: false`). Lucerna theo VS Code ở cả hai điểm vì người dùng yêu cầu rõ.
+Divergence from Zed: Zed defaults to single-color icons and turns off icons on tabs (`tabs.file_icons: false`). Lucerna follows VS Code on both points because the user asked for it explicitly.
 
-## Thiết kế
+## Design
 
-### Dữ liệu Seti
+### Seti data
 
-- **Nguồn** (ghim đúng phiên bản VS Code đang dùng): `vs-seti-icon-theme.json` của VS Code và SVG của seti-ui ở commit `2d6c5e68`, là commit mà JSON đó ghi.
-  - JSON có `iconDefinitions` (mỗi định nghĩa gồm mã glyph và `fontColor`), `fileExtensions`, `fileNames`, `languageIds` và khối `light`.
-  - **Tên định nghĩa chính là tên SVG.** Bỏ `_` ở đầu, bỏ `_<n>` và `_light` ở cuối, ví dụ `_typescript_1` → `typescript.svg`. Cả 383 định nghĩa đều khớp được với file trong `seti-ui/icons/`.
-  - `_light` không phải một bộ màu chọn tay. Script của VS Code chỉ nhân mỗi kênh màu tối với 0,9. Trên nền trắng, xám mặc định (`#bfc2c1`) chỉ đạt 1,8:1 và vàng đạt 2,1:1.
-- **Màu cho theme sáng** (người dùng chọn): bắt đầu từ màu `_light` của VS Code. Nếu tương phản với `#ffffff` dưới 3:1, script làm đậm dần màu đó, giữ nguyên sắc độ (hue): giảm L trong HSL hoặc OKLCH, builder chọn. Script dừng ở giá trị đầu tiên đạt 3:1. Màu nào đã đạt 3:1 thì giữ nguyên. Theme tối dùng đúng màu VS Code. Theme sáng hay tối là theo `appearance` của color theme đang dùng, kể cả theme từ extension.
-- **Ánh xạ theo ngôn ngữ.** Nhiều loại phổ biến chỉ có trong `languageIds`, không có trong `fileExtensions`/`fileNames`: `ts`, `rs`, `md`, `json`, `yml`, `Dockerfile`, `docker-compose.yml`, `.gitignore`, `.env`. Script sinh làm như `build/update-icon-theme.js` của VS Code:
-  - đọc `contributes.languages` trong `extensions/*/package.json` của vscode ở cùng commit (`extensions`, `filenames`, `filenamePatterns`), và các danh sách cứng trong script đó;
-  - đổi mỗi language ID thành đuôi file, tên file và mẫu tên file.
-  `lucerna-syntax` không dùng được cho việc này, vì nó không có language ID của VS Code.
-- **Thứ tự khớp, giống VS Code:**
-  1. tên file của Seti;
-  2. đuôi file của Seti, đuôi dài nhất trước (`spec.ts` trước `ts`);
-  3. tên file lấy từ ngôn ngữ;
-  4. mẫu tên file lấy từ ngôn ngữ;
-  5. đuôi file lấy từ ngôn ngữ;
+- **Sources** (pinned to the exact VS Code version in use): VS Code's `vs-seti-icon-theme.json` and the seti-ui SVGs at commit `2d6c5e68`, the commit that JSON records.
+  - The JSON has `iconDefinitions` (each definition has a glyph code and `fontColor`), `fileExtensions`, `fileNames`, `languageIds` and a `light` block.
+  - **A definition's name is the SVG name.** Strip the leading `_`, and strip the trailing `_<n>` and `_light`, for example `_typescript_1` → `typescript.svg`. All 383 definitions match a file in `seti-ui/icons/`.
+  - `_light` is not a hand-picked color set. VS Code's script only multiplies each dark color channel by 0.9. On a white background, the default gray (`#bfc2c1`) reaches only 1.8:1 and the yellow reaches 2.1:1.
+- **Colors for light themes** (the user's choice): start from VS Code's `_light` color. If the contrast with `#ffffff` is below 3:1, the script gradually darkens that color, keeping the hue: lower L in HSL or OKLCH, the builder chooses. The script stops at the first value that reaches 3:1. A color that already reaches 3:1 is kept as is. Dark themes use VS Code's colors exactly. Whether a theme is light or dark follows the `appearance` of the active color theme, including themes from extensions.
+- **Mapping by language.** Many common types appear only in `languageIds`, not in `fileExtensions`/`fileNames`: `ts`, `rs`, `md`, `json`, `yml`, `Dockerfile`, `docker-compose.yml`, `.gitignore`, `.env`. The generator script does what VS Code's `build/update-icon-theme.js` does:
+  - read `contributes.languages` in vscode's `extensions/*/package.json` at the same commit (`extensions`, `filenames`, `filenamePatterns`), and the hard-coded lists in that script;
+  - convert each language ID into file extensions, file names and file name patterns.
+  `lucerna-syntax` cannot be used for this, because it does not have VS Code's language IDs.
+- **Matching order, same as VS Code:**
+  1. Seti's file names;
+  2. Seti's file extensions, longest extension first (`spec.ts` before `ts`);
+  3. file names derived from languages;
+  4. file name patterns derived from languages;
+  5. file extensions derived from languages;
   6. `_default`.
 
-  Mục lấy từ ngôn ngữ luôn thua mục riêng của Seti. Mẫu tên file chỉ hỗ trợ hai dạng `tiền tố.*` và `*.đuôi`. Đó là các dạng mà ngôn ngữ dựng sẵn của VS Code đang dùng, ví dụ `.env.*` → dotenv, `Dockerfile.*` → dockerfile. Nhờ vậy `.env.example` ra `_config` như VS Code. Đây là quyết định của tôi.
-- **SVG:** 169 file. Phần lớn có viewBox `0 0 32 32`, nhưng có 10 file `0 0 1200 1000` (trong đó có `default` và `lock`), 17 file không có viewBox, và vài file có khung lệch. Trong font, VS Code co mọi glyph về cùng cỡ. Vì vậy script sinh **đặt lại viewBox theo khung thật của hình vẽ** (căn giữa, vuông), nên icon nào cũng cùng cỡ và nằm giữa. Script không đổi đường vẽ. Chín icon nhiều màu (`go`, `elm`, `twig`…) thành một màu vì GPUI dùng SVG làm mặt nạ; font của VS Code cũng một màu, nên kết quả giống VS Code.
-- **Script sinh**: `scripts/gen-seti.py`. Script đọc bản seti-ui và vscode đã tải về (ghi rõ commit vào đầu file sinh ra), chép các SVG thực sự dùng (đã chỉnh viewBox) vào `crates/lucerna-workbench/assets/icons/seti/`, và sinh một file dữ liệu commit vào repo. File dữ liệu là Rust `const` hoặc JSON nhúng; builder chọn. Nó gồm:
-  - định nghĩa: tên glyph, màu tối, màu sáng;
-  - các bảng khớp ở trên (khớp tên không phân biệt hoa thường, như VS Code).
-  Build không cần mạng. Script chỉ chạy khi muốn cập nhật Seti.
-- **License**: `assets/icons/seti/LICENSE-seti-ui` (từ seti-ui) và `LICENSE-vscode` (từ `LICENSE.txt` ở gốc vscode, vì `theme-seti` không có file license riêng), nguyên văn. Thêm vào `ASSETS` trong `scripts/gen-licenses.py`. Script này sinh `THIRD_PARTY_NOTICES.md`. Ghi chú license nói rõ SVG đã được đặt lại viewBox.
+  An entry derived from a language always loses to a Seti entry of its own. File name patterns support only the two forms `prefix.*` and `*.suffix`. Those are the forms VS Code's built-in languages use, for example `.env.*` → dotenv, `Dockerfile.*` → dockerfile. That way `.env.example` resolves to `_config` as in VS Code. This is my decision.
+- **SVGs:** 169 files. Most have viewBox `0 0 32 32`, but 10 files have `0 0 1200 1000` (including `default` and `lock`), 17 files have no viewBox, and a few have off-center frames. In the font, VS Code scales every glyph to the same size. So the generator script **resets the viewBox to the real bounding box of the drawing** (centered, square), so every icon is the same size and centered. The script does not change the drawing paths. Nine multicolor icons (`go`, `elm`, `twig`…) become one color because GPUI uses SVGs as a mask; VS Code's font is also single-color, so the result matches VS Code.
+- **Generator script**: `scripts/gen-seti.py`. The script reads the downloaded seti-ui and vscode copies (recording the commits at the top of the generated file), copies the SVGs actually used (with adjusted viewBox) into `crates/lucerna-workbench/assets/icons/seti/`, and generates a data file committed to the repo. The data file is a Rust `const` or embedded JSON; the builder chooses. It contains:
+  - the definitions: glyph name, dark color, light color;
+  - the matching tables above (case-insensitive name matching, as in VS Code).
+  The build needs no network. The script runs only when Seti is to be updated.
+- **License**: `assets/icons/seti/LICENSE-seti-ui` (from seti-ui) and `LICENSE-vscode` (from `LICENSE.txt` at the vscode root, because `theme-seti` has no license file of its own), verbatim. Add them to `ASSETS` in `scripts/gen-licenses.py`. That script generates `THIRD_PARTY_NOTICES.md`. The license note states clearly that the SVGs have had their viewBox reset.
 
 ### `lucerna-theme`
 
-- Thêm một biến thể `IconSource` cho icon dựng sẵn có màu, ví dụ `IconSource::Glyph { name: &'static str, dark: Rgba, light: Rgba }`. Builder đặt tên.
-- `seti_icon_theme()` dựng một `IconTheme` tên "Seti" từ dữ liệu sinh ra:
-  - tên file → `stems`, đuôi file → `suffixes`, glyph → `icons`;
-  - thứ tự khớp: tên file đầy đủ, rồi đuôi dài nhất, rồi mặc định. Đây là thứ tự của VS Code. `IconTheme::file_icon` hiện đã làm gần như vậy; chỗ nào lệch thì sửa cho đúng VS Code mà không đổi hành vi của Lucide và theme extension;
-  - thư mục và chevron để trống, nên rơi về Lucide. Đây là quyết định của tôi: Seti không có icon thư mục, nhưng giữ icon folder Lucide màu nhạt thì cây vẫn có bố cục kiểu Zed.
+- Add an `IconSource` variant for built-in colored icons, for example `IconSource::Glyph { name: &'static str, dark: Rgba, light: Rgba }`. The builder names it.
+- `seti_icon_theme()` builds an `IconTheme` named "Seti" from the generated data:
+  - file names → `stems`, file extensions → `suffixes`, glyphs → `icons`;
+  - matching order: full file name, then longest extension, then default. This is VS Code's order. `IconTheme::file_icon` already does nearly this; where it differs, fix it to match VS Code without changing the behavior of Lucide and extension themes;
+  - folders and chevrons are left empty, so they fall back to Lucide. This is my decision: Seti has no folder icon, but keeping the pale Lucide folder icon lets the tree keep a Zed-style layout.
 - `IconThemeRegistry`:
-  - có sẵn hai theme dựng sẵn, Seti và Lucide; `names()` trả "Seti", "Lucide", rồi theme extension;
-  - `resolve(name)` với tên lạ trả **Seti** (mặc định mới); Lucide vẫn là lớp dự phòng cuối cho thư mục, chevron và icon thiếu;
-  - nhận thêm tên `"vs-seti"` như bí danh của "Seti", để settings chép từ VS Code vẫn chạy. Đây là quyết định của tôi;
-  - extension không được ghi đè tên "Seti", như với Lucide.
+  - has two built-in themes, Seti and Lucide; `names()` returns "Seti", "Lucide", then extension themes;
+  - `resolve(name)` with an unknown name returns **Seti** (the new default); Lucide remains the last-resort fallback for folders, chevrons and missing icons;
+  - also accepts the name `"vs-seti"` as an alias of "Seti", so settings copied from VS Code keep working. This is my decision;
+  - an extension may not override the name "Seti", as with Lucide.
 
 ### `lucerna-settings`
 
-- `default-settings.json`: `"workbench.iconTheme": "Seti"`, thêm `"workbench.editor.showIcons": true`. Cập nhật schema hoặc mô tả settings nếu có.
-- Ai đã đặt `"Lucide"` thì vẫn giữ Lucide.
+- `default-settings.json`: `"workbench.iconTheme": "Seti"`, add `"workbench.editor.showIcons": true`. Update the settings schema or description if there is one.
+- Anyone who has already set `"Lucide"` keeps Lucide.
 
 ### `lucerna-workbench`
 
-- `icons.rs`: nhúng SVG Seti (macro giống `lucide!`) và thêm `seti_svg(name)`.
-- `ui::file_icon_sized`: với `IconSource::Glyph` thì vẽ `svg()` bằng SVG Seti, tô màu `dark` hoặc `light` theo appearance của color theme đang dùng. Tham số `color` chỉ áp cho Lucide. Hàm cần biết appearance: builder chọn cách truyền (đọc `AppState` qua `cx`, hoặc thêm tham số).
-- **Explorer**: không đổi bố cục. Icon file lấy màu Seti; folder và chevron vẫn Lucide với `icon_muted`. Hàng đang chọn hay hover vẫn giữ màu icon, như VS Code.
-- **Tab file** (`editor_groups/view.rs`): `TabItem::File(path)` lấy `state.icons.file(path)` và vẽ bằng `file_icon_sized` ở 14 px, cùng ô icon và khoảng cách với các tab đặc biệt hiện có. Selector `tab-icon-{gi}-{ti}` dùng chung. Tab file bị xóa (gạch ngang) vẫn hiện icon. Tab diff của một file (`TabItem::FileDiff`) cũng hiện icon của file như VS Code; tab Git Changes và Branch Changes giữ icon nhánh. Tab xem trước Markdown giữ icon mắt.
-- **`workbench.editor.showIcons: false`**: ẩn icon trên mọi tab, cả tab đặc biệt, như VS Code. Đổi setting thì tab vẽ lại ngay, không cần khởi động lại.
-- Picker icon theme (`theme_picker.rs`): danh sách có "Seti" đầu tiên; xem trước bằng mũi tên vẫn chạy.
-- Đổi color theme giữa sáng và tối thì màu icon đổi theo ngay.
+- `icons.rs`: embed the Seti SVGs (a macro like `lucide!`) and add `seti_svg(name)`.
+- `ui::file_icon_sized`: for `IconSource::Glyph`, draw `svg()` with the Seti SVG, tinted with the `dark` or `light` color according to the appearance of the active color theme. The `color` parameter applies only to Lucide. The function needs to know the appearance: the builder chooses how to pass it (read `AppState` through `cx`, or add a parameter).
+- **Explorer**: no layout change. File icons take Seti colors; folders and chevrons stay Lucide with `icon_muted`. A selected or hovered row keeps the icon color, as in VS Code.
+- **File tab** (`editor_groups/view.rs`): `TabItem::File(path)` takes `state.icons.file(path)` and draws it with `file_icon_sized` at 14 px, with the same icon slot and spacing as the existing special tabs. The selector `tab-icon-{gi}-{ti}` is shared. A deleted file tab (struck through) still shows its icon. The diff tab of a file (`TabItem::FileDiff`) also shows the file's icon as in VS Code; the Git Changes and Branch Changes tabs keep the branch icon. The Markdown preview tab keeps the eye icon.
+- **`workbench.editor.showIcons: false`**: hide the icon on every tab, including special tabs, as in VS Code. Changing the setting repaints the tabs immediately, with no restart.
+- The icon theme picker (`theme_picker.rs`): the list has "Seti" first; previewing with the arrow keys still works.
+- Switching the color theme between light and dark changes the icon colors immediately.
 
-### Hiệu năng
+### Performance
 
-- Bảng Seti dựng một lần khi khởi động, cùng lúc với `IconThemeRegistry::build`, và dùng chung qua `Arc`.
-- Mỗi lần tra chỉ là vài lần tra HashMap theo tên và đuôi, giống Lucide. Không cấp phát thêm khi vẽ, ngoài chuỗi chữ thường mà `file_icon` đang tạo.
-- `svg()` của GPUI cache ảnh raster theo dữ liệu và kích cỡ, nên 14 px nhiều màu không tốn thêm so với Lucide. Test perf hiện có (`tests/perf.rs`, `terminal_perf.rs`) phải vẫn qua.
+- The Seti table is built once at startup, at the same time as `IconThemeRegistry::build`, and shared through `Arc`.
+- Each lookup is just a few HashMap lookups by name and extension, like Lucide. No extra allocation when painting, apart from the lowercase string that `file_icon` already creates.
+- GPUI's `svg()` caches the raster image by data and size, so 14 px multicolor costs nothing extra compared with Lucide. The existing perf tests (`tests/perf.rs`, `terminal_perf.rs`) must still pass.
 
-## Test
+## Tests
 
 - `lucerna-theme`:
-  - Seti khớp đúng như VS Code cho một bảng mẫu: `app.ts`, `a.spec.ts`, `a.d.ts`, `Dockerfile`, `docker-compose.yml`, `.env`, `.env.example`, `.gitignore`, `Cargo.toml`, `README.md`, `LICENSE`, `main.rs`, `package.json`, `tsconfig.json`, file không đuôi, file lạ → `_default`. Mỗi mẫu kiểm tên glyph và màu tối/sáng. Kết quả mong đợi lấy từ VS Code thật (bảng mẫu ghi trong test).
-  - Khớp tên file không phân biệt hoa thường; mục riêng của Seti thắng mục lấy từ ngôn ngữ; `.env.local` và `Dockerfile.dev` khớp theo mẫu tên.
-  - Mọi SVG Seti nhúng có viewBox vuông.
-  - `resolve("vs-seti")` cho Seti; tên lạ cho Seti; `names()` có Seti đầu tiên.
-  - Extension đặt tên "Seti" không ghi đè được theme dựng sẵn.
+  - Seti matches VS Code exactly for a sample table: `app.ts`, `a.spec.ts`, `a.d.ts`, `Dockerfile`, `docker-compose.yml`, `.env`, `.env.example`, `.gitignore`, `Cargo.toml`, `README.md`, `LICENSE`, `main.rs`, `package.json`, `tsconfig.json`, a file with no extension, an unknown file → `_default`. Each sample checks the glyph name and the dark/light colors. The expected results come from real VS Code (the sample table is recorded in the test).
+  - File name matching is case-insensitive; Seti's own entries win over entries derived from languages; `.env.local` and `Dockerfile.dev` match by name pattern.
+  - Every embedded Seti SVG has a square viewBox.
+  - `resolve("vs-seti")` gives Seti; an unknown name gives Seti; `names()` has Seti first.
+  - An extension that sets the name "Seti" cannot override the built-in theme.
 - `lucerna-workbench`:
-  - Mọi tên glyph trong dữ liệu đều có SVG nhúng (giống `lucide_svg_resolves_every_bundled_name`).
-  - Tab file có `tab-icon-{gi}-{ti}`. Đặt `workbench.editor.showIcons: false` thì không còn icon nào trên tab.
-  - Explorer với Seti: hàng `.ts` có icon `Glyph` với màu đúng, theme sáng thì màu sáng đã sinh.
-  - Test dữ liệu: mọi màu sáng có tương phản ≥ 3:1 với `#ffffff`, và màu `_light` nào đã đạt 3:1 thì không đổi.
-  - Picker icon theme liệt kê Seti trước Lucide.
-- Test đang dựa vào mặc định Lucide (`resolve("Lucide")` trong khoảng 57 chỗ ở tests) vẫn chạy được, vì chúng gọi tên Lucide rõ ràng. Test nào kiểm mặc định (`lucerna-settings/tests/store.rs`, `icon_theme_picker.rs`) thì sửa sang Seti.
-- `cargo deny check` và `scripts/gen-licenses.py` chạy qua, và output có Seti.
+  - Every glyph name in the data has an embedded SVG (like `lucide_svg_resolves_every_bundled_name`).
+  - A file tab has `tab-icon-{gi}-{ti}`. With `workbench.editor.showIcons: false`, no icon remains on any tab.
+  - Explorer with Seti: a `.ts` row has a `Glyph` icon with the right color, and on a light theme the generated light color.
+  - Data test: every light color has contrast ≥ 3:1 with `#ffffff`, and any `_light` color that already reached 3:1 is unchanged.
+  - The icon theme picker lists Seti before Lucide.
+- Tests that rely on the Lucide default (`resolve("Lucide")` in about 57 places in tests) still work, because they name Lucide explicitly. Tests that check the default (`lucerna-settings/tests/store.rs`, `icon_theme_picker.rs`) are changed to Seti.
+- `cargo deny check` and `scripts/gen-licenses.py` pass, and the output includes Seti.
 
-## Ảnh chụp
+## Screenshots
 
-Chụp `luc` mở cùng một thư mục mẫu (có `.ts`, `Dockerfile`, `docker-compose.yml`, `.env`, `.json`, `.md`, `.rs`) và mở vài tab. Chụp trước (main hiện tại) và sau, ở cả Lucerna Dark và Lucerna Light. Lưu vào `docs/research/file-icons-screenshots/`.
+Capture `luc` opened on the same sample folder (with `.ts`, `Dockerfile`, `docker-compose.yml`, `.env`, `.json`, `.md`, `.rs`) and a few tabs open. Capture before (current main) and after, in both Lucerna Dark and Lucerna Light. Save to `docs/research/file-icons-screenshots/`.
 
-## Để builder quyết
+## Left to the builder
 
-- Định dạng file dữ liệu sinh ra (Rust `const`, hoặc JSON nhúng rồi parse một lần).
-- Cách nối mã glyph font với tên SVG trong `gen-seti.py`.
-- Tên biến thể `IconSource` và cách `file_icon_sized` biết appearance.
-- Cách tính khung thật của hình vẽ SVG trong script (thư viện Python hay tự parse path).
+- The format of the generated data file (Rust `const`, or embedded JSON parsed once).
+- How to link font glyph codes to SVG names in `gen-seti.py`.
+- The name of the `IconSource` variant and how `file_icon_sized` learns the appearance.
+- How to compute the real bounding box of the SVG drawing in the script (a Python library or parsing paths by hand).

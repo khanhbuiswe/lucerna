@@ -1,105 +1,105 @@
-# Explorer: Cut/Copy/Paste, Duplicate, Open Preview — thiết kế ngắn
+# Explorer: Cut/Copy/Paste, Duplicate, Open Preview — short design
 
-Ngày: 2026-11-15. Trạng thái: yêu cầu do người dùng đặt (qua session chính), chờ duyệt plan.
+Date: 2026-11-15. Status: requested by the user (via the main session), awaiting plan approval.
 
-## Ý định
+## Intent
 
-Người dùng muốn context menu của Explorer có thêm các lệnh sau, hành vi theo VS Code:
+The user wants the Explorer context menu to gain the following commands, with VS Code behavior:
 
-1. Cut / Copy / Paste file và thư mục.
-2. Duplicate, theo cách Zed làm.
-3. Open Preview cho file `.md`.
+1. Cut / Copy / Paste for files and folders.
+2. Duplicate, the way Zed does it.
+3. Open Preview for `.md` files.
 
-Spec này nối tiếp `2026-11-13-explorer-context-menu-design.md`. Mọi ràng buộc và anti-goal của spec đó vẫn áp dụng: không ghi đè, luồng UI không chờ I/O, thao tác của chính Lucerna không bị đánh dấu là "thay đổi từ bên ngoài", menu trông như Zed.
+This spec follows on from `2026-11-13-explorer-context-menu-design.md`. All the constraints and anti-goals of that spec still apply: never overwrite, the UI flow never waits on I/O, Lucerna's own operations are not flagged as "changed externally", and the menu looks like Zed's.
 
-## Tham khảo
+## References
 
-Chi tiết nằm ở `docs/research/2026-11-13-explorer-context-menu.md`, mục §1 và §2.
+Details are in `docs/research/2026-11-13-explorer-context-menu.md`, sections §1 and §2.
 
 - **VS Code:**
-  - Các lệnh `filesExplorer.cut`, `filesExplorer.copy`, `filesExplorer.paste`, phím ⌘X / ⌘C / ⌘V khi `filesExplorerFocus`.
-  - Paste dán vào thư mục đang chọn, hoặc vào thư mục chứa file đang chọn.
-  - Tên trùng được đổi theo `explorer.incrementalNaming` (mặc định `simple`): `a copy.rs`, rồi `a copy 2.rs`.
-  - Cut rồi Paste là di chuyển. Sau lần Paste đó clipboard được xóa.
-  - Mục Paste bị làm mờ khi clipboard trống. Dòng đang bị Cut hiện mờ trong cây. `Esc` hủy Cut (`filesExplorer.cancelCut`).
-  - Không cho dán một thư mục vào chính nó hoặc vào thư mục con của nó.
-- **VS Code (extension Markdown):** "Open Preview" (`markdown.showPreview`) có trong context menu của Explorer khi bấm vào file markdown.
+  - The commands `filesExplorer.cut`, `filesExplorer.copy`, `filesExplorer.paste`, with keys ⌘X / ⌘C / ⌘V when `filesExplorerFocus`.
+  - Paste pastes into the selected folder, or into the folder containing the selected file.
+  - Duplicate names are renamed per `explorer.incrementalNaming` (default `simple`): `a copy.rs`, then `a copy 2.rs`.
+  - Cut then Paste is a move. After that Paste the clipboard is cleared.
+  - The Paste item is dimmed when the clipboard is empty. A row that has been Cut shows dimmed in the tree. `Esc` cancels the Cut (`filesExplorer.cancelCut`).
+  - A folder cannot be pasted into itself or into one of its subfolders.
+- **VS Code (Markdown extension):** "Open Preview" (`markdown.showPreview`) is in the Explorer context menu when clicking a markdown file.
 - **Zed:**
-  - `project_panel::Duplicate` (phím `cmd-d`) chép mục sang cùng thư mục, dùng cùng cách đặt tên " copy" như Paste.
-  - Sau khi chép xong, Zed mở ô đổi tên trên bản sao, chọn sẵn phần tên đến hết chữ " copy N".
-  - Clipboard của Zed nằm trong panel, không phải clipboard của hệ điều hành.
+  - `project_panel::Duplicate` (key `cmd-d`) copies the entry into the same folder, using the same " copy" naming as Paste.
+  - After copying, Zed opens the rename box on the copy, with the name selected up to the end of " copy N".
+  - Zed's clipboard lives in the panel, not the operating system clipboard.
 
-## Thiết kế
+## Design
 
-### Lệnh, phím, menu
+### Commands, keys, menu
 
-Phím là phím macOS. Mọi phím đều có điều kiện `filesExplorerFocus && !textInputFocus`.
+The keys are macOS keys. Every key has the condition `filesExplorerFocus && !textInputFocus`.
 
-| Mục | ID | Hiện khi | Phím |
+| Item | ID | Shown when | Key |
 |---|---|---|---|
-| Cut | `filesExplorer.cut` | không phải gốc | `cmd+x` |
-| Copy | `filesExplorer.copy` | không phải gốc | `cmd+c` |
-| Paste | `filesExplorer.paste` | thư mục hoặc gốc (với file thì dán vào thư mục chứa nó). Làm mờ khi clipboard trống. | `cmd+v` |
-| Duplicate | `filesExplorer.duplicate` | không phải gốc | `cmd+d` |
-| Open Preview | `markdown.showPreview` | file markdown (theo ngôn ngữ của file) | — |
-| — | `filesExplorer.cancelCut` | không có trong menu | `escape` khi đang có Cut |
+| Cut | `filesExplorer.cut` | not the root | `cmd+x` |
+| Copy | `filesExplorer.copy` | not the root | `cmd+c` |
+| Paste | `filesExplorer.paste` | a folder or the root (for a file, it pastes into the folder containing it). Dimmed when the clipboard is empty. | `cmd+v` |
+| Duplicate | `filesExplorer.duplicate` | not the root | `cmd+d` |
+| Open Preview | `markdown.showPreview` | a markdown file (by the file's language) | — |
+| — | `filesExplorer.cancelCut` | not in the menu | `escape` while a Cut is pending |
 
-- **Vị trí trong menu (theo VS Code):**
-  - Nhóm Cut, Copy, Paste, Duplicate đứng sau nhóm Find in Folder, trước nhóm Copy Path.
-  - Open Preview đứng sau Open to the Side.
-  - Ở chế độ một file: không có Cut, Paste, Duplicate, Delete. Vẫn có Copy và Open Preview.
+- **Position in the menu (following VS Code):**
+  - The Cut, Copy, Paste, Duplicate group goes after the Find in Folder group and before the Copy Path group.
+  - Open Preview goes after Open to the Side.
+  - In single-file mode: no Cut, Paste, Duplicate, Delete. Copy and Open Preview remain.
 
 ### Clipboard
 
-- Là clipboard của Explorer, sống trong workbench: `{ op: Cut | Copy, paths }`. Nó không ghi vào clipboard của hệ điều hành.
-- Tạm thời mỗi lần chỉ có một mục, vì Lucerna chưa chọn được nhiều dòng.
-- Dòng đang bị Cut có tên hiện mờ (`text_muted`).
+- It is the Explorer's own clipboard, living in the workbench: `{ op: Cut | Copy, paths }`. It does not write to the operating system clipboard.
+- For now there is only one item at a time, because Lucerna cannot yet select multiple rows.
+- A row that has been Cut shows its name dimmed (`text_muted`).
 
 ### Paste
 
-- **Thư mục đích:** thư mục được chọn. Nếu dòng được chọn là file thì dùng thư mục chứa file đó. Lấy từ `args.path` khi lệnh chạy từ menu.
-- **Đặt tên khi trùng:**
-  - File: `stem copy.ext`, rồi `stem copy 2.ext`, `stem copy 3.ext`…
-  - Thư mục: `name copy`, `name copy 2`…
-  - Kiểm tra trùng trên snapshot, rồi kiểm tra lại khi ghi bằng thao tác không ghi đè. Nếu lúc ghi mới phát hiện trùng thì thử số tiếp theo.
+- **Target folder:** the selected folder. If the selected row is a file, use the folder containing that file. Taken from `args.path` when the command runs from the menu.
+- **Naming on collision:**
+  - File: `stem copy.ext`, then `stem copy 2.ext`, `stem copy 3.ext`…
+  - Folder: `name copy`, `name copy 2`…
+  - Check for a collision on the snapshot, then check again when writing using a non-overwriting operation. If a collision is only discovered at write time, try the next number.
 - **Copy:**
-  - File được chép với `create_new`, nên không bao giờ ghi đè.
-  - Thư mục được chép đệ quy. Symlink được chép thành symlink, không đi theo nó.
-  - Từ chối khi đích nằm trong chính thư mục nguồn, và báo bằng status message.
-- **Cut (di chuyển):**
-  - Dùng `fs_ops::rename`, loại không ghi đè.
-  - Nếu trùng tên ở đích thì đặt tên kiểu " copy" như trên. Không ghi đè, không hỏi.
-  - Dán vào đúng thư mục đang chứa mục đó thì không làm gì.
-  - Tab, tài liệu, LSP, lịch sử điều hướng và recent đi theo đường dẫn mới, dùng lại `Workbench::paths_renamed` của Rename.
-  - Chờ các lần lưu đang chạy dở xong rồi mới di chuyển.
-  - Sau khi dán, clipboard được xóa.
-- **Sau khi dán:** chọn mục mới, mở thư mục đích ra, và cuộn tới mục đó. Nếu là file thì mở trong tab ghim, theo Zed `auto_open.on_paste` mặc định bật.
-- **Thao tác của chính mình:** đường dẫn mới được đưa vào `expect_own_changes` trước khi ghi, và gỡ ra bằng `forget_own_changes` nếu lỗi.
-- **Lỗi:** báo bằng status message `Unable to paste '{name}': {err}`. Câu này do Claude tự đặt.
-- **Luồng:** mọi I/O chạy ở luồng nền.
+  - Files are copied with `create_new`, so they never overwrite.
+  - Folders are copied recursively. A symlink is copied as a symlink, not followed.
+  - Refuse when the destination is inside the source folder itself, and report it with a status message.
+- **Cut (move):**
+  - Uses `fs_ops::rename`, the non-overwriting kind.
+  - If the name collides at the destination, name it in the " copy" style as above. No overwriting, no prompt.
+  - Pasting into the folder that already contains the entry does nothing.
+  - Tabs, documents, LSP, navigation history and recents follow the new path, reusing Rename's `Workbench::paths_renamed`.
+  - Wait for in-flight saves to finish before moving.
+  - After pasting, the clipboard is cleared.
+- **After pasting:** select the new entry, expand the target folder, and scroll to the entry. If it is a file, open it in a pinned tab, following Zed's `auto_open.on_paste`, on by default.
+- **Own operations:** the new path is put into `expect_own_changes` before writing, and removed with `forget_own_changes` on error.
+- **Errors:** report with the status message `Unable to paste '{name}': {err}`. This wording was written by Claude.
+- **Threading:** all I/O runs on a background thread.
 
 ### Duplicate
 
-- Giống Copy rồi Paste vào chính thư mục chứa mục đó, nhưng không đụng tới clipboard.
-- Sau khi chép xong, mở ô đổi tên trên bản sao. Ô chọn sẵn phần tên đến hết " copy N", không chọn phần đuôi file, theo Zed.
+- Same as Copy then Paste into the folder containing the entry, but without touching the clipboard.
+- After copying, open the rename box on the copy. The box has the name preselected up to the end of " copy N", not the file extension, following Zed.
 
 ### Open Preview
 
-- `markdown.showPreview` nhận thêm `args.path`. Khi có `args.path`, lệnh mở file đó ở chế độ preview (`FileView::Preview`) trong tab ghim. Khi không có, lệnh làm như hiện nay, tức là chuyển tab đang mở sang preview.
-- Mục menu chỉ hiện khi file có ngôn ngữ `markdown` (`files.associations` vẫn áp dụng).
+- `markdown.showPreview` gains `args.path`. When `args.path` is present, the command opens that file in preview mode (`FileView::Preview`) in a pinned tab. When it is absent, the command behaves as it does today, i.e. it switches the open tab to preview.
+- The menu item appears only when the file's language is `markdown` (`files.associations` still applies).
 
-## Không làm
+## Non-goals
 
-- Chọn nhiều dòng; Cut/Copy nhiều mục cùng lúc.
-- Dán file chép từ Finder hoặc từ clipboard của hệ điều hành.
-- Ghi vào clipboard của hệ điều hành.
-- Hộp thoại "Replace?" khi trùng tên: luôn đặt tên " copy", không hỏi.
-- Undo, kéo thả.
-- Setting `explorer.incrementalNaming` (chỉ có kiểu `simple`).
+- Selecting multiple rows; Cut/Copy of several entries at once.
+- Pasting files copied from Finder or from the operating system clipboard.
+- Writing to the operating system clipboard.
+- A "Replace?" dialog on a name collision: always name it " copy", never ask.
+- Undo, drag and drop.
+- The `explorer.incrementalNaming` setting (only the `simple` style exists).
 
-## Quyết định của Claude (người dùng xem lại)
+## Claude's decisions (for the user to review)
 
-- **Cut trùng tên ở đích:** đổi tên kiểu " copy" thay vì hỏi có ghi đè không như VS Code. Lý do: anti-goal là không bao giờ ghi đè, và người dùng muốn đặt tên kiểu " copy" khi trùng.
-- **ID Duplicate:** `filesExplorer.duplicate`, vì VS Code không có lệnh này. Phím `cmd+d` khi Explorer có focus, theo Zed.
-- **Sau khi dán file thì mở file**, theo Zed. VS Code không mở.
-- **Clipboard chỉ là clipboard nội bộ**, như Zed.
+- **Cut with a name collision at the destination:** rename in the " copy" style instead of asking whether to overwrite as VS Code does. Reason: the anti-goal is never to overwrite, and the user wants " copy" naming on collision.
+- **Duplicate ID:** `filesExplorer.duplicate`, because VS Code has no such command. Key `cmd+d` when the Explorer has focus, following Zed.
+- **After pasting a file, open the file**, following Zed. VS Code does not open it.
+- **The clipboard is only the internal clipboard**, as in Zed.

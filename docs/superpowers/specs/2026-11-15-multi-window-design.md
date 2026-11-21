@@ -1,240 +1,260 @@
-# Một tiến trình, nhiều cửa sổ — thiết kế
+# One process, many windows — design
 
-Ngày: 2026-11-15. Trạng thái: người dùng đã duyệt (2026-11-15).
+Date: 2026-11-15. Status: approved by the user (2026-11-15).
 
-**Các điểm người viết spec tự quyết** (người dùng kiểm khi duyệt): M5 (file
-ngoài thư mục đang mở vào cửa sổ dùng gần nhất), M7, M10, M13 (giành socket
-trước), M16, M17; §6.1.3 danh sách khóa phạm vi app và `files.associations`
-theo cửa sổ; §6.3 cửa sổ file riêng không nhận thêm file; §6.5 không chở
-env, không dùng `open -a`; §6.6 định dạng `windows.json`, fallback
-`recent.json`, Welcome không được mở lại; §7.2 mốc đo là bước 1.
+**Points the spec author decided alone** (the user checks them at approval):
+M5 (a file outside the open folders goes to the most recently used window),
+M7, M10, M13 (claim the socket first), M16, M17; §6.1.3 the list of app-scope
+keys and `files.associations` per window; §6.3 a standalone file window does
+not accept more files; §6.5 no environment carried, no `open -a`; §6.6 the
+`windows.json` format, the `recent.json` fallback, Welcome is not reopened;
+§7.2 the measurement baseline is step 1.
 
-Nghiên cứu: `docs/research/2026-11-15-multi-window.md` (Zed ở revision GPUI
-đang pin `b5cd310`, VS Code nhánh `main`).
+Research: `docs/research/2026-11-15-multi-window.md` (Zed at the pinned GPUI
+revision `b5cd310`, VS Code `main` branch).
 
-## 1. Ý định
+## 1. Intent
 
-Hiện nay mỗi cửa sổ Lucerna là một tiến trình `luc` riêng (spec Welcome W1,
-W8): settings workspace là global gắn với một thư mục gốc, nên một tiến trình
-chỉ giữ được một cửa sổ. Hậu quả người dùng thấy: mở hai cửa sổ thì Dock có
-hai icon Lucerna, App Exposé (Ctrl+↓) và ⌘` chỉ thấy cửa sổ của một tiến
-trình. VS Code và Zed đều là một app với nhiều cửa sổ. Lucerna sắp ra 0.1 và
-cần làm giống vậy.
+Today every Lucerna window is a separate `luc` process (Welcome spec W1, W8):
+workspace settings are a global tied to one root folder, so one process can
+hold only one window. The consequence users see: with two windows open, the
+Dock has two Lucerna icons, and App Exposé (Ctrl+↓) and ⌘` see only one
+process's window. VS Code and Zed are both one app with many windows.
+Lucerna is about to ship 0.1 and needs to do the same.
 
-Thành công nghĩa là:
+Success means:
 
-- Dock luôn chỉ có một icon Lucerna, dù mở bao nhiêu cửa sổ, mở từ đâu
-  (menu, Welcome, Finder, `luc` trong terminal).
-- ⌘` đi vòng qua mọi cửa sổ; App Exposé hiện đủ.
-- Mỗi cửa sổ vẫn hành xử như một workspace độc lập: settings workspace,
+- The Dock always has exactly one Lucerna icon, however many windows are
+  open and from wherever they are opened (menu, Welcome, Finder, `luc` in a
+  terminal).
+- ⌘` cycles through every window; App Exposé shows them all.
+- Each window still behaves as an independent workspace: workspace settings,
   trust, terminal, language server, layout.
-- Một cửa sổ không chậm hơn bản hiện tại (§9).
+- A window is no slower than the current build (§9).
 
-## 2. Mục tiêu, không làm, phản mục tiêu
+## 2. Goals, non-goals, anti-goals
 
-**Mục tiêu**
+**Goals**
 
-- Mọi cửa sổ trong một tiến trình. Bỏ `process::spawn` khỏi mọi đường mở.
-- Settings: lớp default và user dùng chung; lớp workspace theo cửa sổ.
-- Router quản lý nhiều cửa sổ; một hàm mở duy nhất cho mọi nguồn.
-- `luc <path>` gửi đường dẫn tới tiến trình đang chạy qua Unix socket.
-- Thoát và đóng cửa sổ cuối như VS Code.
-- `window.restoreWindows: "all"`: mở lại mọi cửa sổ khi khởi động.
-- Test GPUI cho nhiều cửa sổ.
-- Đo hiệu năng trước và sau.
+- Every window in one process. Remove `process::spawn` from every open path.
+- Settings: the default and user layers are shared; the workspace layer is
+  per window.
+- A router that manages many windows; a single open function for every
+  source.
+- `luc <path>` sends the path to the running process over a Unix socket.
+- Quitting and closing the last window as in VS Code.
+- `window.restoreWindows: "all"`: reopen every window at startup.
+- GPUI tests for multiple windows.
+- Measure performance before and after.
 
-**Không làm (để sau 0.1)**
+**Non-goals (after 0.1)**
 
-- Cờ CLI `--new-window`, `--reuse-window`, `--add`, `--goto`, `--wait`.
-  Giao thức socket chừa chỗ cho chúng (§6.3).
-- `window.openFoldersInNewWindow`, `window.openFilesInNewWindow`: hành vi
-  cố định theo mặc định của VS Code (§5.3), chưa có setting.
-- Khôi phục vị trí và kích thước từng cửa sổ. Cửa sổ vẫn mở phóng to như nay.
-- Hot exit (lưu ngầm file chưa lưu khi thoát).
-- Tab cửa sổ native của macOS (`tabbing_identifier` để `None`).
-- Workspace nhiều thư mục (multi-root), sidebar nhiều project của Zed.
-- Dùng chung language server giữa các cửa sổ.
-- Linux/Windows: socket và `QuitMode` viết sao cho mở rộng được, nhưng chỉ
-  test trên macOS.
+- The CLI flags `--new-window`, `--reuse-window`, `--add`, `--goto`,
+  `--wait`. The socket protocol leaves room for them (§6.3).
+- `window.openFoldersInNewWindow`, `window.openFilesInNewWindow`: behavior
+  is fixed to VS Code's defaults (§5.3), no setting yet.
+- Restoring each window's position and size. Windows still open maximized
+  as today.
+- Hot exit (silently saving unsaved files on quit).
+- macOS native window tabs (`tabbing_identifier` stays `None`).
+- Multi-root workspaces, Zed's multi-project sidebar.
+- Sharing language servers between windows.
+- Linux/Windows: the socket and `QuitMode` are written to be extensible, but
+  only tested on macOS.
 
-**Phản mục tiêu** (chạy được nhưng vẫn là thất bại)
+**Anti-goals** (it runs but it is still a failure)
 
-- Một cửa sổ đọc nhầm settings workspace của cửa sổ khác, kể cả ở việc nền
-  (auto-save, format, language server, terminal).
-- Việc nặng của một cửa sổ (quét repo, git, language server) làm rớt khung
-  hình cửa sổ khác.
-- `luc <path>` lúc app đang khởi động mở thừa một cửa sổ (lỗi Zed #61346).
-- Bench `bench/compare` lỡ gửi đường dẫn vào Lucerna đang chạy của người
-  dùng thay vì chạy tiến trình riêng.
-- Thoát app mất thay đổi chưa lưu mà không hỏi.
+- A window mistakenly reading another window's workspace settings, including
+  in background work (auto-save, format, language server, terminal).
+- One window's heavy work (repo scan, git, language server) dropping another
+  window's frames.
+- `luc <path>` while the app is starting up opening an extra window (Zed bug
+  #61346).
+- The `bench/compare` bench accidentally sending a path to the user's
+  running Lucerna instead of running its own process.
+- Quitting the app and losing unsaved changes without asking.
 
-## 3. Ràng buộc
+## 3. Constraints
 
-- Hành vi, settings, lệnh, phím theo VS Code; giao diện và hiệu năng theo
-  Zed (`docs/design-principles.md`). Crate Zed là GPL: chỉ học thiết kế.
-- Chỉ `lucerna-workbench` dùng GPUI. Không giả định macOS ngoài code nền
-  tảng.
-- Luồng UI không chờ I/O. Đọc file settings, `windows.json`, socket đều ở
-  luồng nền.
-- GPUI ở `b5cd310`: `on_app_quit` không huỷ được việc thoát; test platform
-  `unimplemented!()` cho `on_open_urls` và `on_reopen`; `window_stack()` trả
-  `None` trong test; `active_window()` có thể `None` khi app ở nền.
-- Dùng thư mục `target` chung; không đặt `CARGO_TARGET_DIR`.
+- Behavior, settings, commands, keys follow VS Code; UI and performance
+  follow Zed (`docs/design-principles.md`). Zed's crates are GPL: learn the
+  design only.
+- Only `lucerna-workbench` uses GPUI. No macOS assumptions outside platform
+  code.
+- The UI thread never waits on I/O. Reading settings files, `windows.json`
+  and the socket all happen on background threads.
+- GPUI at `b5cd310`: `on_app_quit` cannot cancel quitting; the test platform
+  has `unimplemented!()` for `on_open_urls` and `on_reopen`; `window_stack()`
+  returns `None` in tests; `active_window()` can be `None` when the app is in
+  the background.
+- Use the shared `target` folder; do not set `CARGO_TARGET_DIR`.
 
-## 4. Các cách đã cân nhắc
+## 4. Approaches considered
 
 ### 4.1 Theme, icon theme, keymap
 
-| Cách | Đánh đổi | Chọn |
+| Approach | Trade-off | Chosen |
 |---|---|---|
-| **A. Chung cho app** (Zed): chỉ đọc từ settings user | Giữ nguyên ~140 chỗ đọc màu; mọi cửa sổ trông như nhau. Lệch VS Code: `workbench.colorTheme` trong `.lucerna/settings.json` bị bỏ qua | **Người dùng chọn** |
-| B. Theme theo cửa sổ (VS Code) | Phân biệt project bằng màu; phải sửa ~140 chỗ đọc màu và cache theo theme | |
+| **A. App-wide** (Zed): read only from user settings | Keeps the ~140 existing color reads; every window looks the same. Diverges from VS Code: `workbench.colorTheme` in `.lucerna/settings.json` is ignored | **The user chose** |
+| B. Per-window theme (VS Code) | Distinguishes projects by color; requires editing ~140 color reads and caching per theme | |
 
-Keymap không có lớp workspace ở cả VS Code lẫn Lucerna, nên chung trong cả
-hai cách.
+The keymap has no workspace layer in either VS Code or Lucerna, so it is
+shared in both approaches.
 
-### 4.2 Settings workspace theo cửa sổ
+### 4.2 Per-window workspace settings
 
-| Cách | Đánh đổi | Chọn |
+| Approach | Trade-off | Chosen |
 |---|---|---|
-| **1. Entity settings riêng mỗi cửa sổ** (VS Code: `ConfigurationService` mỗi cửa sổ, truyền qua DI) | Rõ cái gì thuộc cửa sổ nào ngay trong kiểu; test hai cửa sổ dễ. Phải truyền handle vào ~50 file | **Người dùng chọn** |
-| Kiểu Zed: một store toàn cục, tra theo `SettingsLocation { worktree_id, path }` | Hợp khi có settings cho thư mục con. Lucerna chỉ có một file ở gốc, nên khóa chỉ là thư mục gốc: vẫn phải truyền khóa vào từng entity, thêm một lần tra bảng | |
-| 2. Bảng `WindowId` → settings | Ít truyền hơn; entity tạo trước khi có window hoặc trong test dễ đọc nhầm | |
-| 3. Một global, đổi lớp workspace khi cửa sổ active đổi | Rẻ nhất nhưng sai cho cửa sổ nền | Loại |
+| **1. A separate settings entity per window** (VS Code: one `ConfigurationService` per window, passed through DI) | It is clear in the type which things belong to which window; testing two windows is easy. Handles must be passed into ~50 files | **The user chose** |
+| Zed style: one global store, looked up by `SettingsLocation { worktree_id, path }` | Fits when there are settings for subfolders. Lucerna has only one file at the root, so the key is just the root folder: the key must still be passed into every entity, with an extra table lookup | |
+| 2. A `WindowId` → settings table | Less passing; entities created before there is a window, or in tests, can easily read the wrong one | |
+| 3. One global, swapping the workspace layer when the active window changes | Cheapest but wrong for background windows | Rejected |
 
-### 4.3 `luc <path>` tới app đang chạy
+### 4.3 `luc <path>` to the running app
 
-| Cách | Đánh đổi | Chọn |
+| Approach | Trade-off | Chosen |
 |---|---|---|
-| **Unix socket trong thư mục data** (VS Code) | Chạy cả với `cargo run` và Linux; bench có `HOME` riêng nên có socket riêng | **Chọn** |
-| LaunchServices `open -a` hoặc URL `zed-cli://` (Zed) | Chỉ chạy với bản đóng gói; không chở được cờ hay trả lỗi về terminal | |
+| **A Unix socket in the data folder** (VS Code) | Works with `cargo run` and on Linux; the bench has its own `HOME` so it has its own socket | **Chosen** |
+| LaunchServices `open -a` or a `zed-cli://` URL (Zed) | Works only with the packaged build; cannot carry flags or return errors to the terminal | |
 
-## 5. Quyết định
+## 5. Decisions
 
-| # | Quyết định | Lý do |
+| # | Decision | Reason |
 |---|---|---|
-| M1 | Mọi cửa sổ chạy trong một tiến trình. `process.rs` (`SpawnRequest`, `Spawner`, `spawn`) và `open_requests::spawn_process` bị xoá. | Mục tiêu chính. |
-| M2 | `AppState.settings` chỉ còn lớp default và user. Lớp workspace thuộc `WindowSettings` (§6.1) của từng cửa sổ. | Người dùng chọn cách 1. |
-| M3 | Theme, icon theme, keymap, `files.associations` cho việc dựng `LanguageRegistry` chung, và các khóa phạm vi app (§6.1.3) chỉ đọc từ settings user. Khóa phạm vi app trong `.lucerna/settings.json` bị bỏ qua. | Người dùng chọn A. VS Code cũng đọc khóa `application` chỉ từ user. |
-| M4 | Mở một thư mục (hoặc file mở riêng) đang có cửa sổ thì focus cửa sổ đó, không mở bản thứ hai. | VS Code `findWindowOnWorkspaceOrFolder`; tránh hai cửa sổ ghi đè workspace state của nhau. |
-| M5 | Mở một file: vào cửa sổ có thư mục gốc là cha sâu nhất của file; không có thì vào **cửa sổ workbench dùng gần nhất** thành tab; không có workbench nào thì cửa sổ Welcome đang mở (nếu có) đổi thành cửa sổ file riêng; còn lại thì mở cửa sổ file riêng mới. | VS Code `openFilesInNewWindow: "off"` (mặc định) và `findWindowOnFile`. Đổi so với nay: file ngoài thư mục đang mở không còn mở cửa sổ riêng khi đã có cửa sổ. |
-| M6 | Open Folder… và chọn mục trong Open Recent (Enter) **thay** cửa sổ hiện tại (W8 giữ nguyên). ⌘Enter trong Open Recent và trên Welcome, cùng lệnh mới `workbench.action.newWindow` (`cmd+shift+n`), mở **cửa sổ mới trong cùng tiến trình**. | VS Code `openFoldersInNewWindow: "default"`. |
-| M7 | `workbench.action.newWindow` mở cửa sổ Welcome mới (không mở Get Started). | VS Code mở cửa sổ trống, hiện Welcome theo `workbench.startupEditor`. |
-| M8 | Đóng cửa sổ cuối: macOS app vẫn chạy với menu bar; Linux/Windows thoát. Dùng `QuitMode::Default` của GPUI thay cho observer tự viết trong `start()`. | VS Code `window-all-closed`; Zed `on_last_window_closed: platform_default`. |
-| M9 | Bấm icon Dock khi không còn cửa sổ (`on_reopen`): mở Welcome. | VS Code mở cửa sổ trống, không mở lại phiên. |
-| M10 | Các lệnh cần chạy được khi không có cửa sổ: Quit, New Window, Open…, Open Folder…, Open File…, Open Recent (mục trong menu), Preferences (settings, keybindings), About. Đăng ký `cx.on_action` cấp app; có cửa sổ thì vẫn chạy trong cửa sổ đó như nay. | GPUI gửi action của menu tới cửa sổ focus, không có thì tới handler cấp app. |
-| M11 | ⌘Q: hỏi lưu lần lượt từng cửa sổ, cửa sổ active trước; Cancel ở cửa sổ nào cũng huỷ việc thoát. Ghi danh sách cửa sổ (§6.6) **trước** `cx.quit()`. | Như `workbench::quit` hiện tại; Zed cho cửa sổ active hỏi trước. |
-| M12 | `window.restoreWindows` mặc định đổi từ `"one"` sang `"all"`. Nhận `"preserve"`, `"all"`, `"folders"`, `"one"`, `"none"` (§6.6). | Mặc định của VS Code. |
-| M13 | `luc` **giành socket trước** (`<data dir>/luc[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Chỉ hậu tố `-dev` để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy; tên không có version nên app khác version cùng giao thức vẫn nhận request, và cập nhật Lucerna khi app cũ còn chạy không ra hai app. Giao thức mới hơn app thì `luc` in "Lucerna was updated. Quit Lucerna and open it again." và thoát 1. |
-| M18 | `luc` trong terminal **tách app khỏi terminal** rồi trả dấu nhắc ngay, như `code .`. Cờ ẩn `--foreground` giữ kiểu cũ (chạy app ngay trong terminal) cho `bench/compare`, `--trace-startup` và debug. | Người dùng chọn. Một tiến trình giữ mọi cửa sổ, nên tắt tab terminal hay Ctrl+C không được kéo theo mọi cửa sổ và bỏ qua bước hỏi lưu. |
-| M14 | Yêu cầu từ socket hoặc `on_open_urls` đến khi app chưa mở lại xong cửa sổ thì xếp hàng, xử lý sau khi restore xong. | Lỗi Zed #61346. |
-| M15 | Language server, terminal, git, workspace state: theo từng cửa sổ như nay. Trust: kho `trusted.json` chung. Tin một thư mục thì mọi cửa sổ có gốc là đúng thư mục đó chuyển sang tin. Chọn thêm "tin cả thư mục cha" thì mọi cửa sổ có gốc nằm trong thư mục cha đó cũng chuyển sang tin. Cửa sổ có gốc là thư mục con của thư mục được tin một mình thì vẫn ở Restricted Mode. | Cả hai bên làm vậy. |
-| M16 | `status_message` hiện ở cửa sổ gây ra nó. | Zed và VS Code đều có thông báo theo cửa sổ. |
-| M17 | Một file mở ở hai cửa sổ là hai buffer riêng. Cửa sổ này lưu thì cửa sổ kia nhận qua watcher file như với mọi thay đổi ngoài. | Cả hai bên làm vậy; watcher và xử lý xung đột đã có. |
+| M1 | Every window runs in one process. `process.rs` (`SpawnRequest`, `Spawner`, `spawn`) and `open_requests::spawn_process` are deleted. | The main goal. |
+| M2 | `AppState.settings` keeps only the default and user layers. The workspace layer belongs to each window's `WindowSettings` (§6.1). | The user chose approach 1. |
+| M3 | Theme, icon theme, keymap, `files.associations` for building the shared `LanguageRegistry`, and the app-scope keys (§6.1.3) are read only from user settings. App-scope keys in `.lucerna/settings.json` are ignored. | The user chose A. VS Code also reads `application`-scope keys only from the user. |
+| M4 | Opening a folder (or a standalone file) that already has a window focuses that window, and does not open a second copy. | VS Code `findWindowOnWorkspaceOrFolder`; avoids two windows overwriting each other's workspace state. |
+| M5 | Opening a file: into the window whose root folder is the file's deepest ancestor; if none, into the **most recently used workbench window** as a tab; if there is no workbench, the open Welcome window (if any) becomes a standalone file window; otherwise open a new standalone file window. | VS Code `openFilesInNewWindow: "off"` (the default) and `findWindowOnFile`. Changed from today: a file outside the open folders no longer opens its own window when a window already exists. |
+| M6 | Open Folder… and choosing an entry in Open Recent (Enter) **replace** the current window (W8 stays). ⌘Enter in Open Recent and on Welcome, and the new command `workbench.action.newWindow` (`cmd+shift+n`), open a **new window in the same process**. | VS Code `openFoldersInNewWindow: "default"`. |
+| M7 | `workbench.action.newWindow` opens a new Welcome window (not Get Started). | VS Code opens an empty window, showing Welcome per `workbench.startupEditor`. |
+| M8 | Closing the last window: the macOS app keeps running with the menu bar; Linux/Windows quit. Use GPUI's `QuitMode::Default` in place of the hand-written observer in `start()`. | VS Code `window-all-closed`; Zed `on_last_window_closed: platform_default`. |
+| M9 | Clicking the Dock icon when no window remains (`on_reopen`): open Welcome. | VS Code opens an empty window, does not reopen the session. |
+| M10 | Commands that must work with no window: Quit, New Window, Open…, Open Folder…, Open File…, Open Recent (the menu entries), Preferences (settings, keybindings), About. Register app-level `cx.on_action`; when there is a window they still run in that window as today. | GPUI sends menu actions to the focused window, and to the app-level handler if there is none. |
+| M11 | ⌘Q: ask about saving window by window, the active window first; Cancel in any window cancels quitting. Write the window list (§6.6) **before** `cx.quit()`. | Like today's `workbench::quit`; Zed has the active window ask first. |
+| M12 | The default of `window.restoreWindows` changes from `"one"` to `"all"`. Accepts `"preserve"`, `"all"`, `"folders"`, `"one"`, `"none"` (§6.6). | VS Code's default. |
+| M13 | `luc` **claims the socket first** (`<data dir>/luc[-dev].sock`), even before starting GPUI. If it can bind, it is the app. On `EADDRINUSE` it connects as a client: sends the request, waits for the reply, then exits with code 0 (on error it prints to stderr, code 1). | VS Code `claimInstance`. Claiming first keeps two `luc` runs started nearly simultaneously from becoming two apps. Only the `-dev` suffix, so a dev build does not push paths into the release build the user is running; the name has no version, so an app of a different version with the same protocol still accepts the request, and updating Lucerna while the old app is running does not produce two apps. If the protocol is newer than the app's, `luc` prints "Lucerna was updated. Quit Lucerna and open it again." and exits 1. |
+| M18 | `luc` in a terminal **detaches the app from the terminal** and returns the prompt immediately, like `code .`. The hidden flag `--foreground` keeps the old behavior (run the app right in the terminal) for `bench/compare`, `--trace-startup` and debugging. | The user chose. One process holds every window, so closing the terminal tab or pressing Ctrl+C must not take every window down with it and skip the save prompt. |
+| M14 | Requests from the socket or `on_open_urls` that arrive before the app has finished reopening windows are queued, and handled after restore finishes. | Zed bug #61346. |
+| M15 | Language server, terminal, git, workspace state: per window as today. Trust: a shared `trusted.json` store. Trusting a folder makes every window whose root is exactly that folder switch to trusted. Also choosing "trust the parent folder" makes every window whose root lies inside that parent switch to trusted. A window whose root is a subfolder of a folder trusted on its own stays in Restricted Mode. | Both of them do this. |
+| M16 | `status_message` shows in the window that caused it. | Zed and VS Code both have per-window notifications. |
+| M17 | A file open in two windows is two separate buffers. When one window saves, the other receives it through the file watcher like any outside change. | Both of them do this; the watcher and conflict handling already exist. |
 
-## 6. Thiết kế
+## 6. Design
 
-### 6.1 Settings theo cửa sổ
+### 6.1 Per-window settings
 
-#### 6.1.1 Kiểu
+#### 6.1.1 Types
 
-- `lucerna-settings`: tách lớp workspace ra kiểu riêng `WorkspaceLayer`
-  (map đã parse). `SettingsStore` giữ default và user; thêm
-  `view(workspace: Option<&WorkspaceLayer>)` trả `SettingsView`, kiểu mượn
-  store và lớp workspace, có `get(key, language)` và `get_trusted` như
-  store. *(Bản đầu của spec gọi là `get_in`; code dùng `SettingsView`.)*
-  `SettingsStore::get(key, language)` giữ nguyên nghĩa "không có
-  workspace" để code phạm vi app và test cũ không đổi. Thứ tự ưu tiên và
-  gộp object (R26) không đổi.
-- `lucerna-workbench`: `WindowSettings` là một GPUI entity mỗi `Workbench`
-  sở hữu. Nó giữ:
-  - đường dẫn `<root>/.lucerna/settings.json` (single-file thì không có);
-  - `WorkspaceLayer` hiện tại;
-  - lỗi đọc file workspace;
-  - watcher thư mục `<root>/.lucerna` (không chạy trên scheduler test, như
-    `watch_config` hiện nay);
-  - bộ đếm thay đổi.
+- `lucerna-settings`: split the workspace layer into its own type
+  `WorkspaceLayer` (the parsed map). `SettingsStore` keeps default and user;
+  add `view(workspace: Option<&WorkspaceLayer>)` returning `SettingsView`, a
+  type borrowing the store and the workspace layer, with `get(key, language)`
+  and `get_trusted` like the store. *(The first version of the spec called it
+  `get_in`; the code uses `SettingsView`.)* `SettingsStore::get(key,
+  language)` keeps its meaning of "no workspace", so app-scope code and old
+  tests do not change. The precedence order and object merging (R26) are
+  unchanged.
+- `lucerna-workbench`: `WindowSettings` is a GPUI entity owned by each
+  `Workbench`. It holds:
+  - the path `<root>/.lucerna/settings.json` (none for single-file);
+  - the current `WorkspaceLayer`;
+  - the workspace file read error;
+  - a watcher on the `<root>/.lucerna` folder (not run on the test
+    scheduler, like `watch_config` today);
+  - a change counter.
 
-  API: `get::<T>(key, language, cx)` gộp `AppState.settings` với lớp của
-  nó; `get_trusted` bỏ lớp workspace như nay. Nó `cx.notify()` khi lớp
-  workspace đổi **và** khi lớp user đổi (nó observe global `AppState`), nên
-  người dùng chỉ cần observe một thứ.
-- Welcome và Get Started không có `WindowSettings`: chúng chỉ đọc
+  API: `get::<T>(key, language, cx)` merges `AppState.settings` with its own
+  layer; `get_trusted` drops the workspace layer as today. It calls
+  `cx.notify()` when the workspace layer changes **and** when the user layer
+  changes (it observes the `AppState` global), so users only need to observe
+  one thing.
+- Welcome and Get Started have no `WindowSettings`: they read only
   `AppState.settings` (user).
 
-#### 6.1.2 Truyền xuống
+#### 6.1.2 Passing it down
 
-`Workbench::new` tạo `WindowSettings` trước mọi entity con và truyền handle
-vào entity nào cần settings: `Documents`, `LanguageServers`, `TerminalPanel`
-và tab terminal, `CodeView`, vim, explorer, editor groups, search, markdown
-preview, git store, symbols, find widget, hover, save, panel layout. Mọi chỗ
-`cx.global::<AppState>().settings.get(..)` đọc khóa phạm vi cửa sổ đổi sang
-handle. 8 chỗ `observe_global::<AppState>` để nghe settings đổi sang
-`cx.observe(&settings, ..)`; chỗ nào nghe theme thì vẫn observe `AppState`.
+`Workbench::new` creates `WindowSettings` before any child entity and passes
+the handle into every entity that needs settings: `Documents`,
+`LanguageServers`, `TerminalPanel` and the terminal tab, `CodeView`, vim,
+explorer, editor groups, search, markdown preview, git store, symbols, find
+widget, hover, save, panel layout. Every place that does
+`cx.global::<AppState>().settings.get(..)` to read a window-scope key
+switches to the handle. The 8 places that `observe_global::<AppState>` to
+listen for settings changes switch to `cx.observe(&settings, ..)`; places
+that listen for theme still observe `AppState`.
 
-Không giữ lối tắt "đọc global cho nhanh": test kiến trúc (§8.3) bắt các chỗ
-đọc khóa phạm vi cửa sổ qua `AppState`.
+No "read the global for speed" shortcut is kept: an architecture test (§8.3)
+catches places that read window-scope keys through `AppState`.
 
-#### 6.1.3 Phạm vi app (chỉ đọc từ user)
+#### 6.1.3 App scope (read only from user)
 
-Danh sách cố định trong code (`app_scope_keys`), giống `scope: application`
-của VS Code:
+A fixed list in code (`app_scope_keys`), like VS Code's `scope: application`:
 
 - `workbench.colorTheme`, `workbench.preferredDarkColorTheme`,
   `workbench.preferredLightColorTheme`, `window.autoDetectColorScheme`,
   `workbench.iconTheme`;
-- `window.*` (gồm `window.restoreWindows`), `workbench.startupEditor`;
+- `window.*` (including `window.restoreWindows`), `workbench.startupEditor`;
 - `extensions.*`;
-- `files.associations` khi dựng `LanguageRegistry` chung (xem dưới).
+- `files.associations` when building the shared `LanguageRegistry` (see
+  below).
 
-Khóa phạm vi app có trong `.lucerna/settings.json` bị bỏ qua và ghi
-`tracing::info!` một lần mỗi lần nạp file. *(Cách báo trong UI, ví dụ mờ
-khóa trong editor như VS Code, để sau.)*
+App-scope keys present in `.lucerna/settings.json` are ignored, with one
+`tracing::info!` logged each time the file is loaded. *(How to report this
+in the UI, for example dimming the key in the editor as VS Code does, is
+left for later.)*
 
-`files.associations` trong workspace vẫn có tác dụng cho cửa sổ đó:
-`WindowSettings` giữ `Arc<LanguageRegistry>` của cửa sổ. Không có
-`files.associations` trong workspace thì dùng chung `AppState.languages`;
-có thì cửa sổ dựng registry riêng với associations gộp. Lần dựng đầu, khi
-tạo `WindowSettings`, chạy ngay trên luồng chính để tài liệu khôi phục lúc
-mở cửa sổ có đúng ngôn ngữ từ đầu: việc này chỉ biên dịch glob, không đọc
-file, không nạp grammar, nên rẻ. Các lần dựng lại sau đó (file workspace
-hay registry của app đổi) chạy ở luồng nền. `Documents` tra ngôn ngữ qua
-registry của cửa sổ.
+`files.associations` in the workspace still takes effect for that window:
+`WindowSettings` holds the window's `Arc<LanguageRegistry>`. If the
+workspace has no `files.associations`, it uses the shared
+`AppState.languages`; if it has them, the window builds its own registry
+with the associations merged in. The first build, when creating
+`WindowSettings`, runs immediately on the main thread so documents restored
+when the window opens have the right language from the start: this only
+compiles globs, reads no files, loads no grammars, so it is cheap. Later
+rebuilds (the workspace file or the app's registry changing) run on a
+background thread. `Documents` looks up languages through the window's
+registry.
 
-#### 6.1.4 File cấu hình, watcher, lỗi
+#### 6.1.4 Config files, watcher, errors
 
-- `ConfigState` (global) chỉ còn thư mục user: `settings.json`,
-  `keybindings.json`, `themes/`. Một watcher cho cả app.
-- `watch_config(ConfigPaths)` mất trường `workspace_settings`; gọi một lần
-  lúc khởi động. Router không còn gọi lại `watch_config` khi đổi thư mục.
-- Mỗi `WindowSettings` có watcher riêng cho `<root>/.lucerna`, debounce như
-  hiện nay (`CONFIG_DEBOUNCE`).
-- Status item báo lỗi cấu hình của cửa sổ hiện lỗi user (chung) và lỗi
-  workspace (riêng cửa sổ).
-- `reload_config(changed)` (test và watcher user) giữ nguyên;
-  `WindowSettings::reload(cx)` cho watcher workspace. Mở
-  `.lucerna/settings.json` trong editor rồi lưu thì chỉ cửa sổ đó đổi.
+- `ConfigState` (global) keeps only the user folder: `settings.json`,
+  `keybindings.json`, `themes/`. One watcher for the whole app.
+- `watch_config(ConfigPaths)` loses the `workspace_settings` field; it is
+  called once at startup. The router no longer calls `watch_config` again
+  when the folder changes.
+- Each `WindowSettings` has its own watcher for `<root>/.lucerna`, with
+  debounce as today (`CONFIG_DEBOUNCE`).
+- The status item reporting config errors for a window shows the user error
+  (shared) and the workspace error (per window).
+- `reload_config(changed)` (tests and the user watcher) is unchanged;
+  `WindowSettings::reload(cx)` is for the workspace watcher. Opening
+  `.lucerna/settings.json` in the editor and saving changes only that
+  window.
 
-### 6.2 Router nhiều cửa sổ
+### 6.2 The multi-window router
 
-`Router` (trong `app.rs`) thay `shown: Option<Shown>` bằng danh sách cửa sổ:
+`Router` (in `app.rs`) replaces `shown: Option<Shown>` with a list of
+windows:
 
 ```text
 WindowEntry { handle: AnyWindowHandle, shown: Shown, last_active: u64 }
 Shown = Welcome | Onboarding | Workbench(OpenWindow)
 ```
 
-- `last_active` lấy từ một bộ đếm tăng mỗi lần cửa sổ được kích hoạt
-  (`observe_window_activation`). "Cửa sổ dùng gần nhất" là `last_active`
-  lớn nhất, không phụ thuộc `active_window()` hay `window_stack()`.
-- Đóng cửa sổ (`on_window_closed`) thì bỏ khỏi danh sách và ghi lại
-  `windows.json` (§6.6).
-- Đổi root trong cửa sổ (W8, W10, Welcome → workbench) cập nhật `shown` của
-  đúng mục đó.
-- Router là global (`Rc<RefCell<..>>` trong một `Global`), để action cấp
-  app, socket, `on_open_urls`, `on_reopen` và test cùng gọi.
+- `last_active` comes from a counter incremented each time a window is
+  activated (`observe_window_activation`). "The most recently used window"
+  is the one with the largest `last_active`, independent of
+  `active_window()` or `window_stack()`.
+- Closing a window (`on_window_closed`) removes it from the list and
+  rewrites `windows.json` (§6.6).
+- Changing the root in a window (W8, W10, Welcome → workbench) updates the
+  `shown` of exactly that entry.
+- The router is global (`Rc<RefCell<..>>` inside a `Global`), so app-level
+  actions, the socket, `on_open_urls`, `on_reopen` and tests can all call
+  it.
 
-### 6.3 Một hàm mở duy nhất
+### 6.3 A single open function
 
 ```text
 open(request: OpenRequest, cx) -> Option<AnyWindowHandle>
@@ -243,136 +263,157 @@ Target = Auto | NewWindow | ReplaceIn(AnyWindowHandle)
 Source = Cli | Finder | Menu | Restore
 ```
 
-Mọi nguồn gọi hàm này: `luc` (socket), Finder/"Open With"/Dock
-(`on_open_urls`), Welcome, Open Recent, Open dialog, New Window, restore.
-Hàm thuần trên `&mut App`, nên test gọi trực tiếp được (test platform không
-có `on_open_urls`).
+Every source calls this function: `luc` (socket), Finder/"Open With"/Dock
+(`on_open_urls`), Welcome, Open Recent, the Open dialog, New Window,
+restore. The function is pure over `&mut App`, so tests can call it directly
+(the test platform has no `on_open_urls`).
 
-Quy tắc với `Target::Auto` cho mỗi đường dẫn (đã canonical):
+Rules for `Target::Auto` for each path (already canonical):
 
-1. Thư mục đang là gốc của một cửa sổ thư mục, hoặc file đang là file
-   riêng của một cửa sổ file riêng → focus cửa sổ đó (M4).
-2. File nằm trong gốc của một hay nhiều **cửa sổ thư mục** → cửa sổ có gốc
-   sâu nhất, mở file thành tab ghim, focus cửa sổ (M5). Cửa sổ file riêng
-   không có gốc ở đây: thư mục cha của nó không được quét nên không tính.
-3. File không nằm trong gốc nào: có cửa sổ thư mục → cửa sổ thư mục dùng
-   gần nhất, mở thành tab ghim. Không có cửa sổ thư mục mà có Welcome/Get
-   Started → đổi root cửa sổ Welcome dùng gần nhất thành cửa sổ file riêng.
-   Còn lại → cửa sổ file riêng mới. Cửa sổ file riêng không bao giờ nhận
-   thêm file từ `open`, nên nó luôn đúng là "một file" (`windows.json`
-   `kind: "file"`, không có settings workspace).
-4. Thư mục chưa mở: có Welcome/Get Started → đổi root cửa sổ Welcome dùng
-   gần nhất (như Zed: cửa sổ trống được tái dùng). Không có → cửa sổ mới.
-5. Đường dẫn không tồn tại → bỏ qua, ghi log; với `Source::Cli` trả lỗi về
-   terminal.
+1. A folder that is already the root of a folder window, or a file that is
+   already the standalone file of a standalone file window → focus that
+   window (M4).
+2. A file inside the root of one or more **folder windows** → the window
+   with the deepest root, open the file as a pinned tab, focus the window
+   (M5). A standalone file window has no root here: its parent folder is not
+   scanned so it does not count.
+3. A file not inside any root: if there is a folder window → the most
+   recently used folder window, open as a pinned tab. If there is no folder
+   window but there is Welcome/Get Started → turn the root of the most
+   recently used Welcome window into a standalone file window. Otherwise →
+   a new standalone file window. A standalone file window never accepts more
+   files from `open`, so it is always exactly "one file" (`windows.json`
+   `kind: "file"`, no workspace settings).
+4. A folder not yet open: if there is Welcome/Get Started → change the root
+   of the most recently used Welcome window (as in Zed: an empty window is
+   reused). If not → a new window.
+5. A path that does not exist → skip it and log; with `Source::Cli` return
+   the error to the terminal.
 
-`Target::NewWindow` luôn mở cửa sổ mới, trừ quy tắc 1 (đã mở thì focus).
-`Target::ReplaceIn(w)` là W8/W10: đổi root của `w` sau khi workbench cũ đã
-hỏi lưu.
+`Target::NewWindow` always opens a new window, except for rule 1 (already
+open means focus). `Target::ReplaceIn(w)` is W8/W10: change the root of `w`
+after the old workbench has asked about saving.
 
-Sau mỗi lần mở: ghi recent (như `record_recent`), `app_menu::refresh`,
-ghi `windows.json`.
+After each open: record recent (as `record_recent`), `app_menu::refresh`,
+write `windows.json`.
 
-Cửa sổ mới mở bằng `maximized_window_options` như nay. Việc đặt cửa sổ mới
-lệch khỏi cửa sổ cũ (cascade) để sau.
+New windows open with `maximized_window_options` as today. Offsetting the
+new window from the old one (cascading) is left for later.
 
-### 6.4 Các lệnh
+### 6.4 Commands
 
-| Lệnh | Phím | Hành vi mới |
+| Command | Key | New behavior |
 |---|---|---|
-| `workbench.action.newWindow` (mới) | `cmd+shift+n` | Cửa sổ Welcome mới (M7). Có trong menu File, đầu nhóm Open. |
-| Open Recent: Enter | | Thư mục: thay cửa sổ này (W8, nhưng nếu thư mục đã mở ở cửa sổ khác thì focus cửa sổ đó, không thay). File: tab ở đây. |
+| `workbench.action.newWindow` (new) | `cmd+shift+n` | A new Welcome window (M7). In the File menu, at the start of the Open group. |
+| Open Recent: Enter | | Folder: replace this window (W8, but if the folder is already open in another window, focus that window, do not replace). File: a tab here. |
 | Open Recent: ⌘Enter | | `Target::NewWindow`. |
-| Welcome: bấm mục | | Thay cửa sổ Welcome này. Đã mở ở cửa sổ khác → focus cửa sổ đó, Welcome vẫn còn. |
-| Welcome: ⌘bấm | | `Target::NewWindow`. |
-| Open Folder… / Open… | | Thay cửa sổ này (W8), trừ thư mục đã mở ở cửa sổ khác → focus. Không có cửa sổ → cửa sổ mới. |
-| Close Folder (`cmd+k f`) | | Như W10. |
-| Get Started: "Open settings in new window" | | `Target::NewWindow` trên `settings.json` của user. |
+| Welcome: click an entry | | Replace this Welcome window. Already open in another window → focus that window, Welcome stays. |
+| Welcome: ⌘click | | `Target::NewWindow`. |
+| Open Folder… / Open… | | Replace this window (W8), except a folder already open in another window → focus. No window → a new window. |
+| Close Folder (`cmd+k f`) | | As W10. |
+| Get Started: "Open settings in new window" | | `Target::NewWindow` on the user's `settings.json`. |
 | Quit (`cmd+q`) | | M11. |
-| Đóng cửa sổ (`cmd+w` khi không còn tab, nút đỏ) | | Hỏi lưu cửa sổ đó như nay; cửa sổ cuối: M8. |
+| Closing a window (`cmd+w` when no tabs remain, the red button) | | Asks about saving that window as today; last window: M8. |
 
-`WorkbenchEvent::Replace(SpawnRequest)` đổi thành
-`WorkbenchEvent::Replace(Replacement)` với `Replacement = Path(PathBuf) |
-Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
+`WorkbenchEvent::Replace(SpawnRequest)` becomes
+`WorkbenchEvent::Replace(Replacement)` with `Replacement = Path(PathBuf) |
+Welcome`, and add `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 
-### 6.5 `luc` từ terminal (socket)
+### 6.5 `luc` from the terminal (socket)
 
-- **Đường dẫn socket:** `<data dir>/luc.sock`, `luc-dev.sock` khi
-  `debug_assertions`; tên không có version, mọi version của cùng kênh build
-  dùng chung một socket. `sun_path` macOS giới hạn 104 byte: dài
-  hơn thì dùng `$TMPDIR/lucerna-<hash của data dir>.sock`.
-- **Giành socket** (`crates/lucerna/src/main.rs`, ngay sau khi parse đối
-  số, trước `app::run`; `luc ext …` và `luc lsp …` không đụng tới socket):
-  - `bind` được: tiến trình này là app. Listener được chuyển vào `app::run`;
-    app nhận kết nối ở luồng nền ngay từ đầu, yêu cầu nào tới trong lúc
-    khởi động hay restore thì xếp hàng (M14).
-  - `EADDRINUSE`: thử `connect` (timeout 1 s). Nối được thì làm client: gửi
-    một dòng JSON, đợi một dòng trả lời (timeout 5 s), in lỗi nếu có, thoát.
-    `ECONNREFUSED` (file socket còn lại sau crash) thì xoá file và `bind`
-    lại một lần.
-  - Kết nối bị đóng hoặc lỗi trước khi có trả lời (EOF, reset): giành
-    socket lại một lần. Thường là do `luc` khác vừa giữ socket một lúc rồi
-    nhả cho app nó khởi động (M1-1). Lần giành thứ hai nối tới app đó, hoặc
-    tự bind khi chưa có app. Bước 3 bên dưới cũng nối lại một lần như vậy.
-  - App đang thoát trả `{"ok":false,"error":"Lucerna is quitting","status":"quitting"}`
-    (nó vẫn giữ socket thêm một lúc). `luc` giành socket lại mỗi 100 ms,
-    tối đa 5 s, rồi gửi cho app mới hoặc tự khởi động app; quá hạn thì in
-    lỗi, thoát mã 1 (M1-2).
-  - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
-    đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
-    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh. Nếu việc
-    mở sau đó thất bại, app báo "Could not open …" trong status bar của
-    cửa sổ dùng gần nhất, vì `luc` đã thoát (app biết nhờ kết nối socket
-    đã đóng); `luc` còn đợi thì lỗi chỉ in ra terminal (M1-3).
-  - `luc` không đối số chạy trong `/` khi app đang chạy: gửi yêu cầu
-    `activate` (trường `"activate":true`, `paths` rỗng). App không mở `/`
-    mà ra trước như khi bấm icon Dock (M9).
-  - Thư mục chứa socket được tạo với quyền 0700, socket 0600; app chỉ nhận
-    yêu cầu từ cùng user (kiểm tra uid của đầu kia). Đường dẫn dự phòng khi
-    quá dài là thư mục riêng của user (`$TMPDIR` trên macOS,
-    `$XDG_RUNTIME_DIR` hoặc `lucerna-<uid>` nơi khác), không dùng `/tmp`
-    chung.
-  - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, khởi động
-    app tách khỏi terminal như M18 nhưng không có socket (không gửi yêu cầu),
-    rồi thoát mã 0; không chặn người dùng. `--foreground`/`--trace-startup`
-    thì chạy app tại chỗ, không có socket (M1-4).
-- **Tách khỏi terminal** (M18). Khi `luc` (không có `--foreground`) phải
-  thành app, nó không chạy app trong tiến trình này mà khởi động một tiến
-  trình app tách rời rồi gửi yêu cầu cho nó như client:
-  1. Nhả socket vừa giành (để tiến trình app giành).
-  2. Khởi động app: chạy chính binary với cờ ẩn `--detached-child`
-     (thay cho `--foreground`; tiến trình con gặp app khác đã giữ socket thì
-     chuyển yêu cầu cho nó, M1-1, còn không thì chạy app tại chỗ), `setsid`
-     (phiên mới, không còn terminal điều khiển), stdin/stdout/stderr về
-     `/dev/null` (log vẫn ghi file như nay), `cwd` giữ nguyên. Không dùng
-     `open -a`: nó chỉ có với bản đóng gói và dễ mở nhầm bản cài khác cùng
-     bundle ID; binary trong `Contents/MacOS` chạy trực tiếp vẫn hiện đúng
-     một icon của bundle.
-  3. Gửi yêu cầu qua socket, thử lại nối trong tối đa 10 s (app đang khởi
-     động), rồi đợi trả lời thêm tối đa 10 s (app giành socket trước cửa sổ
-     đầu, nên trả lời đợi cả lúc khởi động); nhận trả lời thì thoát mã 0.
-     Hết 10 s mà không nối được thì in lỗi, thoát mã 1 (app có thể vẫn đang
-     mở). Nối được mà hết thời gian trả lời thì in thông báo "busy" như trên
-     và thoát mã 0.
-  Đường dẫn được resolve ở client như nay, nên lỗi "path not found" vẫn
-  in ra terminal trước khi khởi động gì cả. Mở từ Finder/Dock (`cwd` là `/`,
-  không có đối số) thì đã không có terminal: chạy app tại chỗ như nay.
-- **`--foreground`** (ẩn khỏi `--help`): giành socket và chạy app trong
-  tiến trình này như hành vi hiện nay. `bench/compare` và
-  `scripts/` khởi chạy `luc` để đo thì thêm cờ này (pidfile vẫn đúng
-  tiến trình app). `--trace-startup` cũng chạy app tại chỗ như
-  `--foreground`. Cả hai chỉ giành socket, không bao giờ chuyển request:
-  socket đã bị giữ thì thoát mã 1 và in "Lucerna is already running; quit it
-  to measure startup." (`--trace-startup`) hoặc "Lucerna is already running;
-  quit it to run in the foreground." (`--foreground`) (M1-6).
-- **Phía app:** mỗi kết nối: đọc một dòng ở luồng nền, gửi vào kênh của
-  router trên luồng chính, trả lời sau khi `open` xong. Thoát app thì xoá
-  file socket.
-- **Môi trường:** yêu cầu không chở biến môi trường của shell gọi `luc`.
-  Language server và terminal vẫn lấy môi trường từ login shell như nay
-  (`lucerna_lsp::env::login_shell_env`). Chở env theo cửa sổ (như Zed, VS
-  Code) để sau 0.1; giao thức có `version` nên thêm trường được.
-- **Giao thức** (một dòng JSON mỗi chiều, có `version`). Client giữ kết nối mở, không đóng nửa ghi, đến khi trả lời tới; đóng kết nối nghĩa là "thôi đợi" và không nhận trả lời:
+- **Socket path:** `<data dir>/luc.sock`, `luc-dev.sock` under
+  `debug_assertions`; the name has no version, so every version of the same
+  build channel shares one socket. macOS `sun_path` is limited to 104 bytes:
+  if longer, use `$TMPDIR/lucerna-<hash of data dir>.sock`.
+- **Claiming the socket** (`crates/lucerna/src/main.rs`, right after parsing
+  arguments, before `app::run`; `luc ext …` and `luc lsp …` do not touch
+  the socket):
+  - If `bind` succeeds: this process is the app. The listener is passed into
+    `app::run`; the app accepts connections on a background thread right
+    from the start, and any request arriving during startup or restore is
+    queued (M14).
+  - `EADDRINUSE`: try `connect` (timeout 1 s). If it connects, act as a
+    client: send one JSON line, wait for one reply line (timeout 5 s), print
+    the error if any, exit. `ECONNREFUSED` (a socket file left over after a
+    crash) means delete the file and `bind` again once.
+  - The connection is closed or errors before a reply arrives (EOF, reset):
+    claim the socket again once. This is usually because another `luc` held
+    the socket for a moment and then released it to the app it started. The
+    second claim connects to that app, or binds itself when there is no app.
+    Step 3 below also reconnects once like this.
+  - An app that is quitting replies
+    `{"ok":false,"error":"Lucerna is quitting","status":"quitting"}` (it
+    still holds the socket for a while). `luc` re-claims the socket every
+    100 ms, up to 5 s, then sends to the new app or starts the app itself;
+    past the deadline it prints an error and exits with code 1 (M1-2).
+  - The reply wait times out but the request has been sent (the app is busy,
+    for example restoring windows): print "Lucerna is busy; the path will
+    open when it is ready" and exit with code 0, because the app still opens
+    the path when it is free. If opening then fails, the app reports "Could
+    not open …" in the status bar of the most recently used window, since
+    `luc` has already exited (the app knows because the socket connection is
+    closed); if `luc` is still waiting, the error is only printed to the
+    terminal (M1-3).
+  - `luc` with no arguments, run in `/` while the app is running: send an
+    `activate` request (field `"activate":true`, empty `paths`). The app does
+    not open `/` but comes to the front as when the Dock icon is clicked
+    (M9).
+  - The folder holding the socket is created with mode 0700, the socket
+    0600; the app accepts requests only from the same user (checking the
+    peer's uid). The fallback path when too long is in the user's own folder
+    (`$TMPDIR` on macOS, `$XDG_RUNTIME_DIR` or `lucerna-<uid>` elsewhere),
+    not the shared `/tmp`.
+  - Other errors (cannot create the data folder, permissions): print a
+    warning, start the app detached from the terminal as in M18 but without
+    a socket (no request sent), then exit with code 0; do not block the
+    user. `--foreground`/`--trace-startup` run the app in place, with no
+    socket (M1-4).
+- **Detaching from the terminal** (M18). When `luc` (without `--foreground`)
+  has to become the app, it does not run the app in this process but starts
+  a detached app process and then sends the request to it as a client:
+  1. Release the socket just claimed (so the app process can claim it).
+  2. Start the app: run the same binary with the hidden flag
+     `--detached-child` (replacing `--foreground`; if the child finds
+     another app already holding the socket it forwards the request to it,
+     M1-1, otherwise it runs the app in place), `setsid` (a new session, no
+     controlling terminal), stdin/stdout/stderr to `/dev/null` (logs are
+     still written to a file as today), `cwd` unchanged. Do not use
+     `open -a`: it exists only for the packaged build and easily opens the
+     wrong installed copy with the same bundle ID; running the binary in
+     `Contents/MacOS` directly still shows exactly one bundle icon.
+  3. Send the request over the socket, retrying the connect for up to 10 s
+     (the app is starting up), then wait for the reply for up to 10 s more
+     (the app claims the socket before the first window, so the reply waits
+     through startup too); once the reply arrives, exit with code 0. If it
+     cannot connect within 10 s, print an error and exit with code 1 (the
+     app may still be opening). If it connects but the reply times out,
+     print the "busy" message as above and exit with code 0.
+  The path is resolved in the client as today, so a "path not found" error
+  is still printed to the terminal before anything is started. Opened from
+  Finder/Dock (`cwd` is `/`, no arguments) there is already no terminal: run
+  the app in place as today.
+- **`--foreground`** (hidden from `--help`): claim the socket and run the
+  app in this process as the current behavior does. `bench/compare` and
+  `scripts/` that launch `luc` to measure add this flag (the pidfile is still
+  the app process). `--trace-startup` also runs the app in place like
+  `--foreground`. Both only claim the socket, never forward the request: if
+  the socket is already held they exit with code 1 and print "Lucerna is
+  already running; quit it to measure startup." (`--trace-startup`) or
+  "Lucerna is already running; quit it to run in the foreground."
+  (`--foreground`) (M1-6).
+- **App side:** for each connection: read one line on a background thread,
+  send it into the router's channel on the main thread, reply after `open`
+  finishes. When the app quits, delete the socket file.
+- **Environment:** requests do not carry the environment variables of the
+  shell that invoked `luc`. Language servers and terminals still take their
+  environment from the login shell as today
+  (`lucerna_lsp::env::login_shell_env`). Carrying the environment per window
+  (as Zed and VS Code do) is left until after 0.1; the protocol has a
+  `version` so a field can be added.
+- **Protocol** (one JSON line in each direction, with `version`). The client
+  keeps the connection open, without closing the write half, until the reply
+  arrives; closing the connection means "stop waiting" and receives no
+  reply:
 
   ```json
   {"version":1,"cwd":"/abs/dir","paths":["/abs/a"],"new_window":false}
@@ -382,21 +423,23 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   {"ok":false,"error":"Lucerna is quitting","status":"quitting"}
   ```
 
-  `paths` rỗng (`luc` không đối số) nghĩa là thư mục `cwd`, như nay.
-  `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. `activate`
-  mặc định `false` (thêm sau, không tăng `version`). `status` trong trả lời
-  cũng thêm sau, không tăng `version`; `luc` cũ bỏ qua nó và in `error`. Trường lạ
-  bị bỏ qua; `version` lớn hơn thì trả lỗi "Lucerna was updated. Quit Lucerna and open it again."
-- **Bench:** `bench/compare` đặt `HOME` riêng nên data dir và socket riêng,
-  vẫn chạy tiến trình riêng như nay. Thêm một kiểm tra trong `editors.py` để
-  chắc điều đó (§8.4).
-- Bản đóng gói mở từ Finder/Dock: macOS chỉ cho một instance mỗi bundle, nên
-  đường này vẫn đi qua `on_open_urls`; app vẫn bind socket để `luc` trong
-  terminal tìm thấy nó.
+  Empty `paths` (`luc` with no arguments) means the `cwd` folder, as today.
+  `new_window` is reserved for `-n` after 0.1; 0.1 always sends `false`.
+  `activate` defaults to `false` (added later, no `version` bump). `status`
+  in the reply is also added later, with no `version` bump; an old `luc`
+  ignores it and prints `error`. Unknown fields are ignored; a larger
+  `version` gets the error "Lucerna was updated. Quit Lucerna and open it
+  again."
+- **Bench:** `bench/compare` sets its own `HOME` so it has its own data dir
+  and socket, and still runs its own process as today. Add a check in
+  `editors.py` to be sure of that (§8.4).
+- A packaged build opened from Finder/Dock: macOS allows only one instance
+  per bundle, so this path still goes through `on_open_urls`; the app still
+  binds the socket so `luc` in a terminal can find it.
 
-### 6.6 Thoát, đóng cửa sổ cuối, mở lại cửa sổ
+### 6.6 Quitting, closing the last window, reopening windows
 
-**Danh sách cửa sổ** `<data dir>/windows.json`:
+**The window list** `<data dir>/windows.json`:
 
 ```json
 { "version": 1,
@@ -404,229 +447,251 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
                { "kind": "file", "path": "/abs/x.rs" } ] }
 ```
 
-- Thứ tự: dùng gần nhất trước. Chỉ ghi cửa sổ workbench; Welcome và Get
-  Started không ghi.
-- Ghi (luồng nền, ghi nguyên tử như `recent.json`) mỗi khi mở, đóng, đổi
-  root hay đổi thứ tự dùng gần nhất của cửa sổ; và một lần đồng bộ trong
-  Quit trước `cx.quit()`. Ghi liên tục để sau crash vẫn mở lại được.
-- Đóng cửa sổ (không phải thoát) thì bỏ nó khỏi danh sách, như Zed và VS
-  Code. Đóng cửa sổ cuối rồi thoát thì danh sách rỗng.
+- Order: most recently used first. Only workbench windows are written;
+  Welcome and Get Started are not.
+- Written (on a background thread, atomically like `recent.json`) whenever a
+  window is opened, closed, changes root, or changes its recency order; and
+  once synchronously in Quit before `cx.quit()`. Writing continuously means
+  that even after a crash the windows can still be reopened.
+- Closing a window (not quitting) removes it from the list, as Zed and VS
+  Code do. Closing the last window and then quitting leaves the list empty.
 
-**Thoát** (M11): `workbench::quit` giữ thuật toán, thêm: sắp cửa sổ theo
-`last_active` giảm dần; sau khi mọi cửa sổ đồng ý thì ghi `windows.json`
-đồng bộ, rồi `cx.quit()`. Thoát do hệ thống (logout) chỉ chạy
-`on_app_quit`: lúc đó không hỏi được, chỉ lưu layout như nay; danh sách cửa
-sổ đã đúng vì được ghi liên tục.
+**Quit** (M11): `workbench::quit` keeps its algorithm, adding: sort windows
+by `last_active` descending; after every window agrees, write `windows.json`
+synchronously, then `cx.quit()`. A system-initiated quit (logout) runs only
+`on_app_quit`: then it cannot ask, and only saves the layout as today; the
+window list is already correct because it is written continuously.
 
-**Đóng cửa sổ cuối** (M8, M9): `QuitMode::Default`. Bỏ observer
-`on_window_closed → quit` trong `start()`. Đăng ký `on_reopen` mở Welcome.
-Socket, watcher user, extension service vẫn chạy.
+**Closing the last window** (M8, M9): `QuitMode::Default`. Remove the
+`on_window_closed → quit` observer in `start()`. Register `on_reopen` to
+open Welcome. The socket, the user watcher and the extension service keep
+running.
 
-**Khởi động không có đường dẫn** (`first_screen` mở rộng):
+**Startup with no paths** (`first_screen` extended):
 
-| `window.restoreWindows` | Mở |
+| `window.restoreWindows` | Opens |
 |---|---|
-| `"all"` (mặc định), `"preserve"` | mọi cửa sổ trong `windows.json` còn tồn tại |
-| `"folders"` | chỉ cửa sổ thư mục |
-| `"one"` | cửa sổ đầu danh sách |
-| `"none"` | không mở lại |
+| `"all"` (default), `"preserve"` | every window in `windows.json` that still exists |
+| `"folders"` | only folder windows |
+| `"one"` | the first window in the list |
+| `"none"` | reopens nothing |
 
-- Danh sách rỗng hoặc mọi mục đã mất: với mọi giá trị trừ `"none"`, mở mục
-  mới nhất còn tồn tại trong `recent.json` (hành vi hiện nay). Không có gì
-  thì Get Started (lần đầu), Welcome, hoặc hộp chọn thư mục như nay.
-- Mở theo thứ tự ngược (cũ trước) để cửa sổ dùng gần nhất nằm trên cùng,
-  như Zed.
-- Không có `windows.json` (lần đầu chạy bản mới): như danh sách rỗng.
+- An empty list or every entry gone: for every value except `"none"`, open
+  the newest entry in `recent.json` that still exists (the current
+  behavior). If there is nothing, Get Started (first time), Welcome, or the
+  folder chooser box as today.
+- Open in reverse order (oldest first) so the most recently used window ends
+  up on top, as in Zed.
+- No `windows.json` (first run of the new build): the same as an empty list.
 
-**Khởi động có đường dẫn** (`luc <path>` khi chưa có app): `"preserve"` mở
-lại mọi cửa sổ rồi mở thêm đường dẫn; các giá trị khác chỉ mở đường dẫn,
-như VS Code.
+**Startup with paths** (`luc <path>` when there is no app yet):
+`"preserve"` reopens every window and then opens the extra path; the other
+values open only the path, as VS Code does.
 
-**Hàng đợi** (M14): router có cờ `restoring`. Trong lúc đó yêu cầu từ
-socket và `on_open_urls` xếp hàng; restore xong thì xử lý lần lượt qua
-`open` (quy tắc 1 tránh mở trùng). Thời gian chờ ban đầu
-`OPEN_REQUEST_GRACE` cho "Open With" giữ nguyên.
+**Queue** (M14): the router has a `restoring` flag. During it, requests
+from the socket and `on_open_urls` are queued; when restore finishes they
+are handled one by one through `open` (rule 1 avoids opening duplicates).
+The initial wait `OPEN_REQUEST_GRACE` for "Open With" is unchanged.
 
 ### 6.7 Trust, terminal, language server, workspace state
 
-- **Trust:** `TrustStore` vẫn là file chung, mỗi cửa sổ đánh giá theo gốc
-  của nó (đã như vậy). Thêm sự kiện app-level "trust đổi": cửa sổ nào ghi
-  `trusted.json` thì phát; mọi workbench đọc lại trust của gốc mình (luồng
-  nền) và bật language server nếu giờ đã tin.
-- **Language server:** mỗi `Workbench` có `LanguageServers` riêng như nay;
-  hai cửa sổ cùng ngôn ngữ chạy hai server. `QuitShutdown` đã gom mọi
-  cửa sổ. Đọc `lsp` và `lucerna.lsp.enabled` qua `WindowSettings` của cửa
-  sổ (`get_trusted` cho phần chạy được code).
-- **Terminal:** `TerminalPanel` theo cửa sổ như nay; settings
-  `terminal.integrated.*` đọc qua `WindowSettings`. `DefaultTerminalSpawner`
-  và `SystemShellGlobal` không giữ trạng thái cửa sổ, giữ global.
-- **Workspace state:** khóa theo gốc như nay. M4 bảo đảm mỗi gốc tối đa một
-  cửa sổ, nên không ghi đè nhau.
-- **`status_message`:** `StatusMessage` giữ map `WindowId → (text,
-  generation)`. `show(window_id, text, cx)`; caller trong workbench truyền
-  cửa sổ của nó; router truyền cửa sổ đích.
+- **Trust:** `TrustStore` is still a shared file, and each window evaluates
+  against its own root (already the case). Add an app-level "trust changed"
+  event: whichever window writes `trusted.json` emits it; every workbench
+  re-reads the trust of its root (on a background thread) and starts the
+  language server if it is now trusted.
+- **Language server:** each `Workbench` has its own `LanguageServers` as
+  today; two windows with the same language run two servers.
+  `QuitShutdown` already covers every window. Read `lsp` and
+  `lucerna.lsp.enabled` through the window's `WindowSettings`
+  (`get_trusted` for the code-running parts).
+- **Terminal:** `TerminalPanel` is per window as today; the
+  `terminal.integrated.*` settings are read through `WindowSettings`.
+  `DefaultTerminalSpawner` and `SystemShellGlobal` hold no window state and
+  stay global.
+- **Workspace state:** keyed by root as today. M4 guarantees at most one
+  window per root, so they do not overwrite each other.
+- **`status_message`:** `StatusMessage` holds a map `WindowId → (text,
+  generation)`. `show(window_id, text, cx)`; callers in the workbench pass
+  their own window; the router passes the target window.
 - **Recent, `RecentStore`, `ExtensionService`, theme, icon, keymap:** global
-  như nay.
-- **Menu bar:** `app_menu::refresh` đã dựa trên cửa sổ active; khi không có
-  cửa sổ, các mục cần workbench bị tắt, các mục M10 vẫn bật.
+  as today.
+- **Menu bar:** `app_menu::refresh` is already based on the active window;
+  when there is no window, items that need a workbench are disabled and the
+  M10 items stay enabled.
 
-### 6.8 Crash
+### 6.8 Crashes
 
-GPUI không cô lập panic theo cửa sổ: panic trên luồng chính trong callback
-AppKit không unwind được qua FFI và làm sập cả app. Đây là đánh đổi chính
-của mô hình một tiến trình. Giảm rủi ro:
+GPUI does not isolate panics per window: a panic on the main thread inside
+an AppKit callback cannot unwind across FFI and brings down the whole app.
+This is the main trade-off of the single-process model. Risk reduction:
 
-- `windows.json` và layout từng cửa sổ được ghi liên tục, nên lần khởi động
-  sau mở lại đủ cửa sổ.
-- Việc nặng (quét file, git, language server, tìm kiếm) chạy ở luồng nền;
-  panic ở đó được bắt (`tasks::spawn_guarded` đã có) và chỉ ghi log.
-- `luc` không nối được socket thì tự chạy app, nên app cũ sập không chặn
-  người dùng.
-- Panic hook hiện có ghi log; giữ nguyên.
+- `windows.json` and each window's layout are written continuously, so the
+  next startup reopens all the windows.
+- Heavy work (file scanning, git, language server, search) runs on
+  background threads; a panic there is caught (`tasks::spawn_guarded`
+  already exists) and only logged.
+- If `luc` cannot connect to the socket it runs the app itself, so a crashed
+  old app does not block the user.
+- The existing panic hook writes a log; unchanged.
 
-## 7. Hiệu năng
+## 7. Performance
 
-### 7.1 Đo
+### 7.1 Measuring
 
-Trên bản release, dùng `bench/compare` (`footprint` cho RAM), trước khi
-chuyển (commit gốc của nhánh) và sau:
+On a release build, using `bench/compare` (`footprint` for RAM), before the
+change (the branch's base commit) and after:
 
-1. RAM tổng (footprint của tiến trình và con) khi mở 1, 2, 3 cửa sổ trên
-   cùng một bộ repo. Bản cũ: cộng các tiến trình.
-2. Thời gian mở cửa sổ thứ hai: từ lúc gửi yêu cầu (`luc <path>` thứ hai)
-   tới khung hình đầu của cửa sổ mới.
-3. Khung hình rớt ở cửa sổ A (đang cuộn) khi cửa sổ B quét một repo lớn
-   (mở thư mục mới) và khi language server của B đang index.
+1. Total RAM (footprint of the process and its children) with 1, 2, 3
+   windows open on the same set of repos. For the old build: sum the
+   processes.
+2. Time to open the second window: from sending the request (the second
+   `luc <path>`) to the new window's first frame.
+3. Frames dropped in window A (scrolling) while window B scans a large repo
+   (opens a new folder) and while B's language server is indexing.
 
-Script đo nằm trong `bench/compare` (thêm kịch bản nhiều cửa sổ); kết quả
-ghi vào `docs/benchmarks.md`.
+The measurement script lives in `bench/compare` (add a multi-window
+scenario); results are recorded in `docs/benchmarks.md`.
 
-### 7.2 Ngưỡng chấp nhận
+### 7.2 Acceptance thresholds
 
-Mốc so sánh là số đo ở bước 1 (§9) trên commit gốc của nhánh, cùng máy,
-cùng bộ repo. Số khởi động đã công bố trước đây đã bị rút lại (commit
-`58540ca`), nên không dùng làm mốc.
+The baseline is the measurement from step 1 (§9) on the branch's base
+commit, same machine, same set of repos. The startup numbers published
+earlier were retracted (commit `58540ca`), so they are not used as the
+baseline.
 
-- Một cửa sổ: thời gian khởi động và RAM không tệ hơn mốc (trong sai số đo
-  của `bench/compare`).
-- Cửa sổ thứ hai mở nhanh hơn bản cũ (không phải khởi động tiến trình).
-- RAM 2–3 cửa sổ: không cao hơn tổng của bản cũ quá 10 %, và 3 cửa sổ phải
-  thấp hơn tổng của bản cũ. *(Sửa 2026-11-16 theo quyết định của người dùng;
-  bản đầu là "thấp hơn tổng của bản cũ". Bộ đệm vẽ `IOSurface` của mỗi cửa
-  sổ chiếm phần lớn RAM và dao động khoảng 20 MB khi app đứng yên, nên năm
-  vòng đo không tách được mức tiết kiệm vài MB của việc gộp tiến trình.)*
-- Cửa sổ A không rớt khung hình nào nhiều hơn khi B đứng yên, trong sai số.
-- Mọi việc nặng của một cửa sổ chạy ở luồng nền.
+- One window: startup time and RAM are no worse than the baseline (within
+  `bench/compare`'s measurement error).
+- The second window opens faster than the old build (no process startup).
+- RAM with 2–3 windows: not more than 10 % above the old build's total, and
+  with 3 windows it must be below the old build's total. *(Amended
+  2026-11-16 by the user's decision; the first version said "lower than the
+  old build's total". Each window's `IOSurface` paint buffer takes most of
+  the RAM and fluctuates by about 20 MB when the app is idle, so five
+  measurement rounds could not separate the savings of a few MB from merging
+  the processes.)*
+- Window A drops no more frames than when B is idle, within error.
+- All of a window's heavy work runs on background threads.
 
-Không đạt ngưỡng thì không coi là xong.
+If the thresholds are not met it is not considered done.
 
-## 8. Test
+## 8. Tests
 
-### 8.1 Đơn vị
+### 8.1 Unit
 
-- `lucerna-settings`: `get_in` với và không có lớp workspace; khóa
-  `[lang]`; gộp object; `get_trusted` bỏ workspace.
-- Quy tắc chọn cửa sổ của `open` (hàm thuần trên danh sách cửa sổ giả):
-  focus gốc trùng, gốc sâu nhất, cửa sổ dùng gần nhất, tái dùng Welcome,
-  cửa sổ mới.
-- `windows.json`: đọc, ghi, file hỏng, phiên bản lạ; lọc theo từng giá trị
-  `window.restoreWindows`; fallback `recent.json`.
-- Giao thức socket: parse, phiên bản, đường dẫn dài quá 104 byte.
+- `lucerna-settings`: `get_in` with and without a workspace layer; the
+  `[lang]` key; object merging; `get_trusted` dropping the workspace.
+- The window-selection rules of `open` (a pure function over a fake window
+  list): focus on an identical root, the deepest root, the most recently
+  used window, reusing Welcome, a new window.
+- `windows.json`: read, write, corrupt file, unknown version; filtering for
+  each `window.restoreWindows` value; the `recent.json` fallback.
+- The socket protocol: parsing, version, a path longer than 104 bytes.
 
-### 8.2 GPUI nhiều cửa sổ (`tests/multi_window.rs`)
+### 8.2 GPUI multi-window (`tests/multi_window.rs`)
 
-Dùng `TestAppContext`, `cx.windows()`, `simulate_close`,
+Use `TestAppContext`, `cx.windows()`, `simulate_close`,
 `simulate_prompt_answer`:
 
-1. Mở hai thư mục → hai cửa sổ workbench trong một app; mở lại thư mục thứ
-   nhất → vẫn hai cửa sổ, cửa sổ một được kích hoạt.
-2. Hai thư mục có `.lucerna/settings.json` khác nhau (`editor.tabSize`) →
-   mỗi cửa sổ đọc giá trị của nó; `Documents` và `CodeView` của mỗi cửa sổ
-   dùng đúng giá trị. Đổi file của cửa sổ A (`WindowSettings::reload`) → B
-   không đổi.
-3. Đổi settings user (`reload_config`) → cả hai cửa sổ thấy.
-4. Khóa phạm vi app trong workspace (`workbench.colorTheme`) bị bỏ qua.
-5. Mở file nằm trong thư mục cửa sổ B khi A active → tab mở ở B.
-6. New Window → thêm một cửa sổ Welcome; chọn thư mục trên Welcome đó →
-   cửa sổ đó đổi root, số cửa sổ không đổi.
-7. Quit với hai cửa sổ có file chưa lưu: trả lời Cancel ở cửa sổ thứ hai →
-   không thoát, cả hai còn; Don't Save cả hai → thoát và `windows.json` có
-   hai cửa sổ theo thứ tự dùng gần nhất.
-8. Đóng một trong hai cửa sổ → `windows.json` còn một; đóng cửa sổ cuối →
-   app không thoát (đã đặt `QuitMode` Explicit trong test).
-9. Restore: `windows.json` có ba mục, một đã bị xoá → mở hai cửa sổ, đúng
-   thứ tự; `"folders"` bỏ mục file; `"one"` mở một.
-10. Yêu cầu mở tới trong lúc restore → xếp hàng, không mở trùng.
-11. Trust ở cửa sổ A (gốc `/t`): chọn "tin cả thư mục cha" → cửa sổ B
-    gốc `/t/sub` chuyển sang tin. Tin `/t` một mình → B vẫn ở Restricted
-    Mode, còn cửa sổ khác có gốc đúng `/t` thì chuyển sang tin.
-12. `status_message` của A không hiện ở B.
-13. Tách settings không rò: mọi workbench cũ được giải phóng khi đóng cửa
-    sổ (như test W8).
+1. Open two folders → two workbench windows in one app; reopen the first
+   folder → still two windows, window one is activated.
+2. Two folders with different `.lucerna/settings.json` (`editor.tabSize`) →
+   each window reads its own value; each window's `Documents` and
+   `CodeView` use the right value. Change window A's file
+   (`WindowSettings::reload`) → B does not change.
+3. Change user settings (`reload_config`) → both windows see it.
+4. An app-scope key in the workspace (`workbench.colorTheme`) is ignored.
+5. Open a file inside window B's folder while A is active → the tab opens in
+   B.
+6. New Window → one more Welcome window; choose a folder on that Welcome →
+   that window changes root, the window count does not change.
+7. Quit with two windows that have unsaved files: answer Cancel in the
+   second window → does not quit, both remain; Don't Save in both → quits
+   and `windows.json` has two windows in most-recently-used order.
+8. Close one of the two windows → `windows.json` has one; close the last
+   window → the app does not quit (`QuitMode` set to Explicit in the test).
+9. Restore: `windows.json` has three entries, one deleted → opens two
+   windows, in the right order; `"folders"` drops the file entry; `"one"`
+   opens one.
+10. An open request arriving during restore → queued, no duplicate opened.
+11. Trust in window A (root `/t`): choose "trust the parent folder" → window
+    B with root `/t/sub` switches to trusted. Trust `/t` alone → B stays in
+    Restricted Mode, while another window whose root is exactly `/t`
+    switches to trusted.
+12. A's `status_message` does not show in B.
+13. The settings split does not leak: every old workbench is freed when its
+    window closes (like the W8 test).
 
-### 8.3 Kiến trúc
+### 8.3 Architecture
 
-Một test quét mã nguồn `lucerna-workbench/src` (như các test kiến trúc
-khác nếu có; không thì thêm): không còn `process::spawn`, không đọc khóa
-phạm vi cửa sổ qua `cx.global::<AppState>().settings` ngoài các file được
-phép (`config_files.rs`, `app.rs`, `startup.rs`, `extensions/service.rs`,
+A test that scans the source of `lucerna-workbench/src` (like the other
+architecture tests if there are any; otherwise add it): there is no
+`process::spawn` left, and no window-scope key is read through
+`cx.global::<AppState>().settings` outside the allowed files
+(`config_files.rs`, `app.rs`, `startup.rs`, `extensions/service.rs`,
 `theme_picker.rs`).
 
-### 8.4 Tích hợp `luc`
+### 8.4 `luc` integration
 
-- Đơn vị (không cần màn hình): quyết định giành socket (bind được →
-  app; `EADDRINUSE` + nối được → client; `ECONNREFUSED` → xoá rồi bind
-  lại) trên socket tạm; client gửi/nhận một dòng với một server giả.
-- Tích hợp (process thật, `HOME` tạm, `#[ignore]` vì cần màn hình; chạy tay
-  trên macOS trước khi xong): `luc <dir>` trả dấu nhắc trong < 10 s và để
-  lại đúng một tiến trình app; `luc <dir2>` lần hai thoát mã 0, không thêm
-  tiến trình; `luc <không tồn tại>` thoát mã 1 và in lỗi; `luc
-  --foreground <dir>` chạy app trong tiến trình gọi.
+- Unit (no display needed): the socket-claim decision (can bind → app;
+  `EADDRINUSE` + can connect → client; `ECONNREFUSED` → delete then bind
+  again) on a temporary socket; the client sends/receives one line against a
+  fake server.
+- Integration (a real process, temporary `HOME`, `#[ignore]` because it needs
+  a display; run by hand on macOS before finishing): `luc <dir>` returns the
+  prompt in < 10 s and leaves exactly one app process; a second `luc <dir2>`
+  exits with code 0, adding no process; `luc <nonexistent>` exits with code 1
+  and prints an error; `luc --foreground <dir>` runs the app in the calling
+  process.
 
-## 9. Các bước (khung cho plan)
+## 9. Steps (skeleton for the plan)
 
-Mỗi bước build và test được riêng:
+Each step builds and tests on its own:
 
-1. **Đo trước** trên `main`: kịch bản nhiều cửa sổ trong `bench/compare`,
-   ghi số.
-2. **`WorkspaceLayer` và `get_in`** trong `lucerna-settings`.
-3. **`WindowSettings`** và tách `ConfigState`: workspace layer ra khỏi
-   global; workbench tạo entity; vẫn một cửa sổ mỗi tiến trình. Truyền
-   handle theo từng module (có thể chia nhiều task: documents/code view,
-   language servers, terminal, explorer/editor groups/search, còn lại).
-4. **Router nhiều cửa sổ** và `open()`; bỏ `process.rs`; New Window;
-   `status_message` theo cửa sổ.
-5. **Thoát, đóng cửa sổ cuối, `on_reopen`, action cấp app.**
-6. **`windows.json` và `window.restoreWindows: "all"`**, hàng đợi khi
+1. **Measure first** on `main`: a multi-window scenario in `bench/compare`,
+   record the numbers.
+2. **`WorkspaceLayer` and `get_in`** in `lucerna-settings`.
+3. **`WindowSettings`** and splitting `ConfigState`: the workspace layer out
+   of the global; the workbench creates the entity; still one window per
+   process. Pass the handle module by module (can be split into several
+   tasks: documents/code view, language servers, terminal, explorer/editor
+   groups/search, the rest).
+4. **The multi-window router** and `open()`; remove `process.rs`; New
+   Window; per-window `status_message`.
+5. **Quit, closing the last window, `on_reopen`, app-level actions.**
+6. **`windows.json` and `window.restoreWindows: "all"`**, the queue during
    restore.
-7. **Socket cho `luc`, tách khỏi terminal, `--foreground`;** cập nhật
-   `bench/compare` và shim trong `scripts/bundle-app.sh` (comment).
-8. **Trust đồng bộ giữa cửa sổ.**
-9. **Đo sau**, so ngưỡng, cập nhật `docs/benchmarks.md`; cập nhật spec
-   Welcome (W1, W8 ghi chú "thay bởi spec này"), spec restore last
-   workspace, README nếu có nhắc nhiều tiến trình.
+7. **The socket for `luc`, detaching from the terminal, `--foreground`;**
+   update `bench/compare` and the shim in `scripts/bundle-app.sh` (comment).
+8. **Trust synchronized between windows.**
+9. **Measure after**, compare against the thresholds, update
+   `docs/benchmarks.md`; update the Welcome spec (W1, W8 note "replaced by
+   this spec"), the restore-last-workspace spec, and the README if it
+   mentions multiple processes.
 
-## 10. Rủi ro và giới hạn đã biết
+## 10. Risks and known limits
 
-- Một panic làm sập mọi cửa sổ (§6.8).
-- Sửa ~90 chỗ đọc settings và ~40 file test: rủi ro lớn nhất là bỏ sót một
-  chỗ đọc nhầm global. Test kiến trúc (§8.3) và test 2 (§8.2) để bắt.
-- Thay `QuitMode` đổi hành vi: macOS không còn thoát khi đóng cửa sổ cuối.
-  Bench nào dựa vào việc đóng cửa sổ để kết thúc tiến trình phải kill thay
-  vì đóng cửa sổ (kiểm tra `bench/compare`).
-- Bản cũ (nhiều tiến trình) và bản mới cùng chạy trong lúc nâng cấp: app
-  0.1.0 dùng `luc-0.1.0.sock`, nên lần cập nhật đầu tiên lên bản không
-  version vẫn có thể có hai tiến trình (một lần); từ đó về sau không còn.
-- `"preserve"` chỉ khác `"all"` khi khởi động có đường dẫn.
-- Trường hợp hẹp: app nhận một yêu cầu ngay trước khi các hook thoát chạy,
-  rồi luồng chính bị chặn hơn 5 giây khi tắt language server. `luc` in
-  "will open when ready" và thoát mã 0, nhưng app thoát mà không mở đường
-  dẫn. Giới hạn chấp nhận.
+- One panic brings down every window (§6.8).
+- Editing ~90 settings reads and ~40 test files: the biggest risk is
+  missing a place that wrongly reads the global. The architecture test
+  (§8.3) and test 2 (§8.2) are there to catch it.
+- Replacing `QuitMode` changes behavior: macOS no longer quits when the last
+  window closes. Any bench that relies on closing the window to end the
+  process must kill instead of closing the window (check `bench/compare`).
+- The old build (many processes) and the new build running together during
+  an upgrade: app 0.1.0 uses `luc-0.1.0.sock`, so the first update to the
+  versionless build can still have two processes (once); after that, no
+  more.
+- `"preserve"` differs from `"all"` only for startup with paths.
+- A narrow case: the app receives a request just before the quit hooks run,
+  and then the main thread is blocked for more than 5 seconds shutting down
+  language servers. `luc` prints "will open when ready" and exits with code
+  0, but the app quits without opening the path. An accepted limit.
 
-## 11. Để lại cho người viết plan
+## 11. Left to the plan writer
 
-- Tên module mới (`window_settings.rs`, `windows_file.rs`, `cli_socket.rs`
-  …) và cách chia task ở bước 3.
-- Cách `Documents` lấy registry ngôn ngữ của cửa sổ (§6.1.3).
-- Chi tiết UI của mục "New Window" trong menu File và Dock menu
-  (`set_dock_menu`, có thể thêm "New Window" như Zed).
+- Names of new modules (`window_settings.rs`, `windows_file.rs`,
+  `cli_socket.rs` …) and how to split the tasks in step 3.
+- How `Documents` gets the window's language registry (§6.1.3).
+- UI details of the "New Window" item in the File menu and the Dock menu
+  (`set_dock_menu`, possibly adding "New Window" as Zed does).

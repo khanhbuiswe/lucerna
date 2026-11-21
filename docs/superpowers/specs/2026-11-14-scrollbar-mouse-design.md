@@ -1,92 +1,92 @@
-# Thanh cuộn dùng chuột
+# Mouse-operated scrollbar
 
-## Mục đích
+## Purpose
 
-Hiện thanh cuộn của Lucerna chỉ để hiển thị. Thumb trong editor (`code_view/element.rs`) và trong Explorer (`ScrollbarThumb` trong `explorer/view.rs`) được vẽ ra, nhưng không có code nào xử lý chuột trên đó. Người đọc file dài muốn kéo thumb để cuộn nhanh, hoặc bấm vào rãnh để nhảy tới một chỗ trong file, như cách họ vẫn làm trong VS Code.
+Today Lucerna's scrollbar is display-only. The thumb in the editor (`code_view/element.rs`) and in the Explorer (`ScrollbarThumb` in `explorer/view.rs`) is drawn, but no code handles the mouse on it. People reading a long file want to drag the thumb to scroll quickly, or click the track to jump to a spot in the file, the way they do in VS Code.
 
-## Mục tiêu
+## Goals
 
-- **Kéo thumb để cuộn.** Chỗ nắm trên thumb luôn nằm dưới con trỏ.
-- **Bấm vào rãnh** (vùng ngoài thumb) thì nhảy tới chỗ bấm, thumb căn giữa vào điểm bấm. Giữ chuột sau cú bấm thì kéo tiếp được.
-- **Setting `editor.scrollbar.scrollByPage`** (bool, mặc định `false`), giống VS Code. Khi bật, bấm rãnh trong editor sẽ lật một trang lên hoặc xuống thay vì nhảy. Setting chỉ áp dụng cho editor.
-- **Thumb đổi màu** khi rê chuột lên và khi đang kéo. Kích thước không đổi.
-- **Vùng nhận chuột rộng 12 px** ở mép phải, thumb vẫn vẽ 6 px sát mép.
-- **Đúng khi có dòng bị gập:** thumb của editor tính theo dòng hiển thị (mỗi dòng buffer chưa bị gập là một đơn vị, như hiện nay). Kéo tới vị trí nào thì ra đúng dòng hiển thị ở vị trí đó.
-- **Một component dùng chung** cho editor và Explorer, đặt trong `ui.rs`. Các danh sách sau này dùng lại được.
+- **Drag the thumb to scroll.** The grab point on the thumb always stays under the pointer.
+- **Click the track** (the area outside the thumb) to jump to the clicked spot, with the thumb centered on the click point. Holding the mouse after the click keeps dragging.
+- **The `editor.scrollbar.scrollByPage` setting** (bool, default `false`), as in VS Code. When on, clicking the track in the editor pages up or down instead of jumping. The setting applies only to the editor.
+- **The thumb changes color** on hover and while being dragged. Its size does not change.
+- **A 12 px mouse hit area** at the right edge, while the thumb is still drawn 6 px wide against the edge.
+- **Correct with folded lines:** the editor's thumb is computed over display lines (each unfolded buffer line is one unit, as today). Dragging to a position lands on exactly the display line at that position.
+- **One shared component** for the editor and the Explorer, placed in `ui.rs`. Later lists can reuse it.
 
-## Không làm
+## Non-goals
 
-- Tự ẩn thanh cuộn hoặc hiệu ứng fade (Zed có, Lucerna chưa có).
-- Thanh cuộn ngang.
-- Đảo hành vi khi giữ Shift (VS Code hiện tại không có).
-- Cuộn về chỗ cũ khi kéo lệch quá 140 px (chỉ VS Code trên Windows có).
-- Thêm thanh cuộn cho các picker. Component phải làm được việc đó về sau, nhưng việc gắn vào picker không nằm trong lần này.
+- Auto-hiding the scrollbar or a fade effect (Zed has it, Lucerna does not yet).
+- A horizontal scrollbar.
+- Inverting the behavior when Shift is held (current VS Code does not have it).
+- Snapping back to the old position when the drag strays more than 140 px (only VS Code on Windows has it).
+- Adding scrollbars to the pickers. The component must be able to do that later, but attaching it to pickers is not part of this change.
 
-## Không được xảy ra
+## Must not happen
 
-- **Kéo bị giật hoặc chậm.** Mỗi lần chuột di chuyển chỉ được đổi vị trí cuộn rồi notify. Không shape lại text, không dựng lại các vạch đánh dấu trên thanh cuộn: cache `scrollbar_marks` không phụ thuộc vào vị trí cuộn.
-- **Bấm vào thanh cuộn lại làm đổi vùng chọn** hoặc di chuyển con trỏ trong editor.
-- **Minimap** hoặc vùng kéo chọn chữ ngừng hoạt động.
+- **Dragging that stutters or lags.** Each mouse move may only change the scroll position and notify. No re-shaping text, no rebuilding the marks on the scrollbar: the `scrollbar_marks` cache does not depend on the scroll position.
+- **Clicking the scrollbar changing the selection** or moving the cursor in the editor.
+- **The minimap** or the drag-to-select area ceasing to work.
 
-## Ràng buộc
+## Constraints
 
-- Chỉ `lucerna-workbench` được dùng gpui.
-- Không chép code từ crate `ui` của Zed (giấy phép GPL), chỉ học hành vi. Xem `docs/research/2026-11-14-scrollbar-mouse.md`.
-- Phải có test GPUI cho kéo thumb và bấm rãnh, gồm cả trường hợp có dòng bị gập.
+- Only `lucerna-workbench` may use gpui.
+- Do not copy code from Zed's `ui` crate (GPL license); learn the behavior only. See `docs/research/2026-11-14-scrollbar-mouse.md`.
+- There must be GPUI tests for thumb dragging and track clicking, including the case with folded lines.
 
-## Các cách đã cân nhắc
+## Approaches considered
 
-- **A. Dùng chung phần tính toán, mỗi nơi tự nối chuột.** Các hàm thuần nằm trong `ui.rs`; editor xử lý chuột trong `register_mouse`, Explorer xử lý trong decoration. Không thêm element nào, nhưng phần nối chuột phải viết hai lần.
-- **B. Một component thanh cuộn chung, đặt chồng lên nội dung (đã chọn).** Một element tự lo hitbox, trạng thái hover và kéo, và việc vẽ thumb, như component `Scrollbar` của Zed. Chỉ có một chỗ chứa code. Đổi lại, editor cần một lớp chuyển đổi giữa pixel và cách cuộn theo dòng của nó, và phải để ý thứ tự hitbox.
+- **A. Share the computation, wire the mouse separately in each place.** The pure functions live in `ui.rs`; the editor handles the mouse in `register_mouse`, the Explorer handles it in a decoration. No new element, but the mouse wiring has to be written twice.
+- **B. One shared scrollbar component, laid over the content (chosen).** One element handles the hitbox, the hover and drag state, and drawing the thumb itself, like Zed's `Scrollbar` component. There is only one place for the code. In exchange, the editor needs a layer converting between pixels and its line-based scrolling, and has to watch the hitbox order.
 
-Người dùng chọn B.
+The user chose B.
 
-## Thiết kế
+## Design
 
-### Component `ui::Scrollbar`
+### The `ui::Scrollbar` component
 
-- **Nguồn cuộn.** Element nhận một nguồn cuộn, là một trait (tạm gọi `ScrollbarSource`) cung cấp:
-  - `metrics()`: trả về `viewport`, `content` và `scroll_top`, cùng đơn vị pixel như các tham số của `thumb_geometry`;
-  - `set_scroll_top(px)`: đặt vị trí cuộn mới, kèm notify view sở hữu.
-- **Trạng thái.** Hover và kéo (gồm chỗ nắm trong thumb) nằm trong một `ScrollbarState` nhỏ, do view sở hữu giữ qua các frame. Cách cụ thể (`Rc<Cell>` hay element state) để người làm quyết.
-- **Vị trí.** Element phủ một dải rộng 12 px ở mép phải vùng nội dung. Hitbox của dải này chặn chuột với các phần nằm dưới, nên editor không nhận cú bấm.
-  - Bấm trúng thumb thì bắt đầu kéo.
-  - Bấm vào rãnh thì nhảy tới chỗ bấm (hoặc lật trang nếu nguồn yêu cầu), rồi kéo tiếp từ giữa thumb.
-  - Khi đang kéo, element nhận mouse move và mouse up ở bất kỳ đâu, cho tới khi nhả nút.
-- **Màu.** Rãnh không vẽ gì. Thumb dùng `scrollbar.thumb.background`, `scrollbar.thumb.hover_background` khi rê chuột, và `scrollbar.thumb.active_background` khi đang kéo.
-  - Hai key mới lấy theo tên key theme của Zed.
-  - Nếu theme không có hai key này thì dùng màu thumb thường tăng độ đậm (người làm chọn mức).
-- **Hàm tính toán.** Các hàm tính "chỗ bấm thành vị trí cuộn" và "khoảng kéo thành vị trí cuộn" là hàm thuần nằm cạnh `thumb_geometry`, có unit test.
+- **Scroll source.** The element takes a scroll source, a trait (provisionally called `ScrollbarSource`) providing:
+  - `metrics()`: returns `viewport`, `content` and `scroll_top`, in the same pixel units as the parameters of `thumb_geometry`;
+  - `set_scroll_top(px)`: sets the new scroll position, and notifies the owning view.
+- **State.** Hover and drag (including the grab point within the thumb) live in a small `ScrollbarState`, held by the owning view across frames. The concrete mechanism (`Rc<Cell>` or element state) is left to the implementer.
+- **Position.** The element covers a 12 px wide strip at the right edge of the content area. This strip's hitbox blocks the mouse from the parts underneath, so the editor does not receive the click.
+  - Clicking on the thumb starts a drag.
+  - Clicking on the track jumps to the clicked spot (or pages if the source requests it), then continues dragging from the middle of the thumb.
+  - While dragging, the element receives mouse move and mouse up anywhere, until the button is released.
+- **Color.** The track draws nothing. The thumb uses `scrollbar.thumb.background`, `scrollbar.thumb.hover_background` on hover, and `scrollbar.thumb.active_background` while dragging.
+  - The two new keys are named after Zed's theme keys.
+  - If a theme lacks these two keys, use the normal thumb color made darker (the implementer picks the amount).
+- **Computation functions.** The functions computing "click spot to scroll position" and "drag distance to scroll position" are pure functions next to `thumb_geometry`, with unit tests.
 
 ### Editor
 
-- **Nguồn cuộn của `CodeView`:**
-  - `content` = (số dòng hiển thị − 1) × chiều cao dòng + viewport;
-  - `scroll_top` = số dòng hiển thị phía trên × chiều cao dòng + `scroll.offset`.
-  - Hai công thức này giữ đúng như code hiện tại.
-- **`set_scroll_top(px)`:** đổi `px` thành dòng hiển thị thứ n, rồi qua `folds` thành dòng buffer làm `top_row`. Phần lẻ được đổi thành `offset` trong dòng đó, có tính số dòng bị wrap. Cuối cùng gọi `report_scroll` và notify.
-- **Thay thế.** Bỏ thumb đang vẽ trong `paint.rs`. Các vạch đánh dấu diagnostic vẫn vẽ như cũ, nằm dưới thumb.
-- **Test.** `CodeView::scrollbar_thumb()` vẫn trả về bounds của thumb để test dùng.
+- **`CodeView`'s scroll source:**
+  - `content` = (number of display lines − 1) × line height + viewport;
+  - `scroll_top` = number of display lines above × line height + `scroll.offset`.
+  - These two formulas stay exactly as in the current code.
+- **`set_scroll_top(px)`:** convert `px` to the nth display line, then through `folds` to a buffer line used as `top_row`. The fractional part becomes the `offset` within that line, taking wrapped lines into account. Finally call `report_scroll` and notify.
+- **Replacement.** Remove the thumb currently drawn in `paint.rs`. The diagnostic marks are still drawn as before, beneath the thumb.
+- **Tests.** `CodeView::scrollbar_thumb()` still returns the thumb's bounds for tests to use.
 
 ### Explorer
 
-- Bỏ decoration `ScrollbarThumb`.
-- Đặt `ui::Scrollbar` chồng lên list. Nguồn cuộn đọc trực tiếp từ `UniformListScrollHandle`:
-  - `offset` và `max_offset` lấy từ `base_handle`;
-  - đặt vị trí cuộn bằng `set_offset`.
-- Nguồn cuộn dựa trên `ScrollHandle` này cũng dùng được cho các `div` có `overflow_y_scroll` về sau.
+- Remove the `ScrollbarThumb` decoration.
+- Lay `ui::Scrollbar` over the list. The scroll source reads directly from `UniformListScrollHandle`:
+  - `offset` and `max_offset` come from `base_handle`;
+  - the scroll position is set with `set_offset`.
+- This `ScrollHandle`-based scroll source can also be used for any `div` with `overflow_y_scroll` later.
 
 ### Settings
 
-- Thêm `editor.scrollbar.scrollByPage` (bool, mặc định `false`), đọc theo cùng cơ chế với các setting `editor.*` hiện có.
+- Add `editor.scrollbar.scrollByPage` (bool, default `false`), read through the same mechanism as the existing `editor.*` settings.
 
-## Phần để người làm quyết
+## Left to the implementer
 
-- Cách giữ `ScrollbarState` qua các frame.
-- Mức tăng độ đậm của màu fallback.
-- Tên chính xác của các kiểu và hàm.
-- Debug selector cho test: giữ `explorer-scrollbar-thumb`, thêm selector cho editor.
+- How to hold `ScrollbarState` across frames.
+- The amount of darkening for the fallback color.
+- The exact names of types and functions.
+- Debug selectors for tests: keep `explorer-scrollbar-thumb`, add a selector for the editor.
 
-## Tham khảo
+## References
 
-Xem `docs/research/2026-11-14-scrollbar-mouse.md`.
+See `docs/research/2026-11-14-scrollbar-mouse.md`.

@@ -1,145 +1,163 @@
-# So hiệu năng Lucerna, Zed và VS Code — thiết kế
+# Lucerna, Zed and VS Code performance comparison — design
 
-Ngày: 2026-11-14. Trạng thái: đã duyệt.
+Date: 2026-11-14. Status: Approved.
 
-## Ý định
+## Intent
 
-Đo Lucerna cạnh Zed và VS Code trên cùng một máy, trong môi trường sạch,
-rồi **công bố công khai** kết quả (README, site). Vì công bố, mọi con số phải
-tái lập được: script, dữ liệu, phiên bản và cấu hình máy đều công khai, và
-cách đo công bằng với cả ba editor.
+Measure Lucerna next to Zed and VS Code on the same machine, in a clean
+environment, then **publish** the results (README, site). Because the
+results are published, every number must be reproducible: the scripts,
+data, versions and machine configuration are all public, and the
+measurement method is fair to all three editors.
 
-Đồng thời kiểm tra các mục tiêu hiệu năng ở §6 của
-`2026-11-08-lucerna-phase1-design.md` trên bản sắp phát hành.
+It also checks the performance targets in §6 of
+`2026-11-08-lucerna-phase1-design.md` on the build about to be released.
 
-## Mục tiêu
+## Goals
 
-- Một bộ công cụ trong `bench/compare/`, chạy bằng một lệnh, ra file kết
-  quả (JSON và bảng Markdown).
-- Mỗi editor chạy với hồ sơ trống riêng, không động tới dữ liệu thật của
-  người dùng.
-- Cùng một cách đo, từ bên ngoài app, cho cả ba editor.
-- Một trang phương pháp (`docs/benchmarks.md`) mô tả đủ để người khác chạy lại.
+- A toolkit in `bench/compare/`, run with one command, producing result
+  files (JSON and a Markdown table).
+- Each editor runs with its own empty profile and never touches the user's
+  real data.
+- The same measurement method, taken from outside the app, for all three
+  editors.
+- A methodology page (`docs/benchmarks.md`) that describes the setup well
+  enough for someone else to rerun it.
 
-## Không làm
+## Non-goals
 
-- Không đo tính năng Lucerna không có (AI, debug, extension host của VS Code).
-- Không dùng số đo bên trong của Lucerna để so với số đo bên ngoài của editor khác.
-- Không tối ưu riêng cho bài đo.
+- Measuring features Lucerna does not have (AI, debugging, the VS Code
+  extension host).
+- Comparing Lucerna's internal measurements with another editor's external
+  measurements.
+- Optimizing specifically for the benchmark.
 
-## Chống mục tiêu
+## Anti-goals
 
-- Một con số không tái lập được, hoặc cấu hình bất lợi cho Zed/VS Code mà
-  không nói rõ.
-- Lời văn chê bai Zed hay VS Code. Theo `CLAUDE.md`: nêu số, trung lập.
+- A number that cannot be reproduced, or a configuration that disadvantages
+  Zed/VS Code without saying so.
+- Wording that disparages Zed or VS Code. Per `CLAUDE.md`: state the
+  numbers, stay neutral.
 
-## Môi trường sạch
+## Clean environment
 
-**Hồ sơ riêng cho từng editor**, trong `<bench>/profiles/`:
+**A separate profile for each editor**, in `<bench>/profiles/`:
 
-| Editor | Cách chạy |
+| Editor | How it runs |
 |---|---|
-| VS Code | `code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext`; settings: tắt telemetry, cập nhật, workspace trust, trang chào, git tự quét giữ mặc định |
-| Zed | `zed --user-data-dir <bench>/profiles/zed` (kiểm tra cờ trên bản đang cài); settings: tắt telemetry, cập nhật, tính năng AI |
+| VS Code | `code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext`; settings: telemetry, updates, workspace trust and the welcome page off, git auto-scan left at the default |
+| Zed | `zed --user-data-dir <bench>/profiles/zed` (check the flag on the installed version); settings: telemetry, updates and AI features off |
 | Lucerna | `HOME=<bench>/profiles/lucerna-home luc …` |
 
-Settings chung: cùng kích thước cửa sổ, cỡ chữ 14, theme mặc định của từng
-editor, tắt minimap nếu có (ghi rõ), không mở lại phiên trước.
+Shared settings: the same window size, font size 14, each editor's default
+theme, minimap off if there is one (stated explicitly), no restoring the
+previous session.
 
-**Dữ liệu cố định** trong `<bench>/data.noindex/` (Spotlight bỏ qua đuôi
-`.noindex`):
-- Repo 80.000 file và `big.rs` ~10 MB: `scripts/gen-bench-repo.sh`.
-- Repo cỡ vừa ~5.000 file ở một commit cố định (đề xuất: ripgrep hoặc
-  một repo Rust cỡ tương đương, chọn khi lập plan) cho RAM khi rỗi.
+**Fixed data** in `<bench>/data.noindex/` (Spotlight skips the `.noindex`
+suffix):
+- A repo of 80,000 files and `big.rs` of ~10 MB: `scripts/gen-bench-repo.sh`.
+- A medium repo of ~5,000 files at a fixed commit (proposal: ripgrep or a
+  Rust repo of similar size, chosen when writing the plan) for idle RAM.
 
-**Máy:**
-- Cắm sạc, tắt Low Power Mode, tắt app khác, dừng mọi session/cargo.
-- Kiểm tra trước khi chạy: không có `cargo`/`rustc` đang chạy, tải CPU thấp,
-  `pmset -g therm` không báo giảm xung; nếu không đạt thì script dừng.
-- Mỗi lượt nghỉ cho máy nguội; thứ tự editor xoay vòng giữa các lượt.
-- Hai chế độ: lạnh (sau `sudo purge`, người dùng chạy) và ấm (bỏ lượt đầu).
+**Machine:**
+- Plugged in, Low Power Mode off, other apps closed, every session/cargo
+  stopped.
+- Check before running: no `cargo`/`rustc` running, low CPU load,
+  `pmset -g therm` reports no throttling; if the check fails, the script
+  stops.
+- Rest between runs so the machine cools down; rotate the editor order
+  between runs.
+- Two modes: cold (after `sudo purge`, run by the user) and warm (drop the
+  first run).
 
-**Hai cấu hình:** không language server; và cùng một rust-analyzer (đường
-dẫn và phiên bản ghi trong kết quả).
+**Two configurations:** no language server; and the same rust-analyzer
+(path and version recorded in the results).
 
-## Phép đo
+## Measurements
 
-Tất cả đo từ bên ngoài, giống nhau cho ba editor. 10 lượt mỗi phép; báo
-trung vị và p90.
+Everything is measured from outside, the same way for all three editors. 10
+runs per measurement; report the median and p90.
 
-| Chỉ số | Cách đo |
+| Metric | How it is measured |
 |---|---|
-| Khởi động tới khung hình đầu có nội dung (mở `big.rs`) | Quay màn hình ≥ 120 fps (ScreenCaptureKit), mốc 0 là lúc gọi lệnh; khung đầu có chữ của file |
-| RAM khi rỗi (repo vừa, 10 tab) | Tổng phys_footprint mọi process của app (`footprint`), sau 60 s rỗi |
-| Cuộn `big.rs` | Sự kiện cuộn tổng hợp giống nhau (CGEvent); `xctrace` template Animation Hitches đếm khung rớt |
-| Đổi file trên đĩa → màn hình cập nhật | Script ghi file; quay màn hình đo độ trễ |
-| Quick Open mỗi phím gõ (repo 80.000 file) | Script gõ phím (CGEvent); quay màn hình đo phím → kết quả |
-| CPU khi rỗi | `top`/`ps` trong 60 s |
-| Dung lượng app | `du` của bundle |
+| Startup to the first frame with content (opening `big.rs`) | Screen recording at ≥ 120 fps (ScreenCaptureKit), time 0 is when the command is invoked; the first frame showing the file's text |
+| Idle RAM (medium repo, 10 tabs) | Sum of phys_footprint over every process of the app (`footprint`), after 60 s idle |
+| Scrolling `big.rs` | The same synthetic scroll events (CGEvent); the `xctrace` Animation Hitches template counts dropped frames |
+| File changed on disk → screen updates | A script writes the file; screen recording measures the latency |
+| Quick Open per keystroke (80,000-file repo) | A key-typing script (CGEvent); screen recording measures key → result |
+| Idle CPU | `top`/`ps` over 60 s |
+| App size | `du` of the bundle |
 
-Mỗi kết quả ghi kèm: phiên bản ba editor, commit Lucerna, macOS, chip, RAM,
-ngày đo.
+Each result is recorded together with: the three editors' versions, the
+Lucerna commit, macOS, chip, RAM, and measurement date.
 
-## Kết quả: so sánh ba editor
+## Result: three-editor comparison
 
-Đầu ra chính là bảng so sánh, mỗi chỉ số một dòng, ba editor cạnh nhau:
+The main output is a comparison table, one row per metric, the three editors
+side by side:
 
-| Chỉ số | Lucerna | Zed | VS Code |
+| Metric | Lucerna | Zed | VS Code |
 |---|---|---|---|
-| Khởi động tới khung đầu có nội dung (trung vị / p90) | … ms | … ms | … ms |
-| RAM khi rỗi | … MB | … MB | … MB |
+| Startup to first frame with content (median / p90) | … ms | … ms | … ms |
+| Idle RAM | … MB | … MB | … MB |
 | … | | | |
 
-- Mỗi ô ghi trung vị và p90. Mỗi dòng thêm hệ số so với Lucerna (ví dụ
-  "Zed 1,4×"), tính từ trung vị; không tô màu "thắng/thua".
-- Mỗi cấu hình (không LSP / có rust-analyzer; lạnh / ấm) một bảng riêng.
-- Kèm biểu đồ cột (SVG) mỗi chỉ số, ba cột cho ba editor, dùng trên site.
-- Bộ công cụ tự sinh bảng Markdown và SVG từ file JSON kết quả, để số trên
-  README/site luôn khớp dữ liệu thô.
+- Each cell gives the median and p90. Each row adds a ratio relative to
+  Lucerna (for example "Zed 1.4×"), computed from the median; no
+  "win/lose" coloring.
+- One table per configuration (no LSP / with rust-analyzer; cold / warm).
+- A bar chart (SVG) per metric, three bars for the three editors, used on
+  the site.
+- The toolkit generates the Markdown tables and SVGs from the result JSON
+  files, so the numbers on the README/site always match the raw data.
 
-## Công bố
+## Publication
 
-- `docs/benchmarks.md`: phương pháp, cấu hình, giới hạn đã biết (Lucerna ít
-  tính năng hơn; mỗi editor có kiến trúc khác), bảng so sánh, ngày đo.
-- Kết quả thô (JSON) commit trong `bench/compare/results/`.
-- README và site trích bảng tóm tắt, dẫn về trang phương pháp.
+- `docs/benchmarks.md`: methodology, configuration, known limitations
+  (Lucerna has fewer features; each editor has a different architecture),
+  the comparison tables, measurement date.
+- Raw results (JSON) committed in `bench/compare/results/`.
+- The README and site quote a summary table and link to the methodology
+  page.
 
-## Tham khảo
+## References
 
 - VS Code, [Performance Issues](https://github.com/microsoft/vscode/wiki/Performance-Issues):
-  `code --prof-startup` ghi hai file profile CPU của lần khởi động; lệnh
-  **Developer: Startup Performance** (F1 > Startup Performance) mở bảng thời
-  gian khởi động theo từng giai đoạn. Cả hai dựa trên các mốc `perf marks`
-  của chính VS Code (trang wiki "Inventory of performance marks").
-- Zed, [Performance](https://zed.dev/docs/performance): dùng `samply` cho
-  flamechart CPU, Tracy (`ZTRACING=1 cargo r --features tracy --release`)
-  cho vết chi tiết, `zed open performance profiler` cho vết tác vụ
-  async, và cảnh báo hàm chậm `zlog::time!(...).warn_if_gt(...)`. Đây là công
-  cụ cho người phát triển Zed, dựng từ mã nguồn; không phải một cách đo
-  chung. Chỉ đọc tài liệu, không sao chép mã (phần lớn crate của Zed là GPL).
-- Vì sao đo bên ngoài: mỗi editor tự đánh dấu một thời điểm khác nhau (VS
-  Code: các mốc trong tiến trình renderer/extension host; Zed: thời gian
-  hàm trong tiến trình; Lucerna: khung đầu trong `perf-checklist.md`). Các số
-  này không so được với nhau và không gồm phần hệ điều hành hiển thị khung
-  hình. Quay cửa sổ từ ngoài bằng ScreenCaptureKit cho cả ba cùng một mốc
-  "người dùng nhìn thấy nội dung".
+  `code --prof-startup` writes two CPU profile files for a startup; the
+  **Developer: Startup Performance** command (F1 > Startup Performance)
+  opens a table of startup times by phase. Both rely on VS Code's own
+  `perf marks` (the wiki page "Inventory of performance marks").
+- Zed, [Performance](https://zed.dev/docs/performance): uses `samply` for
+  CPU flamecharts, Tracy (`ZTRACING=1 cargo r --features tracy --release`)
+  for detailed traces, `zed open performance profiler` for async task
+  traces, and the slow-function warning
+  `zlog::time!(...).warn_if_gt(...)`. These are tools for Zed developers,
+  built from source; they are not a common way to measure. We read the
+  documentation only and copy no code (most of Zed's crates are GPL).
+- Why measure from outside: each editor marks a different moment itself (VS
+  Code: marks in the renderer/extension host processes; Zed: in-process
+  function timings; Lucerna: the first frame in `perf-checklist.md`). These
+  numbers cannot be compared with each other and do not include the time the
+  operating system takes to display the frame. Recording the window from
+  outside with ScreenCaptureKit gives all three the same "the user sees the
+  content" mark.
 
-## Cách làm đã cân nhắc
+## Approaches considered
 
-1. **Đo từ bên ngoài bằng quay màn hình và công cụ hệ thống** (chọn): công
-   bằng, áp dụng được cho cả ba.
-2. Dùng số đo bên trong của từng editor: mỗi editor đo một thời điểm khác
-   nhau, không so được. Bỏ.
-3. Chỉ đo RAM và thời gian khởi động bằng `time`: dễ nhưng không đo được
-   khung hình đầu có nội dung. Bỏ.
+1. **Measure from outside with screen recording and system tools**
+   (chosen): fair, applicable to all three.
+2. Use each editor's own internal measurements: each editor measures a
+   different moment, so they cannot be compared. Rejected.
+3. Measure only RAM and startup time with `time`: easy, but it cannot
+   measure the first frame with content. Rejected.
 
-## Người dùng phải tự làm
+## What the user must do
 
-Cấp quyền Screen Recording và Accessibility cho terminal chạy script; chạy
-các lệnh `sudo` (`purge`).
+Grant Screen Recording and Accessibility permission to the terminal that
+runs the scripts; run the `sudo` commands (`purge`).
 
-## Để người làm quyết
+## Left to the implementer
 
-Ngôn ngữ của bộ công cụ (đề xuất Python chuẩn + một helper Swift nhỏ cho
-ScreenCaptureKit/CGEvent nếu cần), repo cỡ vừa cụ thể, cách nhận diện
-"khung có chữ".
+The language of the toolkit (proposal: standard Python plus a small Swift
+helper for ScreenCaptureKit/CGEvent if needed), the specific medium repo,
+how to recognize a "frame with text".
