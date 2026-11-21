@@ -1,7 +1,7 @@
 # English-only repository
 
 - **Date:** 2026-11-21
-- **Status:** Draft, awaiting approval
+- **Status:** Done
 
 ## Why
 
