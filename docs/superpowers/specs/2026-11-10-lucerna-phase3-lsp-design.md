@@ -1,354 +1,354 @@
-# Phase 3: hiểu code qua LSP
+# Phase 3: understanding code through LSP
 
-Ngày 2026-11-10. Trạng thái: đã triển khai (commit 3a9951d..HEAD).
+Date 2026-11-10. Status: implemented (commits 3a9951d..HEAD).
 
-## 1. Mục tiêu
+## 1. Goals
 
-Lucerna đọc được code như một IDE. Người dùng nhảy tới định nghĩa, xem tham chiếu, hover xem kiểu và tài liệu, thấy lỗi của compiler ngay trong file, và tìm symbol trong file hay cả project, mà không phải mở VS Code. Lucerna vẫn chỉ đọc (Phase 4 đã cho sửa, xem `2026-11-11-lucerna-phase4-editing-design.md`): completion, rename, format, code action thuộc Phase 4.
+Lucerna reads code like an IDE. Users jump to definitions, see references, hover for types and documentation, see compiler errors right in the file, and find symbols in a file or the whole project, without opening VS Code. Lucerna is still read-only (Phase 4 added editing, see `2026-11-11-lucerna-phase4-editing-design.md`): completion, rename, format and code actions belong to Phase 4.
 
-Đã chốt với người dùng:
+Decided with the user:
 
-| # | Quyết định | Lý do |
+| # | Decision | Reason |
 |---|---|---|
-| D1 | **Server lấy từ PATH qua adapter viết sẵn**: rust-analyzer, gopls, pyright / basedpyright, typescript-language-server, clangd. Không tự tải server. | Đây là các ngôn ngữ chính. Zed viết sẵn server cho chúng bằng Rust (GPL), không qua extension. |
-| D2 | **Host WASM cho extension Zed để sang Phase 3b**, với spec riêng. | Host WASM không đem lại Rust/Go/Python/TS, và cần `cargo` + `wasm32-wasip2` trên máy người dùng để build `extension.wasm` (Lucerna không dùng `api.zed.dev`). Ước lượng 2–4 tuần riêng phần host. |
-| D3 | **Cho tự khai báo server bằng settings** (`lsp.<tên>.command`…), theo Helix. Lệch khỏi VS Code và Zed. | Chưa có host WASM, đây là cách rẻ nhất để có LSP cho mọi ngôn ngữ; rủi ro chạy lệnh tùy ý đã được cơ chế tin cậy thư mục chặn (settings Workspace chỉ được đọc khi đã tin cậy). Xem `2026-11-11-lsp-server-table-design.md`. |
-| D4 | **Crate `lucerna-lsp` không dùng gpui**, tự viết transport, kiểu dữ liệu từ `lsp-types`. | Test được bằng fake server; không kéo tokio. |
-| D5 | **Nhiều kết quả và peek mở picker có preview** (theo `lsp_locations` của Zed); `⇧⌥F12` mở **tab References** dùng chung giao diện với tab Search. Không có vùng peek chèn trong editor. | Giao diện theo Zed. |
-| D6 | **Symbol lấy từ LSP `documentSymbol`**; khi không có server thì dùng `outline.scm` của extension ngôn ngữ (nếu có). | Chính xác như VS Code, vẫn có outline khi không có server. |
-| D7 | **Outline chỉ có modal `@` và breadcrumbs**, không có panel. | Gọn. |
-| D8 | **Diagnostics:** gạch lượn sóng (luôn hiện dù chỉ đọc), icon ở gutter, thông báo inline (tắt mặc định), vạch trên scrollbar, status bar, F8. Không có tab Problems, không tô màu Explorer. | Người dùng chọn. |
-| D9 | **Tin cậy thư mục như Zed**: thư mục mới ở Restricted Mode, không chạy server cho tới khi người dùng tin cậy. | Server chạy code của project (build.rs, proc-macro, `go list`). |
-| D10 | Server crash thì **không tự restart** (như Zed); người dùng bấm Restart. | Thấy rõ lỗi, không vòng lặp crash. |
+| D1 | **Servers come from PATH through built-in adapters**: rust-analyzer, gopls, pyright / basedpyright, typescript-language-server, clangd. No automatic server download. | These are the main languages. Zed ships built-in servers for them in Rust (GPL), not through extensions. |
+| D2 | **The WASM host for Zed extensions is deferred to Phase 3b**, with its own spec. | A WASM host does not bring Rust/Go/Python/TS, and it needs `cargo` + `wasm32-wasip2` on the user's machine to build `extension.wasm` (Lucerna does not use `api.zed.dev`). The host alone is estimated at 2–4 weeks. |
+| D3 | **Let users declare servers in settings** (`lsp.<name>.command`…), following Helix. Differs from VS Code and Zed. | Without a WASM host, this is the cheapest way to get LSP for every language; the risk of running arbitrary commands is blocked by the folder trust mechanism (Workspace settings are read only once trusted). See `2026-11-11-lsp-server-table-design.md`. |
+| D4 | **The `lucerna-lsp` crate does not use gpui**, has its own transport, and takes data types from `lsp-types`. | Testable with a fake server; does not pull in tokio. |
+| D5 | **Multiple results and peek open a picker with a preview** (following Zed's `lsp_locations`); `⇧⌥F12` opens a **References tab** that shares its UI with the Search tab. No inline peek area in the editor. | UI follows Zed. |
+| D6 | **Symbols come from LSP `documentSymbol`**; with no server, use the language extension's `outline.scm` (if any). | As accurate as VS Code, and an outline still exists without a server. |
+| D7 | **The outline has only the `@` modal and breadcrumbs**, no panel. | Minimal. |
+| D8 | **Diagnostics:** squiggles (always shown even though read-only), gutter icons, inline messages (off by default), scrollbar marks, status bar, F8. No Problems tab, no Explorer coloring. | The user's choice. |
+| D9 | **Folder trust like Zed**: a new folder is in Restricted Mode, and no server runs until the user trusts it. | Servers run the project's code (build.rs, proc-macros, `go list`). |
+| D10 | A crashed server is **not restarted automatically** (like Zed); the user clicks Restart. | Errors stay visible, with no crash loop. |
 
-**Thành công khi:**
-- Mở một crate Rust đã tin cậy, có `rust-analyzer` trên PATH: sau khi index xong, F12 trên một hàm nhảy tới định nghĩa; ⌘-click cũng vậy; ⇧F12 ra picker tham chiếu có preview; hover hiện chữ ký và doc; lỗi `cargo check` hiện gạch đỏ, icon ở gutter và số đếm ở status bar; ⇧⌘O và ⌘T tìm được symbol; breadcrumbs theo con trỏ.
-- Agent sửa file trên đĩa: diagnostics và symbol cập nhật theo, không cần thao tác gì.
-- Không có server trên PATH: Lucerna vẫn như cũ, nút ⚡ báo rõ thiếu gì và cách cấu hình.
-- Mục tiêu hiệu năng của Phase 1 vẫn giữ (khung hình đầu dưới 200 ms, RAM rỗi dưới 150 MB khi chưa mở file nào có server).
+**Success means:**
+- Open a trusted Rust crate with `rust-analyzer` on PATH: once indexing is done, F12 on a function jumps to its definition; ⌘-click does too; ⇧F12 shows a references picker with a preview; hover shows the signature and docs; `cargo check` errors show a red squiggle, a gutter icon and a count in the status bar; ⇧⌘O and ⌘T find symbols; breadcrumbs follow the cursor.
+- When an agent edits a file on disk: diagnostics and symbols update with no action needed.
+- With no server on PATH: Lucerna is the same as before, and the ⚡ button says clearly what is missing and how to configure it.
+- The Phase 1 performance goals still hold (first frame under 200 ms, idle RAM under 150 MB while no file with a server is open).
 
-**Ngoài phạm vi:** host WASM (3b); tự tải server; tab Problems; tô màu Explorer theo lỗi; pull diagnostics (chỉ dùng push); semantic tokens, inlay hint, document highlight, code lens; mọi thứ thuộc về sửa code; workspace nhiều root.
+**Out of scope:** the WASM host (3b); automatic server download; the Problems tab; coloring the Explorer by errors; pull diagnostics (push only); semantic tokens, inlay hints, document highlight, code lens; everything related to editing code; multi-root workspaces.
 
-## 2. Tham khảo
+## 2. References
 
-Chi tiết ở `docs/research/2026-11-10-lsp.md`. Tóm tắt những điểm quyết định thiết kế:
-- **VS Code:** lệnh và phím `editor.action.revealDefinition` (F12), `peekDefinition` (⌥F12), `goToReferences` (⇧F12, nhiều kết quả thì peek), `references-view.findReferences` (⇧⌥F12), `marker.nextInFiles` (F8), `gotoSymbol` (⇧⌘O, `@`), `showAllSymbols` (⌘T, `#`), `navigateBack` (⌃-). Hover trễ 300 ms, sticky. Kết quả trùng chỗ con trỏ thì chạy Find References. Không có icon diagnostics ở gutter. **Bẫy chỉ đọc:** `editor.renderValidationDecorations` mặc định `editable` nên VS Code ẩn squiggle trong editor chỉ đọc; Lucerna luôn hiện.
-- **Zed:** transport JSON-RPC tự viết, request có timeout 120 s và tự gửi `$/cancelRequest` khi future bị drop; server khởi động lười theo (worktree, server); shutdown 5 s rồi exit rồi kill; không tự restart. Hover gửi request ở nửa thời gian trễ. Không có peek: nhiều kết quả mở multibuffer hoặc picker có preview (`lsp_locations`). Outline và breadcrumbs mặc định từ `outline.scm`. Status bar có nút LSP (⚡) với chấm trạng thái và popover từng server; log là view chỉ đọc. Restricted Mode cho worktree chưa tin cậy.
-- **Lucerna lệch khỏi cả hai** ở: luôn hiện diagnostics dù chỉ đọc (khác VS Code); có icon ở gutter (khác cả hai, người dùng chọn); Restricted Mode chỉ chặn server và khóa `lsp` của workspace, không chặn mọi setting workspace (khác Zed, xem §5).
+Details are in `docs/research/2026-11-10-lsp.md`. A summary of the points that decided the design:
+- **VS Code:** the commands and keys `editor.action.revealDefinition` (F12), `peekDefinition` (⌥F12), `goToReferences` (⇧F12, peek when there are several results), `references-view.findReferences` (⇧⌥F12), `marker.nextInFiles` (F8), `gotoSymbol` (⇧⌘O, `@`), `showAllSymbols` (⌘T, `#`), `navigateBack` (⌃-). Hover has a 300 ms delay and is sticky. If the result is at the cursor itself, Find References runs. No diagnostics icon in the gutter. **Read-only trap:** `editor.renderValidationDecorations` defaults to `editable`, so VS Code hides squiggles in a read-only editor; Lucerna always shows them.
+- **Zed:** a hand-written JSON-RPC transport, requests have a 120 s timeout and automatically send `$/cancelRequest` when the future is dropped; servers start lazily per (worktree, server); shutdown 5 s then exit then kill; no automatic restart. Hover sends its request at half the delay. No peek: multiple results open a multibuffer or a picker with a preview (`lsp_locations`). Outline and breadcrumbs come from `outline.scm` by default. The status bar has an LSP button (⚡) with a status dot and a popover per server; the log is a read-only view. Restricted Mode for untrusted worktrees.
+- **Lucerna differs from both** in: always showing diagnostics even though read-only (unlike VS Code); having a gutter icon (unlike both, the user's choice); Restricted Mode blocks only servers and the workspace `lsp` key, not every workspace setting (unlike Zed, see §5).
 
-Giấy phép: các crate `lsp`, `project`, `editor`, `language` của Zed là GPL-3, chỉ học thiết kế. `lsp-types` (MIT), `pulldown-cmark` (MIT) dùng làm dependency. Icon từ Lucide (ISC).
+License: Zed's crates `lsp`, `project`, `editor`, `language` are GPL-3, so only the design is learned. `lsp-types` (MIT) and `pulldown-cmark` (MIT) are used as dependencies. Icons from Lucide (ISC).
 
-## 3. Kiến trúc
+## 3. Architecture
 
 ```
-lucerna-lsp (mới, không gpui)
+lucerna-lsp (new, no gpui)
   transport ── server ── registry ── adapters
                  │          │
               sync      diagnostics, symbols
-lucerna-syntax: outline.scm → cây symbol
-lucerna-settings: đọc setting bỏ qua lớp workspace
-lucerna-theme: màu diagnostics, link
-lucerna-workbench: language_servers (cầu nối), diagnostics_view, hover, goto, locations_picker,
+lucerna-syntax: outline.scm → symbol tree
+lucerna-settings: reading settings while skipping the workspace layer
+lucerna-theme: diagnostics and link colors
+lucerna-workbench: language_servers (bridge), diagnostics_view, hover, goto, locations_picker,
                    references_view, excerpt_list, symbols (@, #, breadcrumbs), lsp_status, trust, nav_history
 ```
 
 ### 3.1 `lucerna-lsp`
 
-Crate mới, phụ thuộc `lsp-types`, `serde`, `serde_json`, `futures`, `crossbeam-channel`, `globset`, `tracing`, `lucerna-text` (snapshot để quy đổi vị trí), `lucerna-syntax` (kiểu cây symbol). Không gpui, không tokio.
+A new crate depending on `lsp-types`, `serde`, `serde_json`, `futures`, `crossbeam-channel`, `globset`, `tracing`, `lucerna-text` (snapshots for position conversion) and `lucerna-syntax` (the symbol tree types). No gpui, no tokio.
 
 **`transport`**
-- `Transport::spawn(command, args, env, cwd) -> Result<Transport>`: chạy tiến trình con với stdin/stdout/stderr dạng pipe, và ba thread có tên (`lsp-read-<server>`, `lsp-write-<server>`, `lsp-stderr-<server>`), mỗi thread bọc `catch_panic`.
-- Thread ghi: nhận chuỗi JSON qua kênh không giới hạn, ghi `Content-Length: N\r\n\r\n` + body, flush mỗi message.
-- Thread đọc: đọc header tới `\r\n\r\n` (chấp nhận `Content-Type`, thứ tự bất kỳ), `read_exact` body, phân loại: response (có `id`, không có `method`) thì gửi vào oneshot đang chờ; request hoặc notification từ server thì đưa vào kênh sự kiện có giới hạn 128.
-- Thread stderr: đọc từng dòng, đưa vào log của server.
-- EOF ở stdout: mọi request đang chờ nhận `Err(Closed)`, phát sự kiện `Exited { code }`.
+- `Transport::spawn(command, args, env, cwd) -> Result<Transport>`: runs the child process with piped stdin/stdout/stderr, and three named threads (`lsp-read-<server>`, `lsp-write-<server>`, `lsp-stderr-<server>`), each wrapped in `catch_panic`.
+- Write thread: receives JSON strings over an unbounded channel, writes `Content-Length: N\r\n\r\n` + the body, and flushes after every message.
+- Read thread: reads headers up to `\r\n\r\n` (accepting `Content-Type`, in any order), `read_exact` for the body, then classifies: a response (has `id`, no `method`) is sent to the waiting oneshot; a request or notification from the server goes into an event channel bounded at 128.
+- Stderr thread: reads line by line and puts them in the server's log.
+- EOF on stdout: every pending request receives `Err(Closed)`, and an `Exited { code }` event is emitted.
 
 **`server`**
-- `LanguageServer`: một tiến trình đã `initialize` xong.
-  - `request::<R: lsp_types::request::Request>(params) -> Request<R::Result>`. `Request` là future: có timeout (mặc định 120 s; hover và ⌘-hover 10 s), và **drop trước khi có kết quả thì gửi `$/cancelRequest`**.
+- `LanguageServer`: a process that has finished `initialize`.
+  - `request::<R: lsp_types::request::Request>(params) -> Request<R::Result>`. `Request` is a future: it has a timeout (default 120 s; hover and ⌘-hover 10 s), and **dropping it before a result arrives sends `$/cancelRequest`**.
   - `notify::<N>(params)`.
   - `capabilities() -> &ServerCapabilities`, `position_encoding()`.
-  - `shutdown()`: `shutdown` (chờ tối đa 5 s) → `exit` → chờ thoát 1 s → kill. `Drop` gọi shutdown trên một thread riêng.
-- `initialize` gửi:
-  - `processId`, `rootUri`, `workspaceFolders` = [root], `clientInfo { name: "Lucerna", version }`, `initializationOptions` từ adapter gộp với `lsp.<server>.initialization_options`.
+  - `shutdown()`: `shutdown` (wait at most 5 s) → `exit` → wait 1 s for the process to leave → kill. `Drop` calls shutdown on a separate thread.
+- `initialize` sends:
+  - `processId`, `rootUri`, `workspaceFolders` = [root], `clientInfo { name: "Lucerna", version }`, `initializationOptions` from the adapter merged with `lsp.<server>.initialization_options`.
   - `general.positionEncodings = ["utf-8", "utf-16"]`.
-  - Capability chỉ đọc: `definition`, `typeDefinition`, `implementation`, `declaration` (đều `linkSupport`); `references`; `hover` (`contentFormat: ["markdown", "plaintext"]`); `documentSymbol` (`hierarchicalDocumentSymbolSupport`); `publishDiagnostics` (`relatedInformation`, `versionSupport`, `tagSupport [1, 2]`, `codeDescriptionSupport`); `synchronization` (không `willSave`, không `didSave`); `workspace.symbol`; `workspace.configuration`; `workspace.workspaceFolders`; `workspace.didChangeWatchedFiles` (`dynamicRegistration`, `relativePatternSupport`); `window.workDoneProgress`; `window.showMessage`.
-  - Sau `initialized`, gửi `workspace/didChangeConfiguration { settings: lsp.<server>.settings }`.
-- Server gửi request sang thì tự trả lời:
+  - Read-only capabilities: `definition`, `typeDefinition`, `implementation`, `declaration` (all `linkSupport`); `references`; `hover` (`contentFormat: ["markdown", "plaintext"]`); `documentSymbol` (`hierarchicalDocumentSymbolSupport`); `publishDiagnostics` (`relatedInformation`, `versionSupport`, `tagSupport [1, 2]`, `codeDescriptionSupport`); `synchronization` (no `willSave`, no `didSave`); `workspace.symbol`; `workspace.configuration`; `workspace.workspaceFolders`; `workspace.didChangeWatchedFiles` (`dynamicRegistration`, `relativePatternSupport`); `window.workDoneProgress`; `window.showMessage`.
+  - After `initialized`, send `workspace/didChangeConfiguration { settings: lsp.<server>.settings }`.
+- When the server sends a request across, the client answers it itself:
 
-  | Request | Trả lời |
+  | Request | Reply |
   |---|---|
-  | `workspace/configuration` | Với mỗi item: `lsp.<server>.settings` (cả object, hoặc theo `section` dạng `a.b`), không có thì `null` |
+  | `workspace/configuration` | For each item: `lsp.<server>.settings` (the whole object, or by `section` of the form `a.b`), `null` if absent |
   | `window/workDoneProgress/create` | `null` (OK) |
-  | `client/registerCapability`, `client/unregisterCapability` | OK; ghi lại đăng ký `workspace/didChangeWatchedFiles` |
+  | `client/registerCapability`, `client/unregisterCapability` | OK; record the `workspace/didChangeWatchedFiles` registration |
   | `workspace/workspaceFolders` | `[root]` |
-  | `window/showMessageRequest` | `null` (không chọn action), message vào log |
+  | `window/showMessageRequest` | `null` (no action chosen), the message goes to the log |
   | `workspace/applyEdit`, `window/showDocument` | `{ applied: false }` / `{ success: false }` |
-  | khác | lỗi `MethodNotFound` |
+  | anything else | `MethodNotFound` error |
 
-- Notification từ server: `textDocument/publishDiagnostics` → kho diagnostics; `$/progress` → trạng thái; `window/logMessage` và `window/showMessage` → log (showMessage loại Error còn hiện ở popover ⚡); khác thì bỏ.
+- Notifications from the server: `textDocument/publishDiagnostics` → the diagnostics store; `$/progress` → status; `window/logMessage` and `window/showMessage` → the log (an Error-level showMessage also appears in the ⚡ popover); anything else is dropped.
 
 **`adapters`**
 
-> Đã thay bằng bảng JSON `crates/lucerna-lsp/assets/servers.json` (xem `2026-11-11-lsp-server-table-design.md`). Bảng dưới là giá trị gốc của sáu server đầu; giá trị đó giữ nguyên trong `servers.json`, riêng `clangd` có `languages` là `["c","c++","objective-c"]` (id extension = tên chữ thường); root marker của `clangd` giữ nguyên (`compile_commands.json`, `.clangd`).
+> Replaced by the JSON table `crates/lucerna-lsp/assets/servers.json` (see `2026-11-11-lsp-server-table-design.md`). The table below holds the original values of the first six servers; those values are kept as they are in `servers.json`, except that `clangd` has `languages` set to `["c","c++","objective-c"]` (extension id = lowercase name); the root markers of `clangd` are kept (`compile_commands.json`, `.clangd`).
 
-| Server | Ngôn ngữ (id của Lucerna) | Binary và tham số | Root | Ghi chú |
+| Server | Languages (Lucerna id) | Binary and arguments | Root | Notes |
 |---|---|---|---|---|
-| `rust-analyzer` | `rust` | `rust-analyzer` | Thư mục **ngoài cùng** có `Cargo.toml`, tính từ file lên tới root workspace; không có thì root workspace | Chạy thử `--version` (proxy rustup trả lỗi khi chưa cài component) |
-| `gopls` | `go` | `gopls` | Thư mục gần nhất có `go.work`, rồi `go.mod`; không có thì root workspace | |
-| `basedpyright` | `python` | `basedpyright-langserver --stdio` | Thư mục gần nhất có `pyproject.toml`, `setup.py`, `setup.cfg`, `pyrightconfig.json`; không có thì root workspace | Mặc định thử trước pyright |
-| `pyright` | `python` | `pyright-langserver --stdio` | như trên | |
-| `typescript-language-server` | `typescript`, `typescriptreact`, `javascript`, `javascriptreact` | `typescript-language-server --stdio` | Thư mục gần nhất có `tsconfig.json`, `jsconfig.json`, `package.json`; không có thì root workspace | |
-| `clangd` | `c`, `cpp` | `clangd` | Thư mục gần nhất có `compile_commands.json`, `.clangd`; không có thì root workspace | Chỉ có tác dụng khi một extension cung cấp ngôn ngữ C/C++ |
+| `rust-analyzer` | `rust` | `rust-analyzer` | The **outermost** directory with `Cargo.toml`, counting from the file up to the workspace root; if none, the workspace root | Probe with `--version` (the rustup proxy returns an error when the component is not installed) |
+| `gopls` | `go` | `gopls` | The nearest directory with `go.work`, then `go.mod`; if none, the workspace root | |
+| `basedpyright` | `python` | `basedpyright-langserver --stdio` | The nearest directory with `pyproject.toml`, `setup.py`, `setup.cfg`, `pyrightconfig.json`; if none, the workspace root | Tried before pyright by default |
+| `pyright` | `python` | `pyright-langserver --stdio` | as above | |
+| `typescript-language-server` | `typescript`, `typescriptreact`, `javascript`, `javascriptreact` | `typescript-language-server --stdio` | The nearest directory with `tsconfig.json`, `jsconfig.json`, `package.json`; if none, the workspace root | |
+| `clangd` | `c`, `cpp` | `clangd` | The nearest directory with `compile_commands.json`, `.clangd`; if none, the workspace root | Only takes effect when an extension provides the C/C++ language |
 
-- `Adapter` là trait: `name`, `language_ids`, `default_command`, `root_markers` + kiểu tìm (gần nhất / ngoài cùng), `language_id_for(lang)` (id gửi trong `didOpen`), `initialization_options()` mặc định, `probe_args` (mặc định `--version`, rỗng nghĩa là không chạy thử).
-- **Tìm binary:** `lsp.<server>.binary.path` nếu có (dùng nguyên, không chạy thử), kèm `binary.arguments` (thay tham số mặc định) và `binary.env`. Nếu không thì tìm tên binary trong PATH của **môi trường login shell** rồi chạy thử `probe_args` với timeout 5 s. Root không thay đổi kết quả tìm, nên kết quả được cache theo tên server cho tới khi settings đổi.
-- **Môi trường login shell** (`env.rs`, mã riêng cho từng nền tảng): macOS và Linux chạy `$SHELL -l -i -c 'env -0'` một lần, nền, timeout 5 s, cache cho cả tiến trình. Lỗi hoặc timeout thì dùng môi trường của tiến trình. Windows (sau này) dùng môi trường của tiến trình. Tiến trình server nhận môi trường này, gộp `binary.env` lên trên.
+- `Adapter` is a trait: `name`, `language_ids`, `default_command`, `root_markers` + the search kind (nearest / outermost), `language_id_for(lang)` (the id sent in `didOpen`), the default `initialization_options()`, and `probe_args` (default `--version`; empty means no probe).
+- **Finding the binary:** `lsp.<server>.binary.path` if present (used as is, no probe), together with `binary.arguments` (replacing the default arguments) and `binary.env`. Otherwise look up the binary name in the PATH of the **login shell environment** and run `probe_args` as a probe with a 5 s timeout. The root does not change the lookup result, so the result is cached by server name until settings change.
+- **Login shell environment** (`env.rs`, separate code for each platform): macOS and Linux run `$SHELL -l -i -c 'env -0'` once, in the background, with a 5 s timeout, cached for the whole process. On an error or timeout, the process environment is used. Windows (later) uses the process environment. The server process receives this environment, with `binary.env` merged on top.
 
 **`registry`**
-- `ServerKey = (root: Arc<Path>, server: &'static str)`. Mỗi key có một `ServerSlot`: `Starting`, `Running(Arc<LanguageServer>)`, `Failed { message, stderr_tail }`, `Stopped`, `NotFound`.
-- `servers_for(language_id, path) -> Vec<ServerKey>`: lấy danh sách theo `lucerna.lsp.languageServers` của ngôn ngữ (§8), lọc adapter phục vụ ngôn ngữ đó, tính root theo adapter.
-- Server khởi động lười khi file đầu tiên của nó được mở. Khi đang `Starting`, các `didOpen` được xếp hàng và gửi ngay sau `initialized`.
-- Settings đổi (`lsp`, `lucerna.lsp.*`) thì tính lại: server không còn được chọn thì shutdown; server có `binary`/`initialization_options` đổi thì restart; chỉ `settings` đổi thì gửi `didChangeConfiguration`.
-- `restart(key)`, `stop(key)`, `shutdown_all()` (song song, mỗi server tối đa 5 s).
+- `ServerKey = (root: Arc<Path>, server: &'static str)`. Each key has a `ServerSlot`: `Starting`, `Running(Arc<LanguageServer>)`, `Failed { message, stderr_tail }`, `Stopped`, `NotFound`.
+- `servers_for(language_id, path) -> Vec<ServerKey>`: takes the list from the language's `lucerna.lsp.languageServers` (§8), filters the adapters that serve that language, and computes the root per adapter.
+- A server starts lazily when the first file for it is opened. While it is `Starting`, `didOpen` messages are queued and sent right after `initialized`.
+- When settings change (`lsp`, `lucerna.lsp.*`), recompute: a server no longer selected is shut down; a server whose `binary`/`initialization_options` changed is restarted; if only `settings` changed, send `didChangeConfiguration`.
+- `restart(key)`, `stop(key)`, `shutdown_all()` (in parallel, at most 5 s per server).
 
 **`sync`**
-- `DocumentSync` theo dõi với mỗi (server, uri): version hiện tại và snapshot đã gửi.
-- `open(path, language, snapshot)`: gửi `didOpen` (version 0, cả văn bản) tới mọi server của file.
-- `change(path, snapshot)`: version + 1. Server `Full` nhận cả văn bản; server `Incremental` nhận một thay đổi phủ toàn bộ văn bản cũ (range từ đầu tới cuối snapshot cũ). Server `None` không nhận gì.
-- `close(path)`: `didClose`, xóa diagnostics của file nếu server không còn gửi cho file chưa mở (diagnostics của file chưa mở vẫn giữ; xem §7.1).
-- Không `didOpen` khi file vượt `lucerna.largeFile.maxBytes` / `maxLines`, hoặc có dòng dài hơn 20 000 ký tự.
-- `didChangeWatchedFiles`: các đăng ký `workspace/didChangeWatchedFiles` được dịch sang `globset` (pattern tương đối theo `baseUri`). Mỗi sự kiện của worktree (tạo, sửa, xóa) khớp glob thì gửi tới server đó, gộp theo lô 100 ms.
+- `DocumentSync` tracks, for each (server, uri): the current version and the snapshot last sent.
+- `open(path, language, snapshot)`: sends `didOpen` (version 0, the whole text) to every server of the file.
+- `change(path, snapshot)`: version + 1. A `Full` server receives the whole text; an `Incremental` server receives one change covering the whole old text (a range from the start to the end of the old snapshot). A `None` server receives nothing.
+- `close(path)`: `didClose`, and clear the file's diagnostics if the server no longer sends them for unopened files (diagnostics of unopened files are kept; see §7.1).
+- No `didOpen` when the file exceeds `lucerna.largeFile.maxBytes` / `maxLines`, or has a line longer than 20,000 characters.
+- `didChangeWatchedFiles`: the `workspace/didChangeWatchedFiles` registrations are translated into `globset` (patterns relative to `baseUri`). Every worktree event (create, change, delete) that matches a glob is sent to that server, batched in 100 ms groups.
 
 **`position`**
-- `to_lsp(snapshot, Point, encoding) -> lsp::Position` và `from_lsp(snapshot, lsp::Position, encoding) -> Point`, tính trên dòng của rope. UTF-16 đếm theo code unit; UTF-8 theo byte. Vị trí ngoài phạm vi thì cắt về cuối dòng hoặc cuối file, không panic.
+- `to_lsp(snapshot, Point, encoding) -> lsp::Position` and `from_lsp(snapshot, lsp::Position, encoding) -> Point`, computed on the rope's line. UTF-16 counts code units; UTF-8 counts bytes. A position out of range is clamped to the end of the line or the end of the file, with no panic.
 
 **`diagnostics`**
 - `DiagnosticStore`: `HashMap<PathBuf, HashMap<ServerKey, FileDiagnostics>>`, `FileDiagnostics { version: Option<i32>, items: Vec<Diagnostic> }`.
-- `Diagnostic { range: Range<Point>, severity, message, source, code, code_href, tags: { unnecessary, deprecated } }`. Range quy đổi bằng snapshot đang mở; file chưa mở thì giữ `lsp::Range` thô và quy đổi khi mở.
-- `publishDiagnostics` có `version` khác version đã gửi gần nhất của file thì bỏ (Lucerna chỉ đọc, server sẽ gửi lại sau `didChange`).
-- `summary() -> (errors, warnings)` của cả project; `for_file(path)` sắp theo vị trí; `next(from: (path, Point), forward, scope: File | Files)` cho F8 / ⌥F8: chỉ tính error, warning, info (bỏ hint, như VS Code); thứ tự file theo đường dẫn; vòng lại đầu.
-- Một sự kiện `DiagnosticsChanged(paths)` cho mỗi đợt.
+- `Diagnostic { range: Range<Point>, severity, message, source, code, code_href, tags: { unnecessary, deprecated } }`. The range is converted with the open snapshot; for an unopened file, keep the raw `lsp::Range` and convert it on open.
+- A `publishDiagnostics` whose `version` differs from the file's most recently sent version is dropped (Lucerna is read-only, and the server will send again after `didChange`).
+- `summary() -> (errors, warnings)` for the whole project; `for_file(path)` sorted by position; `next(from: (path, Point), forward, scope: File | Files)` for F8 / ⌥F8: counts only error, warning, info (hints are skipped, like VS Code); files ordered by path; wraps around to the start.
+- One `DiagnosticsChanged(paths)` event per batch.
 
 **`symbols`**
-- `SymbolTree`: `Vec<Symbol>`, `Symbol { name, detail, kind: SymbolKind, range: Range<Point>, selection_range: Range<Point>, children: Vec<Symbol> }`. `SymbolKind` theo LSP.
-- Từ LSP: `DocumentSymbol[]` (phân cấp) dùng nguyên; `SymbolInformation[]` (phẳng) dựng cây theo việc range này chứa range kia.
-- `path_at(tree, Point) -> Vec<&Symbol>`: chuỗi symbol chứa điểm đó, sâu dần, cho breadcrumbs.
-- `flatten(tree) -> Vec<(depth, ancestors, &Symbol)>`: cho `@`.
+- `SymbolTree`: `Vec<Symbol>`, `Symbol { name, detail, kind: SymbolKind, range: Range<Point>, selection_range: Range<Point>, children: Vec<Symbol> }`. `SymbolKind` follows LSP.
+- From LSP: `DocumentSymbol[]` (hierarchical) is used as is; `SymbolInformation[]` (flat) builds a tree by one range containing another.
+- `path_at(tree, Point) -> Vec<&Symbol>`: the chain of symbols containing that point, going deeper, for breadcrumbs.
+- `flatten(tree) -> Vec<(depth, ancestors, &Symbol)>`: for `@`.
 
 ### 3.2 `lucerna-syntax`: `outline.scm`
 
-- `Language` đọc thêm `outline.scm` của extension (lười, như `highlights.scm`). Ngôn ngữ bundled chưa có.
-- `SyntaxState::outline(snapshot) -> Option<SymbolTree>`: chạy query trên cây hiện có. Mỗi match `@item` là một symbol; `@name` là tên; `@context` (trừ phần trùng tên) ghép thành `detail`; quan hệ cha con theo range chứa nhau. `kind` đoán từ chữ đầu của `@context` (`fn`/`def`/`func`/`function` → Function, `struct`/`class` → Struct/Class, `enum`, `trait`/`interface`, `impl`, `mod`/`module`/`namespace`, `const`, `type`); không đoán được thì `Object`.
-- Kiểu `SymbolTree`/`Symbol`/`SymbolKind` định nghĩa ở `lucerna-syntax` (để `lucerna-lsp` dùng lại), không phụ thuộc `lsp-types`.
+- `Language` also reads the extension's `outline.scm` (lazily, like `highlights.scm`). Bundled languages do not have one yet.
+- `SyntaxState::outline(snapshot) -> Option<SymbolTree>`: runs the query on the existing tree. Each `@item` match is a symbol; `@name` is the name; `@context` (minus the part that duplicates the name) is joined into `detail`; the parent-child relation follows ranges containing each other. `kind` is guessed from the first word of `@context` (`fn`/`def`/`func`/`function` → Function, `struct`/`class` → Struct/Class, `enum`, `trait`/`interface`, `impl`, `mod`/`module`/`namespace`, `const`, `type`); if it cannot be guessed, `Object`.
+- The types `SymbolTree`/`Symbol`/`SymbolKind` are defined in `lucerna-syntax` (so `lucerna-lsp` can reuse them), independent of `lsp-types`.
 
 ### 3.3 `lucerna-settings`
 
-- `SettingsStore::get_trusted::<T>(key, language)`: như `get` nhưng bỏ qua lớp `Workspace`. Dùng cho khóa `lsp` khi thư mục chưa tin cậy (§5).
+- `SettingsStore::get_trusted::<T>(key, language)`: like `get` but skipping the `Workspace` layer. Used for the `lsp` key when the folder is not trusted (§5).
 
 ### 3.4 `lucerna-theme`
 
-`UiColors` thêm (đọc từ theme Zed, thiếu thì dùng màu dự phòng theo appearance):
-- `warning`, `info`, `hint` (đã có `error`);
+`UiColors` gains (read from the Zed theme, with fallback colors by appearance when missing):
+- `warning`, `info`, `hint` (`error` already exists);
 - `error_background`, `warning_background`, `info_background`, `hint_background`;
 - `error_border`, `warning_border`, `info_border`, `hint_border`;
 - `link_text_hover` (`link_text.hover`);
 - `editor_highlighted_line_background` (`editor.highlighted_line.background`);
 - `element_hover` (`element.hover`).
 
-Màu dự phòng lấy theo One Dark / One Light (ghi trong research §6.2), viết tay giá trị.
+The fallback colors follow One Dark / One Light (recorded in research §6.2), with the values written by hand.
 
 ### 3.5 `lucerna-workbench`
 
-Mỗi module một việc, file nhỏ:
+One job per module, small files:
 
-| Module | Việc |
+| Module | Job |
 |---|---|
-| `language_servers.rs` | Entity `LanguageServers` (một mỗi workbench): giữ `Registry`, `DocumentSync`, `DiagnosticStore`, cache `SymbolTree` theo document; nhận sự kiện từ server qua một vòng `cx.spawn` (giống pump của worktree); nghe `Documents` (mở, reload, đóng) và `on_worktree_event`; phát sự kiện cho các view. API async cho view: `definition(path, point, kind)`, `references`, `hover`, `document_symbols`, `workspace_symbols(query)`. |
-| `trust.rs` | Danh sách thư mục tin cậy, modal tin cậy, nút "Restricted Mode" ở title bar. |
-| `nav_history.rs` | Lịch sử điều hướng theo group, Go Back / Forward. |
-| `code_view/diagnostics.rs` | Dữ liệu vẽ diagnostics theo dòng cho `CodeView` (gạch chân, gutter, inline, scrollbar). |
+| `language_servers.rs` | The `LanguageServers` entity (one per workbench): holds the `Registry`, `DocumentSync`, `DiagnosticStore`, and a `SymbolTree` cache per document; receives server events through a `cx.spawn` loop (like the worktree pump); listens to `Documents` (open, reload, close) and `on_worktree_event`; emits events to the views. Async API for views: `definition(path, point, kind)`, `references`, `hover`, `document_symbols`, `workspace_symbols(query)`. |
+| `trust.rs` | The list of trusted folders, the trust modal, the "Restricted Mode" button in the title bar. |
+| `nav_history.rs` | Navigation history per group, Go Back / Forward. |
+| `code_view/diagnostics.rs` | Per-line diagnostics drawing data for `CodeView` (underline, gutter, inline, scrollbar). |
 | `code_view/link.rs` | ⌘-hover / ⌘-click. |
-| `hover.rs` | Popover hover và diagnostic. |
-| `markdown.rs` | Render markdown (pulldown-cmark) thành phần tử gpui; khối code tô màu bằng `lucerna-syntax`. Component dùng chung. |
-| `goto.rs` | Lệnh đi tới định nghĩa / kiểu / implementation / declaration, tham chiếu; quyết định nhảy thẳng, mở picker hay chuyển sang references. |
-| `locations_picker.rs` | Picker vị trí có preview. |
-| `excerpt_list/` | Danh sách file → đoạn code tách ra từ `search_view` (dữ liệu hàng, header file, dòng code có gutter, tô cú pháp nền, chọn bằng bàn phím). Tab Search và tab References cùng dùng. |
-| `references_view.rs` | Tab References. |
-| `symbols/` | Nguồn symbol (LSP rồi `outline.scm`), Quick Open `@` và `#`, breadcrumbs. |
-| `lsp_status.rs` | Nút ⚡ ở status bar, popover server, chữ tiến trình, tab log. |
-| `diagnostics_status.rs` | Số lỗi / cảnh báo và thông báo tại con trỏ ở status bar. |
+| `hover.rs` | The hover and diagnostic popover. |
+| `markdown.rs` | Renders markdown (pulldown-cmark) into gpui elements; code blocks are colored with `lucerna-syntax`. A shared component. |
+| `goto.rs` | The commands for go to definition / type / implementation / declaration, and references; decides between jumping directly, opening a picker, or switching to references. |
+| `locations_picker.rs` | The location picker with a preview. |
+| `excerpt_list/` | A list of file → code excerpts split out of `search_view` (row data, file header, code line with gutter, background syntax highlighting, keyboard selection). Shared by the Search tab and the References tab. |
+| `references_view.rs` | The References tab. |
+| `symbols/` | The symbol source (LSP, then `outline.scm`), Quick Open `@` and `#`, breadcrumbs. |
+| `lsp_status.rs` | The ⚡ button in the status bar, the server popover, progress text, the log tab. |
+| `diagnostics_status.rs` | The error / warning count and the message at the cursor in the status bar. |
 
-## 4. Vòng đời server
+## 4. Server lifecycle
 
-1. `Documents` báo một file được mở (đã có văn bản và ngôn ngữ).
-2. Nếu `lucerna.lsp.enabled` là `false`, hoặc thư mục chưa tin cậy, thì dừng.
-3. `registry.servers_for(language, path)` → các `ServerKey`. Key chưa có slot thì khởi động ở nền: tìm binary → spawn → `initialize` (timeout 60 s) → `initialized` → `didChangeConfiguration`. Trong lúc đó slot là `Starting`.
-4. `didOpen` gửi ngay nếu server đã `Running`, không thì xếp hàng.
-5. Không tìm thấy binary: slot `NotFound`, nút ⚡ có chấm vàng, popover ghi `rust-analyzer not found on PATH. Install it or set "lsp": { "rust-analyzer": { "binary": { "path": … } } }`. Báo một lần cho mỗi server mỗi phiên (không lặp lại mỗi lần mở file).
-6. `initialize` lỗi hoặc tiến trình thoát trước đó: slot `Failed` với lỗi và 50 dòng stderr cuối; chấm đỏ.
-7. Server thoát khi đang chạy: request đang chờ trả `Err` (UI không báo lỗi riêng cho từng request), diagnostics của server đó bị xóa, slot `Failed` với mã thoát. Không tự restart.
-8. Đóng cửa sổ hoặc thoát app: `shutdown_all` song song, tối đa 5 s. `Drop` của registry cũng làm việc này.
+1. `Documents` reports that a file was opened (it already has text and a language).
+2. If `lucerna.lsp.enabled` is `false`, or the folder is not trusted, stop.
+3. `registry.servers_for(language, path)` → the `ServerKey`s. A key with no slot is started in the background: find the binary → spawn → `initialize` (60 s timeout) → `initialized` → `didChangeConfiguration`. Meanwhile the slot is `Starting`.
+4. `didOpen` is sent immediately if the server is already `Running`, otherwise queued.
+5. Binary not found: the slot is `NotFound`, the ⚡ button gets a yellow dot, and the popover says `rust-analyzer not found on PATH. Install it or set "lsp": { "rust-analyzer": { "binary": { "path": … } } }`. Reported once per server per session (not repeated every time a file is opened).
+6. `initialize` fails or the process exits before that: the slot is `Failed` with the error and the last 50 lines of stderr; red dot.
+7. The server exits while running: pending requests return `Err` (the UI does not report an error for each request), that server's diagnostics are cleared, and the slot is `Failed` with the exit code. No automatic restart.
+8. Closing the window or quitting the app: `shutdown_all` in parallel, at most 5 s. The registry's `Drop` does this too.
 
-## 5. Tin cậy thư mục (theo Zed)
+## 5. Folder trust (like Zed)
 
-- Thư mục mở lần đầu ở **Restricted Mode**: không khởi động server nào, và khóa `lsp` của `.lucerna/settings.json` bị bỏ qua (đọc bằng `get_trusted`). Các setting khác của workspace vẫn áp dụng: chúng không chạy được code. Đây là chỗ lệch khỏi Zed (Zed bỏ cả file settings của project).
-- Title bar hiện nút chữ "Restricted Mode" có icon cảnh báo (`warning`), như Zed. Bấm vào, hoặc chạy lệnh `workbench.trust.manage`, thì mở **modal tin cậy** (dùng `popover`):
-  - tiêu đề có icon cảnh báo: "Unrecognized Project";
-  - đường dẫn thư mục, màu mờ;
+- A folder opened for the first time is in **Restricted Mode**: no server is started, and the `lsp` key of `.lucerna/settings.json` is ignored (read with `get_trusted`). Other workspace settings still apply: they cannot run code. This is where Lucerna differs from Zed (Zed ignores the project's whole settings file).
+- The title bar shows a text button "Restricted Mode" with a warning icon (`warning`), like Zed. Clicking it, or running the command `workbench.trust.manage`, opens the **trust modal** (using `popover`):
+  - a title with a warning icon: "Unrecognized Project";
+  - the folder path, in a muted color;
   - "Untrusted projects are opened in Restricted Mode to protect your system.";
-  - "Restricted Mode prevents:" và hai gạch đầu dòng "Language servers from running", "`lsp` settings in .lucerna/settings.json from being applied";
-  - checkbox "Trust all projects in the `<parent>` folder";
-  - hai nút: "Stay in Restricted Mode" (Esc) và "Trust and Continue" (Enter, nút chính).
-- Modal tự hiện lần đầu khi mở một file mà ngôn ngữ của nó có server trên PATH, trong một thư mục chưa tin cậy (không hiện ngay khi mở thư mục, để người chỉ xem file thường không bị hỏi). "Stay in Restricted Mode" thì modal không tự hiện lại trong phiên đó.
-- Lựa chọn lưu ở `<data dir>/trusted.json`: `{ "folders": [..], "parents": [..] }`. Thư mục được tin cậy nếu nó có trong `folders` hoặc nằm dưới một mục trong `parents`. Lệnh `workbench.trust.clear` xóa hết và chuyển các cửa sổ về Restricted Mode (dừng mọi server).
-- Setting `session.trustAllWorktrees` (mặc định `false`, chỉ đọc ở lớp User): `true` thì mọi thư mục coi như tin cậy, không lưu vào `trusted.json`.
-- Single-file mode (`luc file.rs`): thư mục chứa file được xét như thư mục thường.
-- Khi người dùng tin cậy, các file đang mở được `didOpen` ngay.
+  - "Restricted Mode prevents:" and two bullets "Language servers from running", "`lsp` settings in .lucerna/settings.json from being applied";
+  - a checkbox "Trust all projects in the `<parent>` folder";
+  - two buttons: "Stay in Restricted Mode" (Esc) and "Trust and Continue" (Enter, the primary button).
+- The modal appears automatically the first time a file is opened whose language has a server on PATH, in an untrusted folder (not right when the folder is opened, so someone who only views ordinary files is not asked). After "Stay in Restricted Mode", the modal does not reappear on its own for that session.
+- The choice is stored in `<data dir>/trusted.json`: `{ "folders": [..], "parents": [..] }`. A folder is trusted if it is in `folders` or lies under an entry in `parents`. The command `workbench.trust.clear` clears everything and returns windows to Restricted Mode (stopping every server).
+- The setting `session.trustAllWorktrees` (default `false`, read only in the User layer): when `true`, every folder counts as trusted, and nothing is stored in `trusted.json`.
+- Single-file mode (`luc file.rs`): the folder containing the file is treated as an ordinary folder.
+- When the user trusts, files that are already open get `didOpen` right away.
 
-## 6. Đồng bộ document
+## 6. Document sync
 
-- **Mở:** khi `Documents` tải xong một file (hoặc file đã có thì khi view đầu tiên mở), `LanguageServers` gọi `sync.open`. Một document chỉ được `didOpen` một lần dù có nhiều tab.
-- **Thay đổi trên đĩa:** reload của `Documents` (do agent ghi file, qua `on_worktree_event` sẵn có) gọi `sync.change` với snapshot mới. Không gửi khi reload không đổi nội dung.
-- **Đóng:** khi view cuối của document đóng (`collect_closed`), gọi `sync.close`.
-- **Đổi ngôn ngữ** (`languages_changed`): `didClose` với server cũ, `didOpen` với server mới nếu khác.
-- **File bị xóa:** `didClose`; sự kiện xóa vẫn tới `didChangeWatchedFiles`.
-- `Documents` phát sự kiện `DocumentEvent::{Opened, Reloaded, Closed, LanguageChanged}` (entity event của gpui); `LanguageServers` đăng ký nghe.
+- **Open:** when `Documents` finishes loading a file (or, if the file already exists, when the first view opens), `LanguageServers` calls `sync.open`. A document gets `didOpen` only once even with several tabs.
+- **Change on disk:** a reload in `Documents` (due to an agent writing the file, through the existing `on_worktree_event`) calls `sync.change` with the new snapshot. Not sent when a reload does not change the content.
+- **Close:** when the last view of a document closes (`collect_closed`), call `sync.close`.
+- **Language change** (`languages_changed`): `didClose` with the old server, `didOpen` with the new server if different.
+- **File deleted:** `didClose`; the delete event still reaches `didChangeWatchedFiles`.
+- `Documents` emits the events `DocumentEvent::{Opened, Reloaded, Closed, LanguageChanged}` (gpui entity events); `LanguageServers` subscribes to them.
 
-## 7. Tính năng và giao diện
+## 7. Features and UI
 
-Mọi tính năng LSP chỉ bật khi file có ít nhất một server `Running` hỗ trợ capability tương ứng; không thì lệnh không làm gì (không báo lỗi), trừ symbol có `outline.scm`.
+Every LSP feature is on only when the file has at least one `Running` server that supports the matching capability; otherwise the command does nothing (no error shown), except symbols where `outline.scm` exists.
 
 ### 7.1 Diagnostics
 
-**Trong editor** (`CodeView`):
-- **Gạch lượn sóng** cao 1 px, dưới range, màu theo mức độ: `error`, `warning`, `info`, `hint`. Range rỗng thì gạch một ký tự (hoặc ký tự cuối dòng). Diagnostic có tag `Unnecessary` và mức độ dưới warning thì không gạch mà làm mờ chữ còn 30% độ đục. Tag `Deprecated` thì gạch ngang chữ.
-- **Icon gutter**: mỗi dòng có error / warning / info thì hiện icon của mức cao nhất (Lucide `circle-x`, `triangle-alert`, `info`, 12 px, màu theo mức độ) ở mép trái gutter, trước số dòng. Gutter rộng thêm 16 px khi `lucerna.diagnostics.gutterIcons` bật và file có server. Hint không có icon.
-- **Inline** (khi `lucerna.diagnostics.inline.enabled`): sau ký tự cuối của dòng, cách 4 em, hiện dòng đầu của thông báo của diagnostic nặng nhất trên dòng; nền là màu mức độ ở 5% độ đục, chữ màu mức độ, font code, cỡ chữ nhỏ hơn 1 px, bo góc 2 px, padding ngang 4 px. Bị cắt ở mép phải editor. Không hiện cho hint.
-- **Scrollbar**: vạch ngang cao 2 px ở nửa phải của rãnh scrollbar, màu theo mức độ (error, warning; info và hint không vẽ), vẽ ở vị trí tỉ lệ của dòng.
-- Dữ liệu vẽ (`code_view/diagnostics.rs`) dựng lại khi diagnostics của file đổi hoặc file reload, không dựng theo frame: danh sách theo dòng gồm các đoạn gạch, mức cao nhất của dòng và thông báo inline.
+**In the editor** (`CodeView`):
+- **Squiggles** 1 px tall, under the range, colored by severity: `error`, `warning`, `info`, `hint`. An empty range squiggles one character (or the last character of the line). A diagnostic with the `Unnecessary` tag and a severity below warning gets no squiggle; instead its text is faded to 30% opacity. The `Deprecated` tag strikes the text through.
+- **Gutter icon**: each line with an error / warning / info shows the icon of the highest severity (Lucide `circle-x`, `triangle-alert`, `info`, 12 px, colored by severity) at the left edge of the gutter, before the line number. The gutter is 16 px wider when `lucerna.diagnostics.gutterIcons` is on and the file has a server. Hints have no icon.
+- **Inline** (when `lucerna.diagnostics.inline.enabled`): after the last character of the line, 4 em away, shows the first line of the message of the most severe diagnostic on the line; the background is the severity color at 5% opacity, the text is in the severity color, code font, 1 px smaller, 2 px rounded corners, 4 px horizontal padding. Clipped at the editor's right edge. Not shown for hints.
+- **Scrollbar**: a horizontal mark 2 px tall in the right half of the scrollbar track, colored by severity (error, warning; info and hint are not drawn), drawn at the line's proportional position.
+- The drawing data (`code_view/diagnostics.rs`) is rebuilt when the file's diagnostics change or the file reloads, not per frame: a per-line list of squiggle segments, the highest severity of the line, and the inline message.
 
-**Hover diagnostic:** rê chuột lên range có diagnostic (range hẹp nhất thắng) thì hover (§7.2) có thêm một khối diagnostic ở trên: nền `<mức>.background`, viền 1 px `<mức>.border`, bo góc, padding 4×8; nội dung là thông báo (markdown nếu server gửi markdown) và dòng mờ `source(code)`; `code` là link nếu có `codeDescription.href`. Nhiều diagnostic chồng nhau thì liệt kê lần lượt.
+**Diagnostic hover:** hovering the mouse over a range with a diagnostic (the narrowest range wins) adds a diagnostic block at the top of the hover (§7.2): background `<severity>.background`, 1 px border `<severity>.border`, rounded corners, 4×8 padding; the content is the message (markdown if the server sent markdown) and a muted line `source(code)`; `code` is a link if there is `codeDescription.href`. Overlapping diagnostics are listed one after another.
 
-**Status bar** (bên trái, sau các nút panel):
-- `⊗ 3  ⚠ 12` (icon Lucide `circle-x` màu `error`, `triangle-alert` màu `warning`, số màu `text.muted`); không có lỗi thì một icon `check` mờ. Chỉ hiện khi có ít nhất một server từng chạy.
-- Ngay sau đó: dòng đầu thông báo của diagnostic tại con trỏ, mờ, cắt ở 80 ký tự.
-- Bấm số đếm: chạy `editor.action.marker.nextInFiles`. Bấm thông báo: chạy `editor.action.marker.next`.
-- Cập nhật theo đợt 50 ms.
+**Status bar** (on the left, after the panel buttons):
+- `⊗ 3  ⚠ 12` (Lucide icons `circle-x` in `error` color, `triangle-alert` in `warning` color, the numbers in `text.muted`); with no errors, a muted `check` icon. Shown only when at least one server has ever run.
+- Right after: the first line of the message of the diagnostic at the cursor, muted, cut at 80 characters.
+- Clicking the count runs `editor.action.marker.nextInFiles`. Clicking the message runs `editor.action.marker.next`.
+- Updated in 50 ms batches.
 
-**F8:** `editor.action.marker.nextInFiles` (F8) / `prevInFiles` (⇧F8) đi qua các file theo thứ tự đường dẫn, mở file (preview) khi cần; `editor.action.marker.next` (⌥F8) / `prev` (⇧⌥F8) chỉ trong file. Đặt con trỏ ở đầu range, cuộn vào giữa, và mở hover diagnostic tại đó ngay (không trễ). Ghi vào lịch sử điều hướng.
+**F8:** `editor.action.marker.nextInFiles` (F8) / `prevInFiles` (⇧F8) walk through files in path order, opening the file (as a preview) when needed; `editor.action.marker.next` (⌥F8) / `prev` (⇧⌥F8) stay within the file. Place the cursor at the start of the range, scroll it to the middle, and open the diagnostic hover there immediately (no delay). Recorded in the navigation history.
 
 ### 7.2 Hover
 
-- **Kích hoạt:** chuột dừng trên một ký tự có chữ. Sau `editor.hover.delay / 2` thì gửi `textDocument/hover` (và tìm diagnostic tại chỗ); sau đủ `editor.hover.delay` thì hiện nếu đã có kết quả, không thì hiện ngay khi kết quả về. Chuột rời ký tự trước khi hiện thì hủy (drop request → `$/cancelRequest`). Chuột vẫn trong range của kết quả đang hiện thì không gửi lại.
-- `editor.action.showHover` (⌘K ⌘I): hiện ngay tại con trỏ, không trễ.
-- **Ẩn:** chuột rời range. Khi `editor.hover.sticky` bật, rê chuột vào popover giữ nó lại; rời popover hoặc range thì ẩn sau `editor.hover.hidingDelay`. Cuộn editor, gõ phím, Esc, hoặc mất focus thì ẩn ngay.
-- **Hình thức** (theo Zed): dùng `popover` của `ui.rs` (nền `elevated_surface.background`, viền, bo góc, bóng) nhưng đặt tại con trỏ: phía trên dòng nếu đủ chỗ, không thì phía dưới; cách mép phải editor 8 px. Padding 8 px. Rộng tối đa min(nửa editor, 120 ký tự), tối thiểu 20 ký tự; cao tối đa min(nửa editor, 16 dòng), cuộn được bằng chuột. Khối diagnostic (nếu có) nằm trên, cách 6 px. Range đang hover có nền `element.hover`.
-- **Nội dung:** `MarkupContent` markdown hoặc chữ thường; `MarkedString` cũ thì code block theo ngôn ngữ. Cắt ở 100 000 byte. Render bằng `markdown.rs`:
-  - đoạn văn font UI; tiêu đề in đậm, cỡ tăng nhẹ; danh sách; trích dẫn mờ có vạch trái; đường kẻ;
-  - code inline: font code, nền `editor.background`;
-  - khối code: font code, tô màu bằng `lucerna-syntax` theo tên ngôn ngữ của fence (không có thì theo ngôn ngữ của file), không wrap, cuộn ngang trong khối;
-  - link: gạch chân; bấm thì mở trình duyệt (`http`, `https`) hoặc mở file (`file://…#L10`) trong Lucerna;
-  - chọn và copy chữ: ngoài phạm vi.
+- **Trigger:** the mouse rests on a character that has text. After `editor.hover.delay / 2`, send `textDocument/hover` (and look for a diagnostic at that spot); after the full `editor.hover.delay`, show it if a result is already in, otherwise show it as soon as the result arrives. If the mouse leaves the character before it is shown, cancel (drop the request → `$/cancelRequest`). If the mouse is still within the range of the result being shown, do not send again.
+- `editor.action.showHover` (⌘K ⌘I): shows at the cursor right away, with no delay.
+- **Hide:** the mouse leaves the range. When `editor.hover.sticky` is on, moving the mouse into the popover keeps it; leaving the popover or the range hides it after `editor.hover.hidingDelay`. Scrolling the editor, typing, Esc, or losing focus hides it immediately.
+- **Look** (following Zed): uses the `popover` of `ui.rs` (background `elevated_surface.background`, border, rounded corners, shadow) but placed at the cursor: above the line if there is room, otherwise below; 8 px from the editor's right edge. 8 px padding. At most min(half the editor, 120 characters) wide, at least 20 characters; at most min(half the editor, 16 lines) tall, scrollable with the mouse. The diagnostic block (if any) is on top, 6 px apart. The hovered range has the background `element.hover`.
+- **Content:** `MarkupContent` as markdown or plain text; the old `MarkedString` becomes a code block of the given language. Cut at 100,000 bytes. Rendered with `markdown.rs`:
+  - paragraphs in the UI font; headings in bold, slightly larger; lists; muted quotes with a left bar; rules;
+  - inline code: code font, `editor.background` background;
+  - code blocks: code font, colored with `lucerna-syntax` by the fence's language name (the file's language if absent), no wrapping, scrolling horizontally within the block;
+  - links: underlined; clicking opens the browser (`http`, `https`) or opens a file (`file://…#L10`) in Lucerna;
+  - selecting and copying text: out of scope.
 - Settings: `editor.hover.enabled` (`true`), `editor.hover.delay` (300), `editor.hover.sticky` (`true`), `editor.hover.hidingDelay` (300).
 
-### 7.3 Đi tới định nghĩa và ⌘-click
+### 7.3 Go to definition and ⌘-click
 
-**Lệnh** (`goto.rs`), tất cả lấy vị trí con trỏ của editor đang focus:
+**Commands** (`goto.rs`), all taking the cursor position of the focused editor:
 
-| Lệnh | Request | Nhiều kết quả |
+| Command | Request | Multiple results |
 |---|---|---|
 | `editor.action.revealDefinition` | `definition` | picker |
-| `editor.action.peekDefinition` | `definition` | luôn picker (kể cả 1 kết quả) |
-| `editor.action.revealDefinitionAside` | `definition` | picker; mở ở group bên cạnh |
-| `editor.action.goToTypeDefinition` / `peekTypeDefinition` | `typeDefinition` | picker / luôn picker |
-| `editor.action.goToImplementation` / `peekImplementation` | `implementation` | picker / luôn picker |
-| `editor.action.revealDeclaration` / `peekDeclaration` | `declaration` | picker / luôn picker |
+| `editor.action.peekDefinition` | `definition` | always a picker (even with 1 result) |
+| `editor.action.revealDefinitionAside` | `definition` | picker; opens in the adjacent group |
+| `editor.action.goToTypeDefinition` / `peekTypeDefinition` | `typeDefinition` | picker / always a picker |
+| `editor.action.goToImplementation` / `peekImplementation` | `implementation` | picker / always a picker |
+| `editor.action.revealDeclaration` / `peekDeclaration` | `declaration` | picker / always a picker |
 
-- Kết quả `Location` hoặc `LocationLink` (dùng `targetSelectionRange`). Gộp từ mọi server hỗ trợ, bỏ trùng.
-- **Không có kết quả:** popover nhỏ ở con trỏ "No definition found for '`word`'" (theo kiểu: "No type definition found…", "No implementation found…", "No declaration found…"), tự tắt sau 3 s hoặc khi di chuyển. Khi chạy từ ⌘-click thì không hiện.
-- **Kết quả duy nhất trùng vị trí con trỏ** (lệnh không phải peek): chạy `editor.action.goToReferences` thay thế (như VS Code `alternativeDefinitionCommand` và Zed `go_to_definition_fallback`).
-- **Một kết quả:** mở file theo `OpenMode::Preview` (setting `workbench.editor.enablePreview`), đặt con trỏ đầu range, cuộn vào giữa. Ghi lịch sử điều hướng trước khi nhảy.
-- Setting `editor.gotoLocation.multipleDefinitions`, `multipleTypeDefinitions`, `multipleImplementations`, `multipleDeclarations`, `multipleReferences`: `peek` (mặc định, mở picker), `gotoAndPeek` (nhảy tới kết quả đầu và mở picker), `goto` (chỉ nhảy tới kết quả đầu).
+- The result is a `Location` or `LocationLink` (using `targetSelectionRange`). Merged from every server that supports it, with duplicates removed.
+- **No result:** a small popover at the cursor "No definition found for '`word`'" (in the same style: "No type definition found…", "No implementation found…", "No declaration found…"), which disappears after 3 s or when you move. Not shown when run from ⌘-click.
+- **A single result at the cursor position** (for a non-peek command): run `editor.action.goToReferences` instead (like VS Code's `alternativeDefinitionCommand` and Zed's `go_to_definition_fallback`).
+- **A single result:** open the file with `OpenMode::Preview` (setting `workbench.editor.enablePreview`), place the cursor at the start of the range, scroll it to the middle. Record the navigation history before jumping.
+- The settings `editor.gotoLocation.multipleDefinitions`, `multipleTypeDefinitions`, `multipleImplementations`, `multipleDeclarations`, `multipleReferences`: `peek` (default, opens a picker), `gotoAndPeek` (jump to the first result and open a picker), `goto` (only jump to the first result).
 
 **⌘-hover / ⌘-click** (`code_view/link.rs`):
-- Giữ ⌘ (Ctrl trên Linux/Windows) và rê chuột: gửi `definition` cho vị trí đó (hủy request cũ khi đổi vị trí; cache theo range của kết quả). Có kết quả thì range gốc (`originSelectionRange`, không có thì từ trong hover) được gạch chân thẳng 1 px và đổi màu `link_text.hover`; con trỏ chuột thành bàn tay. Nhả ⌘ hoặc rời range thì bỏ.
-- ⌘-click: đi tới định nghĩa (như `revealDefinition`); ⌥⌘-click: mở ở group bên cạnh. ⌘-click không trúng range có kết quả thì giữ hành vi click cũ.
+- Hold ⌘ (Ctrl on Linux/Windows) and move the mouse: send `definition` for that position (cancelling the old request when the position changes; cached by the result's range). If there is a result, the origin range (`originSelectionRange`, or the in-hover word if absent) gets a straight 1 px underline and changes to the `link_text.hover` color; the mouse cursor becomes a hand. Releasing ⌘ or leaving the range removes it.
+- ⌘-click: go to the definition (like `revealDefinition`); ⌥⌘-click: open in the adjacent group. A ⌘-click that does not hit a range with a result keeps the old click behavior.
 
-**Lịch sử điều hướng** (`nav_history.rs`):
-- Mỗi group có một ngăn xếp `back` / `forward` các `(path, Point, scroll_top_row)`, tối đa 50 mục.
-- Ghi trước mỗi lần nhảy bằng lệnh: định nghĩa, tham chiếu, symbol (`@`, `#`, breadcrumbs), F8, Quick Open (file, `:dòng`), kết quả Search. Nhảy trong cùng file chỉ ghi khi cách ít nhất 10 dòng (Zed). Ghi mới thì xóa `forward`.
-- `workbench.action.navigateBack` (⌃-) và `workbench.action.navigateForward` (⌃⇧-): mở file nếu cần (không preview), đặt con trỏ, khôi phục cuộn. File không còn thì bỏ qua mục đó.
+**Navigation history** (`nav_history.rs`):
+- Each group has a `back` / `forward` stack of `(path, Point, scroll_top_row)`, at most 50 entries.
+- Recorded before every jump made by a command: definition, references, symbols (`@`, `#`, breadcrumbs), F8, Quick Open (file, `:line`), Search results. A jump within the same file is recorded only when it is at least 10 lines away (Zed). A new record clears `forward`.
+- `workbench.action.navigateBack` (⌃-) and `workbench.action.navigateForward` (⌃⇧-): open the file if needed (not as a preview), place the cursor, restore the scroll. If the file no longer exists, skip that entry.
 
-### 7.4 Picker vị trí (`locations_picker.rs`)
+### 7.4 Location picker (`locations_picker.rs`)
 
-Theo `lsp_locations` của Zed, dùng `popover`, `picker_input_row`, `picker_list`, `picker_row`:
-- Modal ở vị trí như Quick Open, nhưng rộng hơn: min(90% cửa sổ, 1100 px), cao min(70% cửa sổ, 560 px).
-- Tiêu đề trong ô nhập (placeholder): "Filter definitions…", "Filter references…", "Filter implementations…", ….
-- **Bên trái (40%)**: danh sách gom theo file. Hàng header file (không chọn được): icon file, tên file, thư mục mờ, số kết quả ở bên phải. Hàng kết quả: số dòng mờ căn phải (rộng theo số chữ số lớn nhất), rồi nội dung dòng đã bỏ khoảng trắng đầu, font code, phần trong range có nền `search.match_background`. Đọc nội dung dòng ở nền; chưa có thì hàng chỉ có số dòng.
-- **Bên phải (60%)**: preview là một `CodeView` chỉ đọc của file đang chọn (mở qua `Documents`, chia sẻ văn bản và cú pháp với tab đã mở), cuộn để range ở giữa, các dòng của range có nền `editor.highlighted_line.background`. Viền trái 1 px `border`.
-- Gõ để lọc mờ trên "tên file + nội dung dòng". `↑`/`↓` đổi kết quả (bỏ qua header), preview theo. `Enter` mở (preview tab), `⌘Enter` mở ở group bên cạnh, `Esc` đóng. Bấm một hàng thì chọn; bấm đúp thì mở.
-- Kết quả sắp theo file (file hiện tại đứng đầu, sau đó theo đường dẫn), rồi theo vị trí. Chọn sẵn kết quả đầu tiên.
+Following Zed's `lsp_locations`, using `popover`, `picker_input_row`, `picker_list`, `picker_row`:
+- A modal positioned like Quick Open, but wider: min(90% of the window, 1100 px) wide, min(70% of the window, 560 px) tall.
+- The title is in the input box (placeholder): "Filter definitions…", "Filter references…", "Filter implementations…", ….
+- **Left side (40%)**: a list grouped by file. A file header row (not selectable): file icon, file name, muted directory, the number of results on the right. A result row: a muted, right-aligned line number (as wide as the largest digit count), then the line content with leading whitespace removed, code font, with the part inside the range having the `search.match_background` background. The line content is read in the background; until it is there, the row has only the line number.
+- **Right side (60%)**: the preview is a read-only `CodeView` of the selected file (opened through `Documents`, sharing text and syntax with an already open tab), scrolled so the range is in the middle, the range's lines having the background `editor.highlighted_line.background`. A 1 px `border` left border.
+- Typing filters fuzzily on "file name + line content". `↑`/`↓` change the result (skipping headers), and the preview follows. `Enter` opens (a preview tab), `⌘Enter` opens in the adjacent group, `Esc` closes. Clicking a row selects it; double-clicking opens it.
+- Results are ordered by file (the current file first, then by path), then by position. The first result is preselected.
 
 ### 7.5 References
 
-- `editor.action.goToReferences` (⇧F12): `textDocument/references` với `includeDeclaration: true`. Một kết quả thì nhảy; nhiều thì picker (theo `editor.gotoLocation.multipleReferences`); không có thì "No references found for '`word`'".
-- `references-view.findReferences` (⇧⌥F12): mở **tab References**:
-  - tối đa một tab trong mọi group, dùng lại mỗi lần (giống tab Search); tiêu đề tab: icon + "References to `word`"; không lưu vào workspace state;
-  - đầu tab là một hàng tóm tắt cao 32 px theo `search_toolbar`: "12 references in 4 files" và nút gập/mở tất cả, nút refresh (chạy lại request tại vị trí cũ);
-  - thân tab là `excerpt_list`: header file + các đoạn code, mỗi tham chiếu có 1 dòng ngữ cảnh trên dưới, dòng tham chiếu tô `search.match_background` ở range;
-  - phím và chuột như tab Search: `↑`/`↓`, `Enter` mở, F4 / ⇧F4 (`references-view.next` / `prev`) mở kết quả kế / trước.
-- **Tách `excerpt_list` khỏi `search_view`:** phần model hàng (`Row`, `FileResult`, `Results`, gập/mở, bước kế/trước), phần render header file và dòng code, và hàng đợi tô cú pháp nền chuyển vào `excerpt_list/`. Tab Search giữ thanh query, toggle, debounce, stream kết quả. Hành vi và giao diện tab Search không đổi; test hiện có của tab Search phải xanh nguyên. `lucerna-project::Excerpt` và `LineMatch` dùng chung; tab References tự dựng excerpt từ các range (đọc file ở nền, gộp các đoạn chồng hoặc kề nhau).
+- `editor.action.goToReferences` (⇧F12): `textDocument/references` with `includeDeclaration: true`. One result jumps; several open a picker (per `editor.gotoLocation.multipleReferences`); none shows "No references found for '`word`'".
+- `references-view.findReferences` (⇧⌥F12): opens the **References tab**:
+  - at most one tab across all groups, reused each time (like the Search tab); the tab title: icon + "References to `word`"; not saved into the workspace state;
+  - the top of the tab is a summary row 32 px tall following `search_toolbar`: "12 references in 4 files" and the collapse/expand-all button, and a refresh button (re-runs the request at the old position);
+  - the body of the tab is the `excerpt_list`: file headers + code excerpts, each reference with 1 line of context above and below, the reference line with `search.match_background` on the range;
+  - keys and mouse as in the Search tab: `↑`/`↓`, `Enter` opens, F4 / ⇧F4 (`references-view.next` / `prev`) open the next / previous result.
+- **Split `excerpt_list` out of `search_view`:** the row model (`Row`, `FileResult`, `Results`, collapse/expand, next/previous step), the rendering of file headers and code lines, and the background syntax-highlighting queue move into `excerpt_list/`. The Search tab keeps the query bar, the toggles, the debounce, and streaming the results. The Search tab's behavior and look do not change; the existing Search tab tests must stay fully green. `lucerna-project::Excerpt` and `LineMatch` are shared; the References tab builds excerpts itself from the ranges (reading files in the background, merging overlapping or adjacent excerpts).
 
-### 7.6 Symbol, Quick Open `@` và `#`, breadcrumbs
+### 7.6 Symbols, Quick Open `@` and `#`, breadcrumbs
 
-**Nguồn symbol của một document** (`symbols/source.rs`): có server hỗ trợ `documentSymbol` thì dùng nó; không thì `SyntaxState::outline` (nếu ngôn ngữ có `outline.scm`); không thì không có. Kết quả cache theo `(path, revision)`, tính lại sau khi document mở, reload, hoặc server vừa sẵn sàng; request debounce 300 ms. Một số server trả rỗng khi đang index: cache rỗng đó có thời hạn 2 s.
+**Symbol sources of a document** (`symbols/source.rs`): if a server supports `documentSymbol`, use it; otherwise `SyntaxState::outline` (if the language has `outline.scm`); otherwise there is none. The result is cached by `(path, revision)` and recomputed after the document opens, reloads, or the server has just become ready; requests are debounced by 300 ms. Some servers return empty while indexing: that empty cache entry expires after 2 s.
 
-**Quick Open `@`** (`workbench.action.gotoSymbol`, ⇧⌘O; gõ `@` trong Quick Open):
-- `parse_query` thêm `QuickOpenQuery::Symbols { text, group_by_kind }` (`@:` thì gom nhóm).
-- Hàng: icon loại (Lucide, màu `icon.muted`), tên (font code, các ký tự khớp tô `text.accent` ở 30% độ đục như Zed), `detail` mờ cùng dòng. Thụt lề 12 px mỗi cấp khi không lọc. Khi lọc thì không thụt lề, nhưng có tên tổ tiên mờ ở cuối hàng ("in `impl Foo`").
-- Lọc mờ trên "tổ tiên + tên"; chữ khớp phải nằm trong tên khi truy vấn là một từ (như Zed).
-- `@:`: các header nhóm theo loại "functions (12)", "structs (3)"…, thứ tự theo `SymbolKind`.
-- Không có truy vấn: chọn sẵn symbol sâu nhất chứa con trỏ.
-- **Xem trước khi di chuyển:** chọn một hàng thì editor đang mở cuộn tới symbol đó (giữa màn), và các dòng từ đầu tới cuối `range` của symbol có nền `editor.highlighted_line.background`. `Enter` đặt con trỏ ở đầu `selectionRange` và ghi lịch sử điều hướng. `Esc` trả lại vị trí cuộn và con trỏ cũ.
-- Trạng thái rỗng: "No symbols found" / đang chờ server: "Loading symbols…" / không có nguồn: "No language server or outline for this file".
+**Quick Open `@`** (`workbench.action.gotoSymbol`, ⇧⌘O; type `@` in Quick Open):
+- `parse_query` adds `QuickOpenQuery::Symbols { text, group_by_kind }` (`@:` groups).
+- Row: a kind icon (Lucide, `icon.muted` color), the name (code font, matched characters colored `text.accent` at 30% opacity like Zed), a muted `detail` on the same line. Indented 12 px per level when not filtering. When filtering there is no indentation, but a muted ancestor name at the end of the row ("in `impl Foo`").
+- Fuzzy filtering on "ancestors + name"; when the query is a single word, the matched text must be inside the name (like Zed).
+- `@:`: header groups by kind "functions (12)", "structs (3)"…, ordered by `SymbolKind`.
+- With no query: the deepest symbol containing the cursor is preselected.
+- **Preview while moving:** selecting a row scrolls the open editor to that symbol (in the middle of the screen), and the lines from the start to the end of the symbol's `range` get the background `editor.highlighted_line.background`. `Enter` places the cursor at the start of `selectionRange` and records the navigation history. `Esc` restores the old scroll position and cursor.
+- Empty states: "No symbols found" / while waiting for a server: "Loading symbols…" / no source: "No language server or outline for this file".
 
-**Quick Open `#`** (`workbench.action.showAllSymbols`, ⌘T; gõ `#`):
-- `QuickOpenQuery::WorkspaceSymbols(text)`. Truy vấn rỗng: "Type to search symbols".
-- Debounce 100 ms, gửi `workspace/symbol { query }` tới mọi server `Running` có capability; truy vấn mới thì drop request cũ (tự hủy). Kết quả về thì lọc mờ lại ở client, tối đa 100, file trong project (không bị ignore) đứng trước file ngoài.
-- Hàng hai dòng (theo Zed): dòng 1 icon loại + tên (font code, chữ khớp tô) + `containerName` mờ; dòng 2 đường dẫn tương đối + `:dòng`, cỡ nhỏ, mờ.
-- `Enter` mở file (preview), đặt con trỏ; `⌘Enter` mở ở group bên cạnh. Không xem trước khi di chuyển (như VS Code).
-- `WorkspaceSymbol` chỉ có `uri` (chưa có range) thì gọi `workspaceSymbol/resolve` nếu server hỗ trợ, không thì mở ở dòng 1.
-- Không có server nào chạy: "No language server is running".
+**Quick Open `#`** (`workbench.action.showAllSymbols`, ⌘T; type `#`):
+- `QuickOpenQuery::WorkspaceSymbols(text)`. Empty query: "Type to search symbols".
+- Debounce 100 ms, send `workspace/symbol { query }` to every `Running` server that has the capability; on a new query, drop the old request (it cancels itself). When results return, fuzzy-filter again on the client, at most 100, with files inside the project (not ignored) ahead of files outside.
+- A two-line row (following Zed): line 1 is the kind icon + name (code font, matched text colored) + a muted `containerName`; line 2 is the relative path + `:line`, small, muted.
+- `Enter` opens the file (as a preview) and places the cursor; `⌘Enter` opens in the adjacent group. No preview while moving (like VS Code).
+- If a `WorkspaceSymbol` has only a `uri` (no range yet), call `workspaceSymbol/resolve` if the server supports it, otherwise open at line 1.
+- No server is running: "No language server is running".
 
 **Breadcrumbs** (`symbols/breadcrumbs.rs`):
-- Một hàng cao 32 px ngay dưới thanh tab của mỗi group, chỉ cho tab code (không cho tab Search, References, Extensions). Nền `editor.background`, viền dưới 1 px `border_variant`, padding ngang 8 px, chữ cỡ UI nhỏ, màu `text.muted`.
-- Nội dung: đường dẫn tương đối của file chia theo thư mục (`crates › lucerna-lsp › src › server.rs`, tên file màu `text`), rồi chuỗi symbol tại con trỏ (`path_at`) với icon loại 12 px và tên font code. Dấu ngăn `›` màu placeholder (`text.muted` ở 60%). Quá 12 đoạn thì giữ 6 đầu, 6 cuối, giữa là `⋯`. Tràn ngang thì cắt bên trái.
-- Cả hàng là một nút (hover `ghost_element.hover`): bấm thì mở Quick Open `@`. `breadcrumbs.focusAndSelect` (⇧⌘.) cũng mở `@`.
-- Cập nhật khi con trỏ đổi (đợt 50 ms) hoặc cây symbol đổi.
+- A row 32 px tall right below each group's tab bar, only for code tabs (not for the Search, References, Extensions tabs). Background `editor.background`, a 1 px bottom border `border_variant`, 8 px horizontal padding, small UI font size, color `text.muted`.
+- Content: the file's relative path split by folder (`crates › lucerna-lsp › src › server.rs`, the file name in `text` color), then the chain of symbols at the cursor (`path_at`) with a 12 px kind icon and the name in code font. The `›` separator is in the placeholder color (`text.muted` at 60%). Beyond 12 segments, keep the first 6 and the last 6, with `⋯` in the middle. On horizontal overflow, cut on the left.
+- The whole row is a button (hover `ghost_element.hover`): clicking opens Quick Open `@`. `breadcrumbs.focusAndSelect` (⇧⌘.) also opens `@`.
+- Updated when the cursor changes (50 ms batches) or the symbol tree changes.
 - Settings: `breadcrumbs.enabled` (`true`), `breadcrumbs.filePath` (`on` | `off` | `last`), `breadcrumbs.symbolPath` (`on` | `off` | `last`), `breadcrumbs.icons` (`true`).
 
-### 7.7 Trạng thái server và log (`lsp_status.rs`)
+### 7.7 Server status and logs (`lsp_status.rs`)
 
-- **Nút ⚡** ở status bar bên phải (trước ngôn ngữ), dùng `icon_button` với icon Lucide `zap`, chỉ hiện khi có ít nhất một server được chọn cho các file đã mở, hoặc khi thư mục đang Restricted. Chấm 6 px ở góc: đỏ (`error`) khi có server `Failed`; vàng (`warning`) khi `NotFound` hoặc Restricted; không có chấm khi mọi thứ ổn. Tooltip: "Language Servers".
-- **Chữ tiến trình** cạnh nút, mờ: tiến trình `$/progress` mới nhất, "rust-analyzer: Indexing 45%" (`title` + `percentage` + `message`, cắt ở 60 ký tự), "+2" nếu có thêm; khi đang khởi động: "Starting rust-analyzer…". Ẩn khi không có gì.
-- **Popover** (bấm nút): danh sách server theo root. Mỗi hàng: chấm trạng thái (xanh Running, vàng Starting / NotFound, đỏ Failed, xám Stopped), tên server, root rút gọn mờ, và ở bên phải các nút chữ nhỏ "Restart", "Stop", "Log". Hàng `NotFound` / `Failed` có thêm dòng thông báo lỗi (§4). Cuối popover: "Restart All", "Stop All". Khi Restricted: một hàng "Restricted Mode — Trust this folder…" mở modal tin cậy.
-- **Tab log** (`lucerna:lsp-log/<server>`): mỗi server một tab, chỉ đọc, font code, cuộn được, tự cuộn xuống cuối khi đang ở cuối. Giữ 2000 dòng gần nhất: stderr, `window/logMessage`, `window/showMessage`, và các sự kiện vòng đời (đường dẫn binary, tham số, root, phiên bản server, mã thoát). Không lưu workspace state. Copy toàn bộ bằng ⌘A ⌘C.
-- Lệnh: `lucerna.lsp.restart` (server của file hiện tại), `lucerna.lsp.restartAll`, `lucerna.lsp.stopAll`, `lucerna.lsp.showLog`.
+- **The ⚡ button** in the status bar on the right (before the language), using `icon_button` with the Lucide icon `zap`, shown only when at least one server is selected for the open files, or when the folder is Restricted. A 6 px dot in the corner: red (`error`) when a server is `Failed`; yellow (`warning`) when `NotFound` or Restricted; no dot when all is well. Tooltip: "Language Servers".
+- **Progress text** next to the button, muted: the most recent `$/progress`, "rust-analyzer: Indexing 45%" (`title` + `percentage` + `message`, cut at 60 characters), "+2" if there are more; while starting: "Starting rust-analyzer…". Hidden when there is nothing.
+- **Popover** (click the button): a list of servers by root. Each row: a status dot (green Running, yellow Starting / NotFound, red Failed, gray Stopped), the server name, a muted shortened root, and on the right the small text buttons "Restart", "Stop", "Log". A `NotFound` / `Failed` row has an extra error message line (§4). At the bottom of the popover: "Restart All", "Stop All". When Restricted: a row "Restricted Mode — Trust this folder…" opens the trust modal.
+- **Log tab** (`lucerna:lsp-log/<server>`): one tab per server, read-only, code font, scrollable, auto-scrolling to the bottom when already at the bottom. Keeps the most recent 2000 lines: stderr, `window/logMessage`, `window/showMessage`, and lifecycle events (binary path, arguments, root, server version, exit code). Not saved in the workspace state. Copy everything with ⌘A ⌘C.
+- Commands: `lucerna.lsp.restart` (the current file's server), `lucerna.lsp.restartAll`, `lucerna.lsp.stopAll`, `lucerna.lsp.showLog`.
 
 ### 7.8 Vim
 
-Trong normal mode (khi `vim.enabled`):
+In normal mode (when `vim.enabled`):
 - `gd`: `editor.action.revealDefinition`; `gD`: `editor.action.revealDeclaration` (VSCodeVim).
 - `gh`: `editor.action.showHover` (VSCodeVim).
 - `]d` / `[d`: `editor.action.marker.next` / `prev` (Zed).
-- `⌃o` / `⌃i` (Vim jump list): `navigateBack` / `navigateForward`.
+- `⌃o` / `⌃i` (the Vim jump list): `navigateBack` / `navigateForward`.
 
-## 8. Lệnh, phím và settings
+## 8. Commands, keys and settings
 
-**Phím mới** (macOS; `default-keybindings.json`, `when` có `editorTextFocus` cho lệnh editor):
+**New keys** (macOS; `default-keybindings.json`, with `editorTextFocus` in `when` for editor commands):
 
-| Lệnh | Phím |
+| Command | Key |
 |---|---|
 | `editor.action.revealDefinition` | `f12` |
 | `editor.action.peekDefinition` | `alt+f12` |
@@ -364,105 +364,105 @@ Trong normal mode (khi `vim.enabled`):
 | `workbench.action.showAllSymbols` | `cmd+t` |
 | `breadcrumbs.focusAndSelect` | `shift+cmd+.` |
 | `workbench.action.navigateBack` / `navigateForward` | `ctrl+-` / `ctrl+shift+-` |
-| `references-view.next` / `prev` | `f4` / `shift+f4` (khi tab References có focus) |
+| `references-view.next` / `prev` | `f4` / `shift+f4` (when the References tab has focus) |
 
-Không có phím: `goToTypeDefinition`, `peekTypeDefinition`, `revealDeclaration`, `peekDeclaration`, `workbench.trust.manage`, `workbench.trust.clear`, `lucerna.lsp.*`. Tất cả có trong Command Palette.
+No key: `goToTypeDefinition`, `peekTypeDefinition`, `revealDeclaration`, `peekDeclaration`, `workbench.trust.manage`, `workbench.trust.clear`, `lucerna.lsp.*`. All are in the Command Palette.
 
-**Settings mới** (`default-settings.json`):
+**New settings** (`default-settings.json`):
 
-| Khóa | Mặc định | Ghi chú |
+| Key | Default | Notes |
 |---|---|---|
-| `lucerna.lsp.enabled` | `true` | Ghi đè được theo ngôn ngữ (`"[rust]": { … }`) |
-| `lucerna.lsp.languageServers` | `["..."]` | Theo ngôn ngữ. Thứ tự là ưu tiên; `"!tên"` tắt; `"..."` là các server còn lại của ngôn ngữ, trừ server mặc định tắt. Mặc định `[python]`: `["basedpyright", "!pyright", "..."]` |
-| `lsp` | `{}` | Object theo shape của Zed: `"lsp": { "<server>": { "binary": { "path", "arguments", "env" }, "initialization_options", "settings" } }`, thêm các trường khai báo server của bảng language server (`command`, `args`, `languages`, `file_types`, `root_markers`, `enabled`, `note`…; xem `2026-11-11-lsp-server-table-design.md` §3.1). Lớp workspace bị bỏ qua khi chưa tin cậy |
-| `session.trustAllWorktrees` | `false` | Chỉ đọc ở lớp User |
+| `lucerna.lsp.enabled` | `true` | Can be overridden per language (`"[rust]": { … }`) |
+| `lucerna.lsp.languageServers` | `["..."]` | Per language. The order is the priority; `"!name"` disables; `"..."` is the language's remaining servers, except servers disabled by default. Default for `[python]`: `["basedpyright", "!pyright", "..."]` |
+| `lsp` | `{}` | An object in Zed's shape: `"lsp": { "<server>": { "binary": { "path", "arguments", "env" }, "initialization_options", "settings" } }`, plus the server declaration fields of the language server table (`command`, `args`, `languages`, `file_types`, `root_markers`, `enabled`, `note`…; see `2026-11-11-lsp-server-table-design.md` §3.1). The workspace layer is ignored while untrusted |
+| `session.trustAllWorktrees` | `false` | Read only in the User layer |
 | `editor.hover.enabled` / `delay` / `sticky` / `hidingDelay` | `true` / `300` / `true` / `300` | |
 | `editor.gotoLocation.multipleDefinitions` (+ `TypeDefinitions`, `Implementations`, `Declarations`, `References`) | `peek` | `peek` \| `gotoAndPeek` \| `goto` |
 | `lucerna.diagnostics.gutterIcons` | `true` | |
 | `lucerna.diagnostics.inline.enabled` | `false` | |
 | `breadcrumbs.enabled` / `filePath` / `symbolPath` / `icons` | `true` / `on` / `on` / `true` | |
 
-**Lệch khỏi spec đã trình bày khi brainstorm:** khóa chọn server viết là `lucerna.lsp.languageServers` ghi đè theo ngôn ngữ bằng `"[python]": { … }` (cơ chế override có sẵn của Lucerna, theo VS Code), thay cho `languages.<Lang>.language_servers` của Zed; ngữ nghĩa `!` và `...` giữ nguyên. `lsp.enabled` đổi thành `lucerna.lsp.enabled` vì `lsp` đã là khóa object.
+**Deviation from the spec presented during brainstorming:** the server-selection key is written `lucerna.lsp.languageServers`, overridden per language with `"[python]": { … }` (Lucerna's existing override mechanism, following VS Code), instead of Zed's `languages.<Lang>.language_servers`; the semantics of `!` and `...` are kept. `lsp.enabled` was renamed `lucerna.lsp.enabled` because `lsp` is already an object key.
 
-**Context key mới:** `referencesViewFocus` (tab References có focus), `lspHoverVisible`.
+**New context keys:** `referencesViewFocus` (the References tab has focus), `lspHoverVisible`.
 
-## 9. Hiệu năng
+## 9. Performance
 
-- Luồng UI không đọc pipe, không parse JSON, không quy đổi vị trí cho cả file: thread đọc parse JSON; quy đổi diagnostics sang `Point` chạy ở background executor rồi mới vào UI, đã nhóm theo dòng.
-- `publishDiagnostics` dồn dập (rust-analyzer gửi hàng trăm file một lúc) được gộp theo đợt 50 ms trước khi vẽ lại.
-- Hover chỉ gửi request sau nửa thời gian trễ; ⌘-hover cache theo range. Request cũ luôn bị hủy khi có request mới cùng loại.
-- `documentSymbol` debounce 300 ms, cache theo revision.
-- Server chỉ khởi động khi cần; app chưa mở file nào có server thì không có tiến trình con và không chạy login shell.
-- Chưa có benchmark mới; kiểm bằng tay với rust-analyzer trên chính repo Lucerna: cuộn mượt khi file có hàng trăm diagnostics.
+- The UI thread does not read pipes, parse JSON, or convert positions for a whole file: the read thread parses JSON; converting diagnostics to `Point` runs on the background executor before entering the UI, already grouped by line.
+- Bursts of `publishDiagnostics` (rust-analyzer sends hundreds of files at once) are merged in 50 ms batches before redrawing.
+- Hover sends its request only after half the delay; ⌘-hover is cached by range. An old request is always cancelled when a new request of the same kind arrives.
+- `documentSymbol` is debounced by 300 ms and cached by revision.
+- Servers start only when needed; if the app has not opened any file with a server, there is no child process and no login shell is run.
+- No new benchmark yet; check by hand with rust-analyzer on the Lucerna repo itself: scrolling is smooth when a file has hundreds of diagnostics.
 
-## 10. Xử lý lỗi
+## 10. Error handling
 
-- Mọi thread của transport và mọi callback của `LanguageServers` bọc `catch_panic` / `guarded`; panic thì log và coi như server thoát.
-- JSON không đọc được: log mức warn, bỏ message, không ngắt kết nối. Header sai: coi như server thoát.
-- Request lỗi (`ResponseError`, timeout, server đóng): lệnh không làm gì, log mức debug; riêng go to definition thì hiện popover "No definition found…" chỉ khi kết quả là rỗng, không phải khi lỗi.
-- Vị trí ngoài file: cắt về cuối dòng / cuối file.
-- Settings sai kiểu (`lsp.x.binary.path` không phải chuỗi…): bỏ giá trị đó, dùng mặc định, báo trong popover ⚡ như lỗi settings khác.
-- `trusted.json` hỏng: coi như rỗng, ghi lại khi có thay đổi.
+- Every transport thread and every `LanguageServers` callback is wrapped in `catch_panic` / `guarded`; a panic is logged and treated as the server exiting.
+- Unreadable JSON: log at warn level, drop the message, do not disconnect. A bad header: treated as the server exiting.
+- A failed request (`ResponseError`, timeout, server closed): the command does nothing, logged at debug level; for go to definition specifically, the popover "No definition found…" is shown only when the result is empty, not on an error.
+- A position outside the file: clamped to the end of the line / end of the file.
+- A setting of the wrong type (`lsp.x.binary.path` is not a string…): drop that value, use the default, and report it in the ⚡ popover like other settings errors.
+- A corrupt `trusted.json`: treated as empty, rewritten when something changes.
 
-## 11. Kiểm thử
+## 11. Testing
 
-**`lucerna-lsp`** (không cần server thật):
-- Binary `fake-lsp-server` (trong `crates/lucerna-lsp/src/bin/`, chỉ build khi test): đọc kịch bản JSON từ biến môi trường (trả lời theo method, đẩy notification sau `initialized` hoặc sau `didOpen`/`didChange`, ngủ, crash, gửi request ngược). Ghi mọi message nhận được ra file để test kiểm tra.
-- Transport: framing (`Content-Type`, nhiều message trong một lần đọc, body lớn), response đúng id, drop future gửi `$/cancelRequest`, timeout, EOF trả `Closed` cho mọi request đang chờ.
-- Server: `initialize` gửi đúng capability; tự trả lời `workspace/configuration` theo `section`; `MethodNotFound` cho request lạ; shutdown đúng thứ tự, kill khi server không trả lời.
-- Registry: `languageServers` với `!` và `...`; root theo adapter (Cargo workspace lồng nhau, `go.work`); settings đổi thì restart / didChangeConfiguration / stop đúng trường hợp; `NotFound` khi PATH không có; `binary.path` không bị chạy thử.
-- Sync: version tăng; `Full` và `Incremental`; không `didOpen` file lớn; `didChangeWatchedFiles` theo glob.
-- Position: UTF-16 với emoji và chữ CJK; UTF-8; ngoài phạm vi.
-- Diagnostics: bỏ khi lệch version; `next` qua file và vòng lại, bỏ hint; tổng số.
-- Symbols: `SymbolInformation` phẳng thành cây; `path_at`.
-- Test với `rust-analyzer` thật trên một crate fixture nhỏ: `#[ignore]`, chạy tay (`cargo test -p lucerna-lsp -- --ignored`).
+**`lucerna-lsp`** (no real server needed):
+- A `fake-lsp-server` binary (in `crates/lucerna-lsp/src/bin/`, built only for tests): reads a JSON script from an environment variable (replies by method, pushes notifications after `initialized` or after `didOpen`/`didChange`, sleeps, crashes, sends reverse requests). Writes every message received to a file for the tests to check.
+- Transport: framing (`Content-Type`, several messages in one read, a large body), a response with the right id, dropping a future sends `$/cancelRequest`, timeout, EOF returns `Closed` to every pending request.
+- Server: `initialize` sends the right capabilities; `workspace/configuration` is answered by `section`; `MethodNotFound` for unknown requests; shutdown in the right order, kill when the server does not answer.
+- Registry: `languageServers` with `!` and `...`; roots per adapter (nested Cargo workspaces, `go.work`); changing settings restarts / sends didChangeConfiguration / stops in the right cases; `NotFound` when PATH lacks it; `binary.path` is not probed.
+- Sync: the version increases; `Full` and `Incremental`; no `didOpen` for a large file; `didChangeWatchedFiles` by glob.
+- Position: UTF-16 with emoji and CJK text; UTF-8; out of range.
+- Diagnostics: dropped on a version mismatch; `next` across files and wrapping, skipping hints; totals.
+- Symbols: a flat `SymbolInformation` becomes a tree; `path_at`.
+- Tests with a real `rust-analyzer` on a small fixture crate: `#[ignore]`, run by hand (`cargo test -p lucerna-lsp -- --ignored`).
 
-**`lucerna-syntax`:** `outline` với fixture `outline.scm` + grammar WASM JSON đã có (hoặc grammar bundled + query test), cha con theo range, đoán `kind`.
+**`lucerna-syntax`:** `outline` with an `outline.scm` fixture + the existing WASM JSON grammar (or a bundled grammar + a test query), parent-child by range, guessing `kind`.
 
-**`lucerna-settings`:** `get_trusted` bỏ lớp workspace, giữ gộp object.
+**`lucerna-settings`:** `get_trusted` skips the workspace layer, and still merges objects.
 
 **`lucerna-workbench`** (`TestAppContext`, `fake-lsp-server`):
-- Mở file → `didOpen`; agent ghi file → `didChange`; đóng tab cuối → `didClose`.
-- Restricted Mode: không có server; modal hiện khi mở file có server; Trust → server chạy; `trustAllWorktrees`.
-- Diagnostics: gạch chân, icon gutter, inline (bật / tắt), số đếm status bar, F8 qua hai file, ⌥F8 trong file.
-- Hover: trễ, hủy khi rời, sticky, khối diagnostic, markdown có code block.
-- F12 một kết quả nhảy; nhiều kết quả mở picker; trùng chỗ con trỏ thì chạy references; không có thì popover; ⌘-click; back / forward.
-- Picker: lọc, preview theo chọn, Enter, ⌘Enter, Esc.
-- References tab: tóm tắt, header, Enter mở dòng, F4; tab Search vẫn xanh.
-- `@`: cây, lọc, `@:`, xem trước và Esc trả lại; fallback `outline.scm` khi không có server.
-- `#`: debounce, hủy request cũ, sắp xếp trong project trước.
-- Breadcrumbs: theo con trỏ, bấm mở `@`, settings tắt.
-- Nút ⚡: NotFound, Failed với stderr, Restart, tab log.
+- Open a file → `didOpen`; an agent writes the file → `didChange`; close the last tab → `didClose`.
+- Restricted Mode: no server; the modal appears when opening a file that has a server; Trust → the server runs; `trustAllWorktrees`.
+- Diagnostics: underline, gutter icon, inline (on / off), the status bar count, F8 across two files, ⌥F8 within a file.
+- Hover: the delay, cancelling on leave, sticky, the diagnostic block, markdown with a code block.
+- F12 with one result jumps; several results open a picker; a result at the cursor runs references; none shows the popover; ⌘-click; back / forward.
+- Picker: filtering, preview following the selection, Enter, ⌘Enter, Esc.
+- References tab: summary, header, Enter opens the line, F4; the Search tab stays green.
+- `@`: the tree, filtering, `@:`, preview and Esc restoring; the `outline.scm` fallback when there is no server.
+- `#`: debounce, cancelling the old request, in-project ordering first.
+- Breadcrumbs: following the cursor, clicking opens `@`, settings off.
+- The ⚡ button: NotFound, Failed with stderr, Restart, the log tab.
 - Vim: `gd`, `gh`, `]d`.
 
-**Review giao diện:** chạy app với rust-analyzer trên repo Lucerna, đặt cạnh Zed: hover, gạch chân, picker, tab References, breadcrumbs, `@`, `#`, nút ⚡, modal tin cậy. Chụp màn hình lưu cạnh plan.
+**UI review:** run the app with rust-analyzer on the Lucerna repo, side by side with Zed: hover, squiggles, picker, the References tab, breadcrumbs, `@`, `#`, the ⚡ button, the trust modal. Save screenshots next to the plan.
 
-## 12. Thứ tự triển khai
+## 12. Implementation order
 
-Mỗi bước tự chạy được và có test:
+Each step runs on its own and has tests:
 1. `lucerna-lsp`: transport, server, `fake-lsp-server`, position.
-2. Adapter, môi trường login shell, registry, settings (`lsp`, `lucerna.lsp.*`, `get_trusted`), tin cậy thư mục, nút ⚡, tab log.
-3. Sự kiện của `Documents`, đồng bộ document, kho diagnostics, màu theme, vẽ diagnostics (gạch chân, gutter, inline, scrollbar), status bar, F8.
+2. Adapters, login shell environment, registry, settings (`lsp`, `lucerna.lsp.*`, `get_trusted`), folder trust, the ⚡ button, the log tab.
+3. `Documents` events, document sync, the diagnostics store, theme colors, drawing diagnostics (underline, gutter, inline, scrollbar), the status bar, F8.
 4. `markdown.rs`, hover.
-5. Đi tới định nghĩa (các biến thể), ⌘-click, picker vị trí, lịch sử điều hướng.
-6. Tách `excerpt_list` từ tab Search, tab References.
-7. `outline.scm`, nguồn symbol, `@`, breadcrumbs, `#`.
-8. Vim, review giao diện cạnh Zed, review toàn nhánh, `scripts/bundle-app.sh --install`.
+5. Go to definition (the variants), ⌘-click, the location picker, navigation history.
+6. Split `excerpt_list` out of the Search tab, the References tab.
+7. `outline.scm`, the symbol source, `@`, breadcrumbs, `#`.
+8. Vim, UI review next to Zed, a review of the whole branch, `scripts/bundle-app.sh --install`.
 
-## 13. Rủi ro
+## 13. Risks
 
-| Rủi ro | Cách giảm |
+| Risk | Mitigation |
 |---|---|
-| `lsp-types` bản mới đổi kiểu (`Uri` thay `Url` từ 0.96) | Ghim một bản, bọc quy đổi đường dẫn ↔ URI trong một hàm |
-| PATH của app GUI trên macOS thiếu `~/.cargo/bin`, `~/go/bin`, nvm… | Lấy môi trường login shell; `binary.path` là lối thoát |
-| rust-analyzer gửi diagnostics `cargo check` cho file chưa mở | Kho diagnostics giữ cả file chưa mở; số đếm và F8 tính cả chúng |
-| Server gửi vị trí theo bản văn bản cũ khi agent ghi file liên tục | Bỏ diagnostics lệch version; server sẽ gửi lại |
-| Tách `excerpt_list` làm hỏng tab Search | Làm ở bước riêng, test tab Search phải xanh nguyên trước khi thêm References |
-| Login shell chậm hoặc in rác (oh-my-zsh) | Timeout 5 s, đọc `env -0` sau dấu phân cách riêng, lỗi thì dùng môi trường tiến trình |
-| Ổ đĩa chật | `lsp-types` và `pulldown-cmark` nhỏ; `fake-lsp-server` là binary của crate, không thêm dependency |
+| A new `lsp-types` release changes types (`Uri` replaces `Url` since 0.96) | Pin one version, and wrap the path ↔ URI conversion in a single function |
+| The PATH of a GUI app on macOS lacks `~/.cargo/bin`, `~/go/bin`, nvm… | Take the login shell environment; `binary.path` is the escape hatch |
+| rust-analyzer sends `cargo check` diagnostics for unopened files | The diagnostics store keeps unopened files too; the count and F8 include them |
+| The server sends positions against an old text version while an agent writes the file continuously | Drop diagnostics on a version mismatch; the server will send again |
+| Splitting out `excerpt_list` breaks the Search tab | Do it in a separate step, and the Search tab tests must stay fully green before adding References |
+| A slow login shell or one that prints junk (oh-my-zsh) | A 5 s timeout, read `env -0` after a dedicated separator, and on error use the process environment |
+| Tight disk | `lsp-types` and `pulldown-cmark` are small; `fake-lsp-server` is a binary of the crate, adding no dependency |
 
-## 14. Thay đổi spec cũ
+## 14. Changes to older specs
 
-- Spec Phase 1, §1.3: thêm hàng "3b — Host WASM cho extension Zed: language server từ `extension.wasm` (PHP, Ruby, Elixir, Vue…)" giữa giai đoạn 3 và 4.
-- Spec Phase 2, D1: "để sang giai đoạn 3" đổi thành "để sang giai đoạn 3b".
-- Trang Extensions: dòng "Language server: Phase 3" đổi thành "Language server: Phase 3b".
+- Phase 1 spec, §1.3: add the row "3b — WASM host for Zed extensions: language servers from `extension.wasm` (PHP, Ruby, Elixir, Vue…)" between phase 3 and 4.
+- Phase 2 spec, D1: "deferred to phase 3" becomes "deferred to phase 3b".
+- The Extensions page: the line "Language server: Phase 3" becomes "Language server: Phase 3b".

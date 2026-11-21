@@ -1,113 +1,113 @@
-# Project Search dạng tab (thay Search panel ở sidebar)
+# Project Search as a tab (replaces the sidebar Search panel)
 
-Ngày 2026-11-10. Trạng thái: đã triển khai (commit 641094c..c6fdba9).
+Date 2026-11-10. Status: implemented (commits 641094c..c6fdba9).
 
-## 1. Mục tiêu
+## 1. Goals
 
-Người dùng yêu cầu: "làm phần search topbar như zed thay vì search panel, UI ưu tiên theo zed".
+The user asked: "make the search topbar like zed instead of a search panel, UI follows zed first".
 
-Đã làm rõ với người dùng:
-- Zed không có ô search trên title bar. Thứ người dùng muốn là **Project Search của Zed: một tab trong editor**, thanh search gọn ở đầu tab, kết quả là các đoạn code (excerpt) có ngữ cảnh và tô màu cú pháp.
-- **Bỏ Search panel ở sidebar.** Sidebar chỉ còn Explorer.
-- **Giữ nút kính lúp ở status bar**, nhưng nó mở tab Search (như `SearchButton` của Zed).
-- Kết quả: **excerpt + ngữ cảnh + tô màu cú pháp**.
-- Hướng kỹ thuật đã duyệt: **A** (mục 3).
+Clarified with the user:
+- Zed has no search box in the title bar. What the user wants is **Zed's Project Search: a tab in the editor**, with a compact search bar at the top of the tab and results shown as code excerpts with context and syntax highlighting.
+- **Remove the Search panel from the sidebar.** The sidebar keeps only the Explorer.
+- **Keep the magnifier button in the status bar**, but it opens the Search tab (like Zed's `SearchButton`).
+- Results: **excerpt + context + syntax highlighting**.
+- Approved technical direction: **A** (section 3).
 
-Thành công khi: `⇧⌘F` mở tab Search, gõ là ra kết quả gom theo file với ngữ cảnh và màu cú pháp, bấm một dòng thì nhảy tới chỗ khớp; sidebar không còn Search; không có ảnh hưởng tới độ mượt khi cuộn hàng chục nghìn kết quả.
+Success means: `⇧⌘F` opens the Search tab, typing shows results grouped by file with context and syntax colors, clicking a line jumps to the match; the sidebar no longer has Search; scrolling tens of thousands of results stays smooth.
 
-Ngoài phạm vi: replace, sửa trực tiếp trong kết quả, nhiều tab Search cùng lúc, popup Text Finder (`⌥⌘F`), ô search trên title bar.
+Out of scope: replace, editing directly in the results, multiple Search tabs at once, the Text Finder popup (`⌥⌘F`), a search box in the title bar.
 
-## 2. Tham khảo
+## 2. References
 
-Chi tiết ở `docs/research/2026-11-10-project-search-ui.md`. Tóm tắt:
-- **Zed:** `ProjectSearchView` là một `Item` (tab). `ProjectSearchBar` là toolbar ở đầu tab: query, toggle case / word / regex / include ignored, nút filter (`cmd-shift-j`) hiện include/exclude. Kết quả là multibuffer, có ngữ cảnh, sửa được. `escape` đổi focus giữa query và kết quả. Status bar có nút kính lúp mở search.
-- **VS Code:** Search view ở sidebar; Search Editor là phiên bản dạng tab, có setting `search.searchEditor.defaultNumberOfContextLines` (mặc định 1). Search chạy khi gõ (`search.searchOnType`). Phím: `alt+cmd+c/w/r` cho toggle, `shift+cmd+j` cho chi tiết query, `F4`/`shift+F4` cho kết quả kế/trước.
-- **Lucerna chọn:** giao diện theo Zed (tab, thanh search gọn, excerpt có màu). Lệnh, phím, setting và hành vi (search khi gõ, debounce) theo VS Code. Lệch khỏi cả hai: excerpt chỉ đọc (Lucerna là viewer); chỉ một tab Search.
+Details are in `docs/research/2026-11-10-project-search-ui.md`. Summary:
+- **Zed:** `ProjectSearchView` is an `Item` (a tab). `ProjectSearchBar` is the toolbar at the top of the tab: query, toggles for case / word / regex / include ignored, and a filter button (`cmd-shift-j`) that shows include/exclude. Results are a multibuffer with context, and are editable. `escape` switches focus between the query and the results. The status bar has a magnifier button that opens search.
+- **VS Code:** the Search view lives in the sidebar; Search Editor is the tab version, with the setting `search.searchEditor.defaultNumberOfContextLines` (default 1). Search runs as you type (`search.searchOnType`). Keys: `alt+cmd+c/w/r` for the toggles, `shift+cmd+j` for query details, `F4`/`shift+F4` for the next/previous result.
+- **Lucerna chooses:** the look follows Zed (tab, compact search bar, colored excerpts). Commands, keys, settings and behavior (search as you type, debounce) follow VS Code. Deviations from both: excerpts are read-only (Lucerna is a viewer); only one Search tab.
 
-## 3. Kiến trúc
+## 3. Architecture
 
-### 3.1 `lucerna-project::search`: trả về excerpt
-- `SearchQuery` thêm `context_lines: u32`.
-- `SearchEvent::File` đổi thành `{ path, excerpts: Vec<Excerpt> }`, trong đó:
-  - `Excerpt { lines: Vec<LineMatch> }`, các dòng liên tiếp (dùng lại `LineMatch { line_number, line_text, ranges }` có sẵn);
-  - dòng có `ranges` rỗng là dòng ngữ cảnh.
-- Dùng `before_context`/`after_context` của `grep-searcher`. Hai cụm khớp có ngữ cảnh chồng hoặc kề nhau thì gộp thành một excerpt.
-- `MAX_RESULTS` (20.000) vẫn đếm **dòng khớp**, không đếm dòng ngữ cảnh. `MAX_LINE_CHARS` áp cho cả dòng ngữ cảnh.
-- `build_pattern`, hủy qua `AtomicBool`, stream theo file: giữ nguyên.
+### 3.1 `lucerna-project::search`: return excerpts
+- `SearchQuery` gains `context_lines: u32`.
+- `SearchEvent::File` becomes `{ path, excerpts: Vec<Excerpt> }`, where:
+  - `Excerpt { lines: Vec<LineMatch> }` holds consecutive lines (reusing the existing `LineMatch { line_number, line_text, ranges }`);
+  - a line with empty `ranges` is a context line.
+- Use `before_context`/`after_context` of `grep-searcher`. Two match clusters whose context overlaps or touches are merged into one excerpt.
+- `MAX_RESULTS` (20,000) still counts **matching lines**, not context lines. `MAX_LINE_CHARS` applies to context lines too.
+- `build_pattern`, cancellation via `AtomicBool`, per-file streaming: unchanged.
 
-### 3.2 Model tab
-- `TabItem::Search`: tối đa một trong mọi group, không bao giờ là preview, giống `TabItem::Extensions`.
-- Lưu trong `GroupState::tabs` bằng chuỗi `lucerna:search`. Query và các option (case, word, regex, include, exclude, filter hiện hay ẩn) lưu trong workspace state; mở lại folder thì tab khôi phục và search lại.
-- Workspace state cũ có `sidebar_view = "search"` thì đọc thành Explorer.
+### 3.2 Tab model
+- `TabItem::Search`: at most one across all groups, never a preview, like `TabItem::Extensions`.
+- Stored in `GroupState::tabs` as the string `lucerna:search`. The query and options (case, word, regex, include, exclude, whether the filter is shown or hidden) are stored in the workspace state; reopening the folder restores the tab and searches again.
+- Old workspace state with `sidebar_view = "search"` is read as Explorer.
 
-### 3.3 `search_view/` (thay `search_panel.rs`)
-Module mới trong `lucerna-workbench`, chia nhỏ:
-- `model.rs` — thuần, không gpui: danh sách file kết quả, cờ gập, dựng **danh sách hàng phẳng** (`Header(file)`, `Line(file, excerpt, line)`, `Separator(file, excerpt)`), tìm hàng khớp kế/trước cho F4, tóm tắt.
-- `highlight.rs` — tải highlight nền (3.4).
-- `view.rs` — entity `SearchView`: các `TextInput`, toggle, debounce 150 ms, generation guard (R17), `uniform_list`, mở kết quả.
-- Một entity `SearchView` duy nhất cho workbench (như Extensions page); tab Search render nó.
+### 3.3 `search_view/` (replaces `search_panel.rs`)
+A new module in `lucerna-workbench`, split into smaller files:
+- `model.rs` — pure, no gpui: the list of result files, collapse flags, building the **flat row list** (`Header(file)`, `Line(file, excerpt, line)`, `Separator(file, excerpt)`), finding the next/previous matching row for F4, the summary.
+- `highlight.rs` — background highlight loading (3.4).
+- `view.rs` — the `SearchView` entity: the `TextInput`s, toggles, 150 ms debounce, generation guard (R17), `uniform_list`, opening results.
+- A single `SearchView` entity for the whole workbench (like the Extensions page); the Search tab renders it.
 
-### 3.4 Tô màu cú pháp chạy nền
-- Khi `uniform_list` render một khoảng hàng, view biết những file nào đang hiện. File nào chưa có highlight và chưa được yêu cầu thì đưa vào hàng đợi.
-- Tối đa **3** tác vụ nền cùng lúc. Mỗi tác vụ: đọc file (bỏ qua nếu vượt `check_size` hoặc lớn hơn 2 MB), dựng `BufferSnapshot`, chọn ngôn ngữ (`language_for_file`), `SyntaxState::new` + `parse(None)`, rồi gọi `highlights` cho các khoảng dòng của excerpt.
-- Kết quả: với mỗi dòng excerpt, danh sách `(Range<usize> trong dòng, capture)`. Span được cắt theo biên dòng và theo `MAX_LINE_CHARS`.
-- **Chống lệch:** nếu text dòng trên đĩa khác `LineMatch::line_text` (file đã đổi) thì dòng đó không có highlight.
-- Kết quả gắn với generation của search; search mới thì bỏ hàng đợi và các kết quả cũ. Lỗi đọc/parse hoặc không có ngôn ngữ: dòng hiện chữ trơn, không báo lỗi.
-- Nếu file đang mở trong `Documents` thì vẫn tự parse (đơn giản hơn; tối ưu để sau).
+### 3.4 Syntax highlighting in the background
+- When `uniform_list` renders a range of rows, the view knows which files are visible. Files that have no highlight yet and have not been requested are put in a queue.
+- At most **3** background tasks at once. Each task: read the file (skip it if it exceeds `check_size` or is larger than 2 MB), build a `BufferSnapshot`, pick the language (`language_for_file`), `SyntaxState::new` + `parse(None)`, then call `highlights` for the excerpt's line ranges.
+- Result: for each excerpt line, a list of `(Range<usize> within the line, capture)`. Spans are clipped to the line boundary and to `MAX_LINE_CHARS`.
+- **Drift protection:** if the line text on disk differs from `LineMatch::line_text` (the file changed), that line gets no highlight.
+- Results are tied to the search's generation; on a new search, the queue and the old results are dropped. A read/parse error or no language: the line shows plain text, with no error reported.
+- If the file is open in `Documents`, it is still parsed separately (simpler; optimize later).
 
-### 3.5 Sidebar và status bar
-- Bỏ `SidebarView::Search` và `search_panel.rs`. Sidebar chỉ còn Explorer; `cmd+b`, `cmd+shift+e` giữ nguyên.
-- Nút kính lúp ở status bar chạy `workbench.action.findInFiles`, sáng khi tab Search đang active trong group có focus.
+### 3.5 Sidebar and status bar
+- Remove `SidebarView::Search` and `search_panel.rs`. The sidebar keeps only the Explorer; `cmd+b` and `cmd+shift+e` stay as they are.
+- The magnifier button in the status bar runs `workbench.action.findInFiles` and lights up when the Search tab is active in the focused group.
 
-## 4. Giao diện (theo Zed)
+## 4. UI (follows Zed)
 
-- **Tab:** icon kính lúp + query (rỗng thì "Search").
-- **Thanh search** ở đầu tab, cao 32 px, padding theo lưới 4 px:
-  - ô query `TextInput` (IME), placeholder "Search";
-  - trong ô, bên phải: toggle `Aa`, `ab`, `.*` (dùng `toggle_button` có sẵn);
-  - sau ô: vạch ngăn, nút filter (icon), nút refresh, nút gập/mở tất cả. Các nút dùng `icon_button`.
-- **Hàng filter** (ẩn mặc định): hai ô Include và Exclude cạnh nhau, placeholder như panel cũ.
-- **Dòng tóm tắt** cỡ chữ nhỏ, màu `text.muted`: `12 results in 2 files`, "Searching…", báo đã cắt ở 20.000, hoặc lỗi regex.
-- **Header file** (cao bằng một dòng editor, nền `element.background`/nhạt): chevron gập, icon file theo bảng icon hiện có, tên file màu `text`, thư mục màu `text.muted`, số dòng khớp ở bên phải.
-- **Dòng code:** font và cỡ chữ editor, gutter số dòng màu `text.muted` căn phải, chữ tô theo theme (`style_for(capture)`), chỗ khớp có nền `search.match_background`. Dòng đang chọn (bàn phím) có nền `ghost_element.hover`/selected.
-- **Ngăn excerpt:** một hàng chỉ có `┈` mờ trong gutter.
-- Mọi hàng cao bằng nhau (chiều cao dòng editor) để dùng `uniform_list`.
-- Single-file mode: tab chỉ hiện "Search is unavailable when a single file is opened".
+- **Tab:** magnifier icon + query ("Search" if empty).
+- **Search bar** at the top of the tab, 32 px high, padding on a 4 px grid:
+  - the query box, a `TextInput` (IME), placeholder "Search";
+  - inside the box, on the right: toggles `Aa`, `ab`, `.*` (using the existing `toggle_button`);
+  - after the box: a divider, the filter button (icon), the refresh button, the collapse/expand-all button. The buttons use `icon_button`.
+- **Filter row** (hidden by default): the Include and Exclude boxes side by side, with the same placeholders as the old panel.
+- **Summary line** in a small font, color `text.muted`: `12 results in 2 files`, "Searching…", a notice that results were cut off at 20,000, or a regex error.
+- **File header** (as tall as one editor line, background `element.background`/light): collapse chevron, file icon from the existing icon table, file name in `text` color, directory in `text.muted`, the number of matching lines on the right.
+- **Code line:** editor font and font size, a right-aligned line-number gutter in `text.muted`, text colored by the theme (`style_for(capture)`), matches with the `search.match_background` background. The selected line (keyboard) has a `ghost_element.hover`/selected background.
+- **Excerpt separator:** a row with only a dim `┈` in the gutter.
+- All rows have the same height (the editor line height) so that `uniform_list` can be used.
+- Single-file mode: the tab only shows "Search is unavailable when a single file is opened".
 
-## 5. Lệnh, phím tắt và setting (theo VS Code)
+## 5. Commands, shortcuts and settings (follow VS Code)
 
-| Lệnh | Phím mặc định | Hành vi |
+| Command | Default key | Behavior |
 |---|---|---|
-| `workbench.action.findInFiles` | `cmd+shift+f` | Mở/focus tab Search ở group đang active (đã có thì focus nó ở group đang chứa), focus ô query; nếu editor có chọn trên một dòng thì điền phần chọn. |
-| `workbench.view.search` | — | Như trên. |
-| `toggleSearchCaseSensitive` | `alt+cmd+c` (when `searchViewletFocus`) | Đổi case. |
-| `toggleSearchWholeWord` | `alt+cmd+w` (when `searchViewletFocus`) | Đổi whole word. |
-| `toggleSearchRegex` | `alt+cmd+r` (when `searchViewletFocus`) | Đổi regex. |
-| `workbench.action.search.toggleQueryDetails` | `shift+cmd+j` (when `searchViewletFocus`) | Ẩn/hiện hàng filter. |
-| `search.action.focusNextSearchResult` | `f4` | Chọn và mở dòng khớp kế tiếp (vòng lại đầu). |
-| `search.action.focusPreviousSearchResult` | `shift+f4` | Như trên, ngược lại. |
-| `search.action.refreshSearchResults` | — | Chạy lại search. |
-| `search.action.collapseSearchResults` | — | Gập tất cả file. |
+| `workbench.action.findInFiles` | `cmd+shift+f` | Open/focus the Search tab in the active group (if it already exists, focus it in the group that holds it) and focus the query box; if the editor has a selection within one line, fill in the selection. |
+| `workbench.view.search` | — | Same as above. |
+| `toggleSearchCaseSensitive` | `alt+cmd+c` (when `searchViewletFocus`) | Toggle case. |
+| `toggleSearchWholeWord` | `alt+cmd+w` (when `searchViewletFocus`) | Toggle whole word. |
+| `toggleSearchRegex` | `alt+cmd+r` (when `searchViewletFocus`) | Toggle regex. |
+| `workbench.action.search.toggleQueryDetails` | `shift+cmd+j` (when `searchViewletFocus`) | Hide/show the filter row. |
+| `search.action.focusNextSearchResult` | `f4` | Select and open the next matching line (wraps to the start). |
+| `search.action.focusPreviousSearchResult` | `shift+f4` | Same as above, backwards. |
+| `search.action.refreshSearchResults` | — | Run the search again. |
+| `search.action.collapseSearchResults` | — | Collapse all files. |
 
-- Context key `searchViewletFocus` (tên VS Code, đã có) nay nghĩa là: focus nằm trong tab Search.
-- Trong tab: search chạy khi gõ (debounce 150 ms) và khi nhấn `Enter` ở ô query; `↑`/`↓` đổi dòng chọn; `Enter` ở danh sách mở dòng chọn; `Esc` đổi focus giữa ô query và danh sách.
-- Bấm một dòng: mở file kiểu preview (`OpenMode::Preview`), cuộn tới dòng, bôi chọn chỗ khớp đầu tiên của dòng (tính cột bằng cách khớp lại trên dòng đã giải mã, như panel cũ). Bấm dòng ngữ cảnh: mở ở dòng đó, không bôi chọn. Bấm header: gập/mở.
-- Setting mới: `search.searchEditor.defaultNumberOfContextLines` (số, mặc định 1, kẹp 0–5). `search.exclude` và `files.exclude` vẫn áp dụng như cũ.
+- The context key `searchViewletFocus` (VS Code's name, already present) now means: focus is inside the Search tab.
+- In the tab: search runs as you type (150 ms debounce) and when you press `Enter` in the query box; `↑`/`↓` change the selected line; `Enter` in the list opens the selected line; `Esc` switches focus between the query box and the list.
+- Clicking a line: opens the file as a preview (`OpenMode::Preview`), scrolls to the line, and selects the first match on the line (the column is computed by matching again on the decoded line, as in the old panel). Clicking a context line: opens at that line, with no selection. Clicking a header: collapses/expands.
+- New setting: `search.searchEditor.defaultNumberOfContextLines` (a number, default 1, clamped to 0–5). `search.exclude` and `files.exclude` still apply as before.
 
-## 6. Hiệu năng
+## 6. Performance
 
-- Luồng UI không đọc file hay parse: search và highlight đều ở nền.
-- `uniform_list` chỉ render các hàng thấy được; danh sách hàng dựng lại khi file mới tới hoặc gập/mở, không theo từng frame.
-- Highlight chỉ cho file đang hiện, tối đa 3 cùng lúc, có hủy khi search mới.
+- The UI thread does not read files or parse: search and highlighting both run in the background.
+- `uniform_list` renders only the visible rows; the row list is rebuilt when a new file arrives or on collapse/expand, not on every frame.
+- Highlighting only covers visible files, at most 3 at a time, and is cancelled on a new search.
 
-## 7. Kiểm thử
+## 7. Testing
 
-- `lucerna-project`: gộp ngữ cảnh thành excerpt (chồng nhau, kề nhau, đầu file, cuối file, `context_lines = 0`), giới hạn `MAX_RESULTS` chỉ đếm dòng khớp.
-- `search_view::model`: dựng hàng (có gập), F4 qua nhiều file và vòng lại, tóm tắt.
-- `search_view::highlight`: cắt span theo dòng, bỏ dòng có text lệch.
-- `editor_groups::model`: một tab Search duy nhất, lưu/khôi phục `lucerna:search`; state cũ `sidebar_view = "search"` thành Explorer.
-- Test GPUI: `cmd+shift+f` mở tab và điền phần chọn; gõ query ra kết quả; bấm dòng mở file ở đúng dòng; nút kính lúp mở tab; sidebar không còn Search; toggle phím `alt+cmd+c`.
+- `lucerna-project`: merging context into excerpts (overlapping, adjacent, start of file, end of file, `context_lines = 0`), and the `MAX_RESULTS` limit counting only matching lines.
+- `search_view::model`: building rows (with collapse), F4 across several files and wrapping, the summary.
+- `search_view::highlight`: clipping spans by line, dropping lines whose text has drifted.
+- `editor_groups::model`: a single Search tab only, saving/restoring `lucerna:search`; old state `sidebar_view = "search"` becomes Explorer.
+- GPUI tests: `cmd+shift+f` opens the tab and fills in the selection; typing a query produces results; clicking a line opens the file at the right line; the magnifier button opens the tab; the sidebar no longer has Search; the `alt+cmd+c` key toggle.
 
-## 8. Thay đổi spec cũ
+## 8. Changes to older specs
 
-Mục 12 của spec Phase 1 ("Nút đổi panel ở status bar … Explorer và Search") được thay: status bar có nút Explorer (bật/tắt sidebar) và nút kính lúp (mở tab Search).
+Section 12 of the Phase 1 spec ("The panel switch buttons in the status bar … Explorer and Search") is replaced: the status bar has an Explorer button (toggles the sidebar) and a magnifier button (opens the Search tab).
