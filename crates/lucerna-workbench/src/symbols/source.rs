@@ -1,4 +1,4 @@
-//! Where the symbols of a document come from (spec §7.6 "Nguồn symbol"):
+//! Where the symbols of a document come from (spec §7.6 "Symbol sources"):
 //! a running server with `documentSymbolProvider`, else the language's
 //! `outline.scm`, else nothing.
 //!

@@ -435,7 +435,7 @@ fn spec_palette_values() {
 }
 
 /// Both Lucerna themes set every git color the workbench reads, with the
-/// spec's values (§ Bảng màu, Git), so none falls back to VS Code's colors.
+/// spec's values (§ Palette, Git), so none falls back to VS Code's colors.
 #[test]
 fn git_colors_come_from_the_theme() {
     let reg = ThemeRegistry::builtin();

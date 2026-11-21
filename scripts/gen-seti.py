@@ -23,7 +23,7 @@ Usage:
 `git rev-parse HEAD` in <vscode>.
 
 What it does (spec: docs/superpowers/specs/2026-11-15-file-icons-design.md,
-"Dữ liệu Seti"):
+"Seti data"):
   - Reads extensions/theme-seti/icons/vs-seti-icon-theme.json. Each
     definition name is its SVG name: drop the leading "_", then a trailing
     "_<n>" ("_typescript_1" -> typescript.svg).

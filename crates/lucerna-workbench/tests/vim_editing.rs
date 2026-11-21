@@ -1022,7 +1022,7 @@ fn macro_with_colon_command(cx: &mut TestAppContext) {
 }
 
 // Multi-cursor commands with vim on (spec 2026-11-17-multi-cursor §5.2
-// "Vim bật"): they enter Insert mode and keep every selection.
+// "With Vim enabled"): they enter Insert mode and keep every selection.
 
 fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
     cx.update(|_, cx| {
