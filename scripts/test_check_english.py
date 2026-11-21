@@ -54,6 +54,20 @@ class CheckEnglishTests(unittest.TestCase):
         ok = signature("## Bổ sung\nxem [x](#bổ-sung)\n")
         self.assertEqual(ok["broken_anchors"], [])
 
+    def test_slug_keeps_underscore_and_strips_markdown(self):
+        s = signature("## The `foo_bar` field\n## See [docs](x.md)\n## A *very* __bold__ one\n"
+                      "[a](#the-foo_bar-field) [b](#see-docs) [c](#a-very-bold-one)\n")
+        self.assertEqual(s["broken_anchors"], [])
+
+    def test_checker_does_not_flag_itself(self):
+        here = pathlib.Path(__file__).parent
+        for name in ("check-english.py", "test_check_english.py"):
+            for n, line in enumerate((here / name).read_text(encoding="utf-8").splitlines(), 1):
+                self.assertFalse(scan_line(f"scripts/{name}", line), f"{name}:{n}: {line}")
+        # the checker itself has no literal allowance, so it must hold no Vietnamese at all
+        text = (here / "check-english.py").read_text(encoding="utf-8")
+        self.assertFalse(has_vietnamese(text))
+
     def test_fences_and_inline_code_counted(self):
         s = signature("```rust\nlet a = `b`;\n```\nText `c` and `d`.\n")
         self.assertEqual((s["fences"], s["inline_code"]), (2, 2))
