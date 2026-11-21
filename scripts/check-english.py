@@ -4,7 +4,9 @@
 Usage:
   python3 scripts/check-english.py scan [PATH...]
       Print `path:line: text` for every line containing Vietnamese (default:
-      all tracked files). Inside crates/**, bench/** and scripts/test_*.py,
+      all tracked files, except lines allowed by scripts/english-allow.txt:
+      `<path>TAB<snippet>` per line, or `<path>TAB*` for a whole file; unused
+      entries are reported when scanning everything). Inside crates/**, bench/** and scripts/test_*.py,
       Vietnamese within "...", '...' or `...` is test data and allowed.
   python3 scripts/check-english.py structure --base REV FILE...
       Compare the Markdown structure of each FILE at REV with the working
@@ -150,20 +152,61 @@ def _tracked(paths):
     return [p for p in out.split("\0") if p]
 
 
-def scan(paths):
+DEFAULT_ALLOW = pathlib.Path(__file__).with_name("english-allow.txt")
+
+
+def parse_allow(text):
+    """Parse an allow-list: `<path>TAB<snippet>` per line, `#` comments and blank
+    lines ignored. Returns {path: [snippet, ...]}; the snippet `*` exempts the file."""
+    allow = {}
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        path, _, snippet = raw.partition("\t")
+        if snippet:
+            allow.setdefault(path, []).append(snippet)
+    return allow
+
+
+def is_allowed(allow, path, line, used=None):
+    """True if `line` of `path` is Vietnamese only inside allow-listed snippets
+    (or the whole file is exempt). Records matching entries in `used`."""
+    snippets = allow.get(path, [])
+    if "*" in snippets:
+        if used is not None:
+            used.add((path, "*"))
+        return True
+    rest = line
+    for snippet in snippets:
+        if snippet in rest:
+            rest = rest.replace(snippet, "")
+            if used is not None:
+                used.add((path, snippet))
+    return rest != line and not scan_line(path, rest)
+
+
+def scan(paths, allow_file=DEFAULT_ALLOW):
+    allow_path = pathlib.Path(allow_file)
+    allow = parse_allow(allow_path.read_text(encoding="utf-8")) if allow_path.is_file() else {}
+    used = set()
     flagged = 0
     for path in _tracked(paths):
         p = pathlib.Path(path)
-        if not p.is_file():
+        if not p.is_file() or p.resolve() == allow_path.resolve():
             continue
         try:
             text = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
         for n, line in enumerate(text.splitlines(), 1):
-            if scan_line(path, line):
+            if scan_line(path, line) and not is_allowed(allow, path, line, used):
                 print(f"{path}:{n}: {line}")
                 flagged += 1
+    if not paths:
+        for path, snippets in allow.items():
+            for snippet in snippets:
+                if (path, snippet) not in used:
+                    print(f"unused allow entry: {path}\t{snippet}")
     return 1 if flagged else 0
 
 

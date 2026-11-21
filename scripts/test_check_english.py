@@ -12,6 +12,9 @@ _spec.loader.exec_module(check_english)
 has_vietnamese = check_english.has_vietnamese
 scan_line = check_english.scan_line
 signature = check_english.signature
+parse_allow = check_english.parse_allow
+is_allowed = check_english.is_allowed
+scan = check_english.scan
 
 
 class CheckEnglishTests(unittest.TestCase):
@@ -58,6 +61,43 @@ class CheckEnglishTests(unittest.TestCase):
         s = signature("## The `foo_bar` field\n## See [docs](x.md)\n## A *very* __bold__ one\n"
                       "[a](#the-foo_bar-field) [b](#see-docs) [c](#a-very-bold-one)\n")
         self.assertEqual(s["broken_anchors"], [])
+
+    def test_allow_list_snippet_match(self):
+        allow = parse_allow("# c\n\ndocs/a.md\t`ch\u00e0o`\n")
+        self.assertTrue(is_allowed(allow, "docs/a.md", "type `ch\u00e0o` here"))
+
+    def test_allow_list_no_match(self):
+        allow = parse_allow("docs/a.md\t`ch\u00e0o`\n")
+        # other file, other snippet, or Vietnamese prose left over after the snippet
+        self.assertFalse(is_allowed(allow, "docs/b.md", "type `ch\u00e0o` here"))
+        self.assertFalse(is_allowed(allow, "docs/a.md", "type `xin` here"))
+        self.assertFalse(is_allowed(allow, "docs/a.md", "G\u00f5 `ch\u00e0o` r\u1ed3i"))
+
+    def test_allow_list_whole_file(self):
+        allow = parse_allow("docs/a.md\t*\n")
+        self.assertTrue(is_allowed(allow, "docs/a.md", "B\u1ea3n nh\u00e1p"))
+        self.assertFalse(is_allowed(allow, "docs/b.md", "B\u1ea3n nh\u00e1p"))
+
+    def test_scan_uses_allow_file_and_reports_stale(self):
+        import contextlib, io, os, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            pathlib.Path(d, "a.md").write_text("one `ch\u00e0o`\ntwo B\u1ea3n\n", encoding="utf-8")
+            allow = pathlib.Path(d, "allow.txt")
+            allow.write_text("a.md\t`ch\u00e0o`\na.md\t`stale`\n", encoding="utf-8")
+            subprocess.run(["git", "-C", d, "add", "a.md"], check=True)
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = scan([], allow_file=str(allow))
+            finally:
+                os.chdir(old)
+        self.assertEqual(rc, 1)
+        self.assertIn("a.md:2:", out.getvalue())
+        self.assertNotIn("a.md:1:", out.getvalue())
+        self.assertIn("unused allow entry", out.getvalue())
 
     def test_checker_does_not_flag_itself(self):
         here = pathlib.Path(__file__).parent

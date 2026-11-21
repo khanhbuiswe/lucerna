@@ -1,0 +1,88 @@
+# Hand-reviewed allow-list for scripts/check-english.py scan.
+# Format: <path><TAB><exact snippet>. A line of <path> whose only Vietnamese is
+# inside listed snippets is allowed. Every entry is Vietnamese test data (an input
+# or expected value of a test, quoted in a spec, plan or review), never prose.
+# `<path><TAB>*` exempts a whole file; used only for the two files that quote
+# Vietnamese on purpose as examples of what was translated.
+docs/superpowers/specs/2026-11-21-english-only-repo-design.md	*
+docs/superpowers/plans/2026-11-21-english-only-repo.md	*
+docs/superpowers/plans/2026-11-08-lucerna-phase1.md	`"café"`
+docs/superpowers/plans/2026-11-08-lucerna-phase1.md	`"thư mục/tệp có dấu.rs"`
+docs/superpowers/plans/2026-11-08-lucerna-phase1.md	`"xin chào\nđ"`
+docs/superpowers/plans/2026-11-10-lucerna-phase3-lsp.md	`column_to_lsp("héllo", 3, Utf8) == 3`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`"aé😀b"`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`Xin chào |thế`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`Xin |chào thế giới`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`fế`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`thế`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`|Xin chào thế giới`
+docs/superpowers/plans/2026-11-10-vim-navigation.md	`ế`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"aé\nb"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"café\n"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"héllo…"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"ă"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"ằ"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`"ệ"`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`replace_text_in_range(None, "ằ")`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`simulate_input("héllo")`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`é`
+docs/superpowers/plans/2026-11-11-lucerna-phase4-1-editing-core.md	`ằ`
+docs/superpowers/plans/2026-11-12-phase4-4-conflict.md	`"xin chào!\nb\nđ\n"`
+docs/superpowers/plans/2026-11-12-phase4-4-conflict.md	`"xin chào!\nb\nđường\n"`
+docs/superpowers/plans/2026-11-12-phase4-4-conflict.md	`"xin chào\nb\nđ\n"`
+docs/superpowers/plans/2026-11-12-phase4-4-conflict.md	`"xin chào\nb\nđường\n"`
+docs/superpowers/plans/2026-11-13-markdown-preview.md	`"Tổng quan"`
+docs/superpowers/plans/2026-11-13-markdown-preview.md	`tổng-quan`
+docs/superpowers/plans/2026-11-13-terminal.md	`"việt"`
+docs/superpowers/plans/2026-11-13-terminal.md	`"ế"`
+docs/superpowers/plans/2026-11-13-terminal.md	`"ệ"`
+docs/superpowers/plans/2026-11-13-terminal.md	`InputHandler::replace_text_in_range(None, "việt")`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`"ABC DÉF"`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`"abc déf"`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`Xin ch\|ào`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`chào`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`replace_and_mark_text_in_range("chà")`
+docs/superpowers/plans/2026-11-13-vim-editing-v2a.md	`replace_text_in_range("chào")`
+docs/superpowers/plans/2026-11-14-git-5-1-core.md	`dir with space/é ü.txt`
+docs/superpowers/plans/2026-11-16-hot-exit.md	`"/tmp/dự án/a b.rs"`
+docs/superpowers/plans/2026-11-16-p2-fixes.md	`chú`
+docs/superpowers/plans/2026-11-16-p2-fixes.md	`❤️-chú.md`
+docs/superpowers/plans/2026-11-17-find-replace.md	"PHỐ"
+docs/superpowers/plans/2026-11-17-find-replace.md	"Phố"
+docs/superpowers/plans/2026-11-17-find-replace.md	"[ê]"
+docs/superpowers/plans/2026-11-17-find-replace.md	"phố"
+docs/superpowers/plans/2026-11-17-find-replace.md	"ê a ê"
+docs/superpowers/plans/2026-11-17-find-replace.md	"ê"
+docs/superpowers/plans/2026-11-17-find-replace.md	"ĐƯỜNG"
+docs/superpowers/plans/2026-11-17-find-replace.md	"Đường"
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`"chào\nabcd"`
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`CHÀO chào`
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`chào`
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`chàobạn`
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`chào| chàobạn chào`
+docs/superpowers/plans/2026-11-17-multi-cursor.md	`«hà»`
+docs/superpowers/plans/2026-11-17-p3-explorer.md	"thư-mục/ "
+docs/superpowers/plans/2026-11-17-p3-save.md	"héllo\n"
+docs/superpowers/plans/2026-11-17-p3-save.md	"ệ"
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`"chào <lt>b>"`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`:s/chào/\\U&/`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`chào`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`ciwchào<Esc>`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`push_typed(Text("chào <b>"))`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`qaciwchào<Esc>q`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`replace_and_mark_text_in_range("chà")`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`replace_text_in_range("chào")`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`xin CHÀO`
+docs/superpowers/plans/2026-11-17-vim-editing-v2b.md	`xin chào`
+docs/superpowers/plans/2026-11-18-project-replace.md	'đ'
+docs/superpowers/plans/2026-11-18-project-replace.md	`"Phố"`
+docs/superpowers/plans/2026-11-18-project-replace.md	`"café foo\r\n"`
+docs/superpowers/plans/2026-11-18-project-replace.md	`"phố"`
+docs/superpowers/plans/2026-11-18-project-replace.md	`"Đường"`
+docs/superpowers/plans/2026-11-18-project-replace.md	`"đường"`
+docs/superpowers/reviews/2026-11-15-release-flow-review.md	`chú`
+docs/superpowers/reviews/2026-11-15-release-flow-review.md	`ghi-chú.md`
+docs/superpowers/specs/2026-11-10-vim-navigation-design.md	`"Xin chào thế giới"`
+docs/superpowers/specs/2026-11-10-vim-navigation-design.md	`fế`
+docs/superpowers/specs/2026-11-13-vim-editing-design.md	`"Xin chào"`
+docs/superpowers/specs/2026-11-17-find-replace-design.md	`Đường`
