@@ -1,39 +1,39 @@
-# Find & Replace trong file — Implementation Plan
+# Find & Replace in a file — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** ⌥⌘F mở thanh tìm kèm hàng Replace; Replace một match và Replace All theo VS Code, giao diện theo Zed.
+**Goal:** ⌥⌘F opens the find bar with a Replace row; Replace one match and Replace All follow VS Code, the UI follows Zed.
 
-**Architecture:** Logic thay thế thuần (đọc chuỗi Replace kiểu VS Code, Preserve Case, tính edit) nằm ở module mới `lucerna_project::replace`, không gpui. `FindWidget` (`find_widget.rs`) thêm ô Replace, toggle `AB`, nút Toggle Replace và hai nút replace, dùng component trong `ui.rs`. Edit đi qua `CodeView::transact` với một `EditPlan` có `stop_before` / `stop_after`, nên mỗi lệnh là một bước undo.
+**Architecture:** The pure replacement logic (parsing the Replace string the VS Code way, Preserve Case, computing edits) lives in the new module `lucerna_project::replace`, with no gpui. `FindWidget` (`find_widget.rs`) gets a Replace input, the `AB` toggle, a Toggle Replace button and two replace buttons, using components from `ui.rs`. Edits go through `CodeView::transact` with an `EditPlan` that has `stop_before` / `stop_after`, so each command is one undo step.
 
-**Tech Stack:** Rust, crate `regex`, GPUI (chỉ trong `lucerna-workbench`).
+**Tech Stack:** Rust, crate `regex`, GPUI (only in `lucerna-workbench`).
 
 **Spec:** `docs/superpowers/specs/2026-11-17-find-replace-design.md`
 
 ## Global Constraints
 
-- Chữ trong app chỉ tiếng Anh: placeholder `Replace`; tooltip `Toggle Replace`, `Preserve Case`, `Replace Next Match`, `Replace All Matches`; nhãn lệnh `Replace`, `Replace One`, `Replace All`, `Toggle Case Sensitive`, `Toggle Whole Word`, `Toggle Use Regular Expression`, `Toggle Preserve Case`.
-- Chỉ `lucerna-workbench` dùng gpui. `lucerna_project::replace` không có gpui.
-- Không chép code VS Code / Zed / Helix. Comment đầu `replace.rs` ghi nguồn hành vi: VS Code `replacePattern.ts` và `search.ts` (MIT).
-- `keys.rs`, `default-keybindings.json`, `app_menu.rs`, `CHANGELOG.md`, `docs/keyboard-shortcuts.md`: chỉ thêm dòng, gom thành một khối, không sửa dòng cũ (session ⌘N đang sửa các file này).
-- Cargo: `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"`; chạy `scripts/prune-target.sh` trước mỗi lần build hoặc test; không đặt `CARGO_TARGET_DIR`; nếu cargo khác giữ lock thì chờ.
-- Commit: stage từng file theo đường dẫn; trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- App text is English only: placeholder `Replace`; tooltips `Toggle Replace`, `Preserve Case`, `Replace Next Match`, `Replace All Matches`; command labels `Replace`, `Replace One`, `Replace All`, `Toggle Case Sensitive`, `Toggle Whole Word`, `Toggle Use Regular Expression`, `Toggle Preserve Case`.
+- Only `lucerna-workbench` uses gpui. `lucerna_project::replace` has no gpui.
+- Do not copy VS Code / Zed / Helix code. The comment at the top of `replace.rs` states the behavior source: VS Code `replacePattern.ts` and `search.ts` (MIT).
+- `keys.rs`, `default-keybindings.json`, `app_menu.rs`, `CHANGELOG.md`, `docs/keyboard-shortcuts.md`: only add lines, grouped into one block, and do not edit old lines (the ⌘N session is editing these files).
+- Cargo: `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"`; run `scripts/prune-target.sh` before every build or test; do not set `CARGO_TARGET_DIR`; if another cargo holds the lock, wait.
+- Commit: stage each file by path; trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Review Focus
 
-1. **Bấm Replace khi tìm nền chưa xong, hoặc file vừa đổi.** Phải không thay gì, không bao giờ thay ở range cũ. Test ở Task 3: `replace_one_ignores_stale_match`.
-2. **Chuỗi thay chứa Unicode, hoặc match nằm giữa ký tự nhiều byte** (tiếng Việt, emoji). Range phải đúng ranh giới ký tự. Preserve Case dùng `char`, không dùng byte. Test ở Task 1: `preserve_case_unicode`, `replace_all_multibyte`.
-3. **Regex khớp chuỗi rỗng** (`^`, `x*`). Replace All không chèn vào mọi vị trí, bỏ match rỗng như thanh tìm. Test ở Task 1: `replace_all_skips_empty_matches`.
-4. **Enter trong ô Find khi hàng Replace đang mở.** Vẫn là "next match", không phải replace. Test ở Task 3: `enter_in_find_input_still_steps`.
-5. **Replace All rồi gõ tiếp.** Undo một lần trả lại toàn bộ, không gộp với lần gõ trước hay sau. Test ở Task 3: `replace_all_is_one_undo_step`, gõ một ký tự trước khi Replace All.
+1. **Clicking Replace while the background search has not finished, or the file just changed.** It must replace nothing, and never replace at an old range. Test in Task 3: `replace_one_ignores_stale_match`.
+2. **A replacement string containing Unicode, or a match sitting next to multi-byte characters** (Vietnamese, emoji). Ranges must fall on character boundaries. Preserve Case uses `char`, not bytes. Tests in Task 1: `preserve_case_unicode`, `replace_all_multibyte`.
+3. **A regex that matches the empty string** (`^`, `x*`). Replace All does not insert at every position; it skips empty matches like the find bar. Test in Task 1: `replace_all_skips_empty_matches`.
+4. **Enter in the Find input while the Replace row is open.** It is still "next match", not replace. Test in Task 3: `enter_in_find_input_still_steps`.
+5. **Replace All, then keep typing.** One undo restores everything, not merged with the typing before or after. Test in Task 3: `replace_all_is_one_undo_step`, typing one character before Replace All.
 
 ---
 
-### Task 1: Module `lucerna_project::replace`
+### Task 1: The `lucerna_project::replace` module
 
 **Files:**
-- Create: `crates/lucerna-project/src/replace.rs` (unit test trong `#[cfg(test)] mod tests` cùng file)
-- Modify: `crates/lucerna-project/src/lib.rs` (thêm `pub mod replace;`)
+- Create: `crates/lucerna-project/src/replace.rs` (unit tests in `#[cfg(test)] mod tests` in the same file)
+- Modify: `crates/lucerna-project/src/lib.rs` (add `pub mod replace;`)
 
 **Interfaces:**
 - Produces:
@@ -42,13 +42,13 @@
   - `ReplacePattern::is_static(&self) -> bool`
   - `ReplacePattern::expand(&self, caps: &regex::Captures<'_>) -> String`
   - `pub fn preserve_case(matched: &str, replacement: &str) -> String`
-  - `pub fn replacement_for(pattern: &ReplacePattern, caps: &regex::Captures<'_>, preserve: bool) -> String`: expand rồi, nếu `preserve`, áp `preserve_case` với `caps[0]`.
+  - `pub fn replacement_for(pattern: &ReplacePattern, caps: &regex::Captures<'_>, preserve: bool) -> String`: expand, then, if `preserve`, apply `preserve_case` with `caps[0]`.
   - `pub fn replace_all(text: &str, regex: &regex::Regex, pattern: &ReplacePattern, preserve: bool) -> Vec<(std::ops::Range<usize>, String)>`
-  - `pub fn replacement_at(text: &str, regex: &regex::Regex, range: std::ops::Range<usize>, pattern: &ReplacePattern, preserve: bool) -> Option<String>`: dùng `regex.captures_at(text, range.start)`; trả `None` nếu match tìm được không đúng `range`.
+  - `pub fn replacement_at(text: &str, regex: &regex::Regex, range: std::ops::Range<usize>, pattern: &ReplacePattern, preserve: bool) -> Option<String>`: uses `regex.captures_at(text, range.start)`; returns `None` if the match found is not exactly `range`.
 
-- [ ] **Step 1: Viết test hỏng**
+- [ ] **Step 1: Write the failing tests**
 
-Helper trong test: `fn exp(pat: &str, re: &str, hay: &str) -> String`, parse `pat` với `is_regex = true`, lấy `Regex::new(re).captures(hay)` rồi `expand`.
+Test helper: `fn exp(pat: &str, re: &str, hay: &str) -> String`, which parses `pat` with `is_regex = true`, takes `Regex::new(re).captures(hay)` and then calls `expand`.
 
 ```rust
 #[test] fn literal_mode_is_verbatim() {
@@ -118,23 +118,23 @@ Helper trong test: `fn exp(pat: &str, re: &str, hay: &str) -> String`, parse `pa
 }
 ```
 
-- [ ] **Step 2: Chạy test, thấy hỏng**
+- [ ] **Step 2: Run the tests, see them fail**
 
 Run: `scripts/prune-target.sh && cargo test -p lucerna-project replace`
-Expected: lỗi biên dịch (`replace` chưa có).
+Expected: compile error (`replace` does not exist yet).
 
-- [ ] **Step 3: Cài đặt `replace.rs`**
+- [ ] **Step 3: Implement `replace.rs`**
 
-- Biểu diễn: `enum Piece { Text(String), Group { index: usize, ops: Vec<CaseOp> } }`, với `index` 0 là cả match. Dùng `Vec<Piece>`; `is_static` khi không có `Group`. Case op dồn lại và gắn vào mảnh `Group` kế tiếp, kể cả khi có chữ thường đứng giữa (`\Uab$1` viết hoa `$1`, `ab` giữ nguyên), như VS Code. Gắn xong thì xóa, cho khớp test `\U$1-$1`. Op không có `Group` nào theo sau thì bỏ.
-- `$NN`: lưu chỉ số hai chữ số khi có hai chữ số. Lúc `expand`, nếu `NN >= caps.len()` thì dùng nhóm `N` rồi thêm chữ số thứ hai. Nếu ngay cả `N` cũng không có (`N >= caps.len()`) thì xuất lại nguyên văn `$` và các chữ số.
-- `\u`/`\l` đổi ký tự đầu (theo `char`, dùng `to_uppercase()` có thể ra nhiều char) rồi sang op kế tiếp áp lên phần còn lại. `\U`/`\L` áp lên phần còn lại.
-- Preserve Case: quy tắc tách `-`/`_` trước, sau đó toàn hoa (`s.to_uppercase() == s`), toàn thường, rồi ký tự đầu. So "hoa / thường" của ký tự đầu bằng `char::is_uppercase` / `is_lowercase`.
-- `replace_all` dùng `regex.captures_iter` khi `!is_static() || preserve` cần text match; với pattern tĩnh và không preserve thì `find_iter`.
+- Representation: `enum Piece { Text(String), Group { index: usize, ops: Vec<CaseOp> } }`, where `index` 0 is the whole match. Use `Vec<Piece>`; `is_static` when there is no `Group`. Case ops accumulate and attach to the next `Group` piece, even when literal text sits in between (`\Uab$1` uppercases `$1`, `ab` stays as is), like VS Code. Once attached, they are cleared, to match the test `\U$1-$1`. An op with no `Group` after it is dropped.
+- `$NN`: store the two-digit index when there are two digits. At `expand` time, if `NN >= caps.len()`, use group `N` and then append the second digit. If even `N` is missing (`N >= caps.len()`), output the `$` and the digits verbatim.
+- `\u`/`\l` change the first character (by `char`; `to_uppercase()` may yield several chars), then the next op applies to the rest. `\U`/`\L` apply to the rest.
+- Preserve Case: the `-`/`_` splitting rule comes first, then all uppercase (`s.to_uppercase() == s`), all lowercase, then the first character. Compare the "upper / lower" of the first character with `char::is_uppercase` / `is_lowercase`.
+- `replace_all` uses `regex.captures_iter` when `!is_static() || preserve` needs the matched text; with a static pattern and no preserve it uses `find_iter`.
 
-- [ ] **Step 4: Chạy test, thấy qua**
+- [ ] **Step 4: Run the tests, see them pass**
 
 Run: `cargo test -p lucerna-project replace`
-Expected: tất cả PASS.
+Expected: all PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -145,25 +145,25 @@ git commit -m "feat(project): VS Code replace pattern, preserve case and replace
 
 ---
 
-### Task 2: Hàng Replace trên thanh tìm và ⌥⌘F
+### Task 2: The Replace row on the find bar and ⌥⌘F
 
 **Files:**
-- Create: `crates/lucerna-workbench/assets/icons/replace.svg`, `replace-all.svg`, và icon cho Replace Next (gợi ý `arrow-right-to-line.svg`). File Lucide nguyên bản, lấy từ `lucide-icons/lucide` `icons/<name>.svg`.
-- Modify: `crates/lucerna-workbench/src/icons.rs` (const mới + mảng `ALL`), `src/ui.rs` (const icon, theo kiểu `SEARCH_ICON`), `src/find_widget.rs`, `src/workbench.rs` (flag `replaceInputFocussed`), `crates/lucerna-settings/assets/default-keybindings.json`, `src/app_menu.rs`
+- Create: `crates/lucerna-workbench/assets/icons/replace.svg`, `replace-all.svg`, and an icon for Replace Next (suggested `arrow-right-to-line.svg`). Unmodified Lucide files, taken from `lucide-icons/lucide` `icons/<name>.svg`.
+- Modify: `crates/lucerna-workbench/src/icons.rs` (new const + the `ALL` array), `src/ui.rs` (icon const, in the style of `SEARCH_ICON`), `src/find_widget.rs`, `src/workbench.rs` (the `replaceInputFocussed` flag), `crates/lucerna-settings/assets/default-keybindings.json`, `src/app_menu.rs`
 - Test: `crates/lucerna-workbench/tests/find_widget.rs`
 
 **Interfaces:**
-- Produces (trên `FindWidget`):
+- Produces (on `FindWidget`):
   - `pub fn replace_input(&self) -> &Entity<TextInput>`
   - `pub fn replace_visible(&self) -> bool`
   - `pub fn preserve_case(&self) -> bool`
-  - `pub fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>)` (đảo, rồi focus ô tương ứng)
+  - `pub fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>)` (toggles, then focuses the matching input)
   - `pub fn toggle_preserve_case(&mut self, cx: &mut Context<Self>)`
   - `pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool`
-- Các debug selector: `find-toggle-replace`, `find-replace-row`, `find-replace-input`, `find-toggle-preserve-case`, `find-replace-next`, `find-replace-all`.
-- Lệnh `editor.action.startFindReplaceAction` (nhãn `Replace`).
+- The debug selectors: `find-toggle-replace`, `find-replace-row`, `find-replace-input`, `find-toggle-preserve-case`, `find-replace-next`, `find-replace-all`.
+- The command `editor.action.startFindReplaceAction` (label `Replace`).
 
-- [ ] **Step 1: Viết test hỏng** (trong `tests/find_widget.rs`, dùng helper có sẵn)
+- [ ] **Step 1: Write the failing tests** (in `tests/find_widget.rs`, using the existing helpers)
 
 ```rust
 fn find(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Entity<FindWidget> {
@@ -230,46 +230,46 @@ fn vim_search_hides_replace(cx: &mut TestAppContext) {
 }
 ```
 
-Viết đủ thân các test có comment theo đúng các assert ghi trong comment.
+Write out the full bodies of the tests that have comments, with exactly the asserts stated in the comments.
 
-- [ ] **Step 2: Chạy test, thấy hỏng**
+- [ ] **Step 2: Run the tests, see them fail**
 
 Run: `scripts/prune-target.sh && cargo test -p lucerna-workbench --test find_widget`
-Expected: test mới FAIL (không có lệnh / selector).
+Expected: the new tests FAIL (no command / selector).
 
-- [ ] **Step 3: Cài đặt**
+- [ ] **Step 3: Implement**
 
-- `FindWidget::new`: tạo `replace_input` (placeholder `Replace`, không `on_change`). Thêm `replace_visible: false`, `preserve_case: false`. Thêm `can_replace(&self, cx) -> bool`: view còn sống, không `is_readonly()`, và `!self.vim`.
+- `FindWidget::new`: create `replace_input` (placeholder `Replace`, no `on_change`). Add `replace_visible: false`, `preserve_case: false`. Add `can_replace(&self, cx) -> bool`: the view is still alive, not `is_readonly()`, and `!self.vim`.
 - `render`:
-  - Sau `field` ở hàng 1, khi `can_replace`, thêm `bar_icon_button("find-toggle-replace", REPLACE_ICON, self.replace_visible, cx)` có tooltip `Toggle Replace`, click gọi `toggle_replace`.
-  - Khi `replace_visible && can_replace`, thêm hàng 2 là `search_bar_row()` gồm:
-    - `search_query_column(input_box(&self.replace_input, cx))` có debug selector `find-replace-input`, chứa `toggle_button("find-toggle-preserve-case", "AB", …)` với tooltip `Preserve Case`;
+  - After `field` in row 1, when `can_replace`, add `bar_icon_button("find-toggle-replace", REPLACE_ICON, self.replace_visible, cx)` with the tooltip `Toggle Replace`; a click calls `toggle_replace`.
+  - When `replace_visible && can_replace`, add row 2 as a `search_bar_row()` containing:
+    - `search_query_column(input_box(&self.replace_input, cx))` with the debug selector `find-replace-input`, holding `toggle_button("find-toggle-preserve-case", "AB", …)` with the tooltip `Preserve Case`;
     - `bar_separator`;
-    - hai `bar_icon_button`: `find-replace-next` (tooltip `Replace Next Match`) và `find-replace-all` (`Replace All Matches`). Click gọi hàm của Task 3; ở task này để no-op hoặc `todo` bằng một `FindWidget::replace_one` rỗng. Khi `matches` trống hoặc có `error`, nút mờ (`text_color(ui.icon_disabled)` hoặc tương đương có sẵn trong theme) và không gắn `on_click`.
-  - Hàng 2 bắt đầu thẳng hàng với ô query, vì nút toggle nằm *sau* ô query.
-- `open(view, window, cx)` nhận thêm `replace: bool`:
-  - `actions.find`: nếu widget đang ẩn thì đặt `replace_visible = false`; nếu đang hiện thì giữ nguyên.
-  - `editor.action.startFindReplaceAction`: đặt `replace_visible = can_replace`. Focus ô Replace nếu `can_replace` và (ô Find đã có focus trước khi lệnh chạy, hoặc vừa điền từ selection); ngược lại focus ô Find.
-- Tab / Shift+Tab: trong `key_down`, `tab` khi ô Find có focus và hàng Replace hiện thì focus ô Replace; `shift-tab` khi ô Replace có focus thì focus ô Find. Kèm `stop_propagation`.
-- `key_down` hiện có: chỉ xử lý Enter khi ô Find có focus (Enter trong ô Replace để keymap ở Task 3 lo).
-- `Workbench` (`workbench.rs`, cạnh `findWidgetVisible`): `flag("replaceInputFocussed", …)`, true khi widget của view active đang hiện và `replace_input_focused`.
-- Keybinding (thêm cuối file, mở khối replace):
+    - two `bar_icon_button`s: `find-replace-next` (tooltip `Replace Next Match`) and `find-replace-all` (`Replace All Matches`). A click calls the Task 3 functions; in this task leave them as a no-op or a `todo` through an empty `FindWidget::replace_one`. When `matches` is empty or there is an `error`, the button is dimmed (`text_color(ui.icon_disabled)` or an equivalent already in the theme) and gets no `on_click`.
+  - Row 2 starts aligned with the query input, because the toggle button sits *after* the query input.
+- `open(view, window, cx)` takes an extra `replace: bool`:
+  - `actions.find`: if the widget is hidden, set `replace_visible = false`; if it is shown, leave it as is.
+  - `editor.action.startFindReplaceAction`: set `replace_visible = can_replace`. Focus the Replace input if `can_replace` and (the Find input already had focus before the command ran, or it was just filled from the selection); otherwise focus the Find input.
+- Tab / Shift+Tab: in `key_down`, `tab` when the Find input has focus and the Replace row is shown focuses the Replace input; `shift-tab` when the Replace input has focus focuses the Find input. Together with `stop_propagation`.
+- The existing `key_down`: only handles Enter when the Find input has focus (Enter in the Replace input is left to the keymap in Task 3).
+- `Workbench` (`workbench.rs`, next to `findWidgetVisible`): `flag("replaceInputFocussed", …)`, true when the active view's widget is shown and `replace_input_focused`.
+- Keybinding (add at the end of the file, opening the replace block):
   `{ "key": "alt+cmd+f", "command": "editor.action.startFindReplaceAction", "when": "editorFocus" }`
-- Menu Edit: `command("Replace", "editor.action.startFindReplaceAction")` ngay sau dòng `Find`.
+- Edit menu: `command("Replace", "editor.action.startFindReplaceAction")` right after the `Find` line.
 
-- [ ] **Step 4: Chạy test, thấy qua**
+- [ ] **Step 4: Run the tests, see them pass**
 
 Run: `cargo test -p lucerna-workbench --test find_widget && cargo test -p lucerna-workbench --test app_menu`
-Expected: PASS. Nếu `app_menu` có test liệt kê mục menu thì cập nhật cho có `Replace`.
+Expected: PASS. If `app_menu` has a test that lists the menu items, update it to include `Replace`.
 
-- [ ] **Step 5: Commit** các file đã liệt kê ở trên, theo đường dẫn. Message: `feat: replace row on the find bar, alt-cmd-f`.
+- [ ] **Step 5: Commit** the files listed above, by path. Message: `feat: replace row on the find bar, alt-cmd-f`.
 
 ---
 
-### Task 3: Replace một match và Replace All
+### Task 3: Replace one match and Replace All
 
 **Files:**
-- Modify: `crates/lucerna-workbench/src/find_widget.rs`, `crates/lucerna-editor/src/commands.rs` (đổi `mk_patch` thành `pub` và re-export trong `lib.rs` là `lucerna_editor::mk_patch`), `crates/lucerna-editor/src/lib.rs`, `crates/lucerna-settings/assets/default-keybindings.json`
+- Modify: `crates/lucerna-workbench/src/find_widget.rs`, `crates/lucerna-editor/src/commands.rs` (make `mk_patch` `pub` and re-export it in `lib.rs` as `lucerna_editor::mk_patch`), `crates/lucerna-editor/src/lib.rs`, `crates/lucerna-settings/assets/default-keybindings.json`
 - Test: `crates/lucerna-workbench/tests/find_widget.rs`
 
 **Interfaces:**
@@ -277,10 +277,10 @@ Expected: PASS. Nếu `app_menu` có test liệt kê mục menu thì cập nhậ
 - Produces:
   - `pub fn replace_one(&mut self, cx: &mut Context<Self>)`
   - `pub fn replace_all(&mut self, cx: &mut Context<Self>)`
-  - `pub fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> lucerna_text::Patch` trong `lucerna_editor`
-  - Lệnh `editor.action.replaceOne` (`Replace One`) và `editor.action.replaceAll` (`Replace All`).
+  - `pub fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> lucerna_text::Patch` in `lucerna_editor`
+  - The commands `editor.action.replaceOne` (`Replace One`) and `editor.action.replaceAll` (`Replace All`).
 
-- [ ] **Step 1: Viết test hỏng**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 fn replace_text(view: &Entity<CodeView>, text: &str, cx: &mut VisualTestContext) {
@@ -358,57 +358,57 @@ fn replace_all_large_file_off_main_thread(cx: &mut TestAppContext) {
 }
 ```
 
-Viết đủ thân các test có comment theo đúng các assert ghi trong comment. Undo trong test thì gọi `view.update(cx, |v, cx| v.undo(true, cx))`, để không phụ thuộc phím nào có focus.
+Write out the full bodies of the tests that have comments, with exactly the asserts stated in the comments. For undo in tests, call `view.update(cx, |v, cx| v.undo(true, cx))`, so it does not depend on which key has focus.
 
-- [ ] **Step 2: Chạy test, thấy hỏng**
+- [ ] **Step 2: Run the tests, see them fail**
 
 Run: `scripts/prune-target.sh && cargo test -p lucerna-workbench --test find_widget replace`
 Expected: FAIL.
 
-- [ ] **Step 3: Cài đặt**
+- [ ] **Step 3: Implement**
 
-- Trường mới `pending_pick_from: Option<usize>`. Trong `apply`, nếu có thì chọn match đầu tiên có `start >= offset` (không có thì 0), reveal nó, rồi xóa. Cái này đi trước nhánh `Pick::Keep` vốn chạy khi revision đổi.
+- New field `pending_pick_from: Option<usize>`. In `apply`, if set, pick the first match with `start >= offset` (0 if none), reveal it, then clear it. This goes before the `Pick::Keep` branch that runs when the revision changes.
 - `replace_one`:
-  - Không làm gì nếu `!can_replace`, `!replace_visible`, `pending`, hoặc `revision` khác revision của view.
-  - Lấy `range = matches[active]`. Nếu offset của selection hiện tại (`view.selection()` đổi ra offset) khác `range` thì gọi `self.step(0…)`, tức chọn `nearest` rồi reveal, và dừng.
-  - Nếu trùng: build regex bằng `build_regex`, tính `replacement_at` trên text của snapshot. `None` thì dừng.
-  - Plan: `EditPlan::new(vec![(range, text.into())], SelectionSet::cursor(range.start + text.len()), EditKind::Other)` với `stop_before = stop_after = true`. Gọi `view.update(|v, cx| v.transact(plan, cx))`.
-  - Đặt `pending_pick_from = Some(range.start + text.len())`. Lần tìm do revision đổi sẽ chọn match kế.
+  - Do nothing if `!can_replace`, `!replace_visible`, `pending`, or `revision` differs from the view's revision.
+  - Take `range = matches[active]`. If the offset of the current selection (`view.selection()` converted to offsets) differs from `range`, call `self.step(0…)`, that is, select `nearest` and reveal it, and stop.
+  - If it matches: build the regex with `build_regex` and compute `replacement_at` on the snapshot's text. On `None`, stop.
+  - Plan: `EditPlan::new(vec![(range, text.into())], SelectionSet::cursor(range.start + text.len()), EditKind::Other)` with `stop_before = stop_after = true`. Call `view.update(|v, cx| v.transact(plan, cx))`.
+  - Set `pending_pick_from = Some(range.start + text.len())`. The search triggered by the revision change will pick the next match.
 - `replace_all`:
-  - Cùng các điều kiện chặn như `replace_one`, trừ chuyện selection.
-  - Nhỏ hơn hoặc bằng `BACKGROUND_SEARCH_BYTES`: tính `replace_all(...)` ngay.
-  - Lớn hơn: `cx.background_spawn` qua `guarded("replace all", …)`, rồi áp dụng chỉ khi `revision` của view chưa đổi. Dùng chung `_search` / `generation` để một lần tìm mới hủy nó.
-  - Áp dụng: rỗng thì thôi. Không rỗng thì `edits: Vec<(Range, Arc<str>)>`; `selections = view.selections().clone()` rồi `remap(&mk_patch(&edits))`; tạo `EditPlan` với `EditKind::Other`, `stop_before = stop_after = true`, rồi `transact`.
-- Lệnh, đăng ký trong `register_commands`: `editor.action.replaceOne` / `editor.action.replaceAll` gọi hàm trên widget của view active, khi widget đang hiện.
-- Keybinding, nối tiếp khối của Task 2:
+  - The same guard conditions as `replace_one`, except the selection check.
+  - Smaller than or equal to `BACKGROUND_SEARCH_BYTES`: compute `replace_all(...)` right away.
+  - Larger: `cx.background_spawn` through `guarded("replace all", …)`, then apply only if the view's `revision` has not changed. Share `_search` / `generation` so a new search cancels it.
+  - Apply: if empty, stop. If not empty, `edits: Vec<(Range, Arc<str>)>`; `selections = view.selections().clone()` then `remap(&mk_patch(&edits))`; build an `EditPlan` with `EditKind::Other`, `stop_before = stop_after = true`, then `transact`.
+- Commands, registered in `register_commands`: `editor.action.replaceOne` / `editor.action.replaceAll` call the function on the active view's widget, when the widget is shown.
+- Keybindings, continuing the Task 2 block:
   ```json
   { "key": "shift+cmd+1", "command": "editor.action.replaceOne", "when": "editorFocus && findWidgetVisible" },
   { "key": "alt+cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && findWidgetVisible" },
   { "key": "enter", "command": "editor.action.replaceOne", "when": "editorFocus && replaceInputFocussed" },
   { "key": "cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && replaceInputFocussed" }
   ```
-- Hai nút ở hàng 2 gọi `replace_one` / `replace_all`.
+- The two buttons in row 2 call `replace_one` / `replace_all`.
 
-- [ ] **Step 4: Chạy test, thấy qua**
+- [ ] **Step 4: Run the tests, see them pass**
 
 Run: `cargo test -p lucerna-workbench --test find_widget && cargo test -p lucerna-editor`
 Expected: PASS.
 
-- [ ] **Step 5: Commit** các file của task, theo đường dẫn. Message: `feat: replace one and replace all in the find bar`.
+- [ ] **Step 5: Commit** the task's files, by path. Message: `feat: replace one and replace all in the find bar`.
 
 ---
 
-### Task 4: Phím tắt toggle ⌥⌘C/W/R/P
+### Task 4: Toggle shortcuts ⌥⌘C/W/R/P
 
 **Files:**
 - Modify: `crates/lucerna-workbench/src/find_widget.rs`, `crates/lucerna-settings/assets/default-keybindings.json`
 - Test: `crates/lucerna-workbench/tests/find_widget.rs`
 
 **Interfaces:**
-- Consumes: Task 2 (`toggle_preserve_case`); các `toggle_*` có sẵn.
-- Produces: lệnh `toggleFindCaseSensitive`, `toggleFindWholeWord`, `toggleFindRegex`, `togglePreserveCase`; getter `pub fn case_sensitive(&self) -> bool`, `whole_word()`, `is_regex()`.
+- Consumes: Task 2 (`toggle_preserve_case`); the existing `toggle_*` functions.
+- Produces: the commands `toggleFindCaseSensitive`, `toggleFindWholeWord`, `toggleFindRegex`, `togglePreserveCase`; getters `pub fn case_sensitive(&self) -> bool`, `whole_word()`, `is_regex()`.
 
-- [ ] **Step 1: Viết test hỏng**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[gpui::test]
@@ -430,13 +430,13 @@ fn alt_cmd_c_in_explorer_still_copies_path(cx: &mut TestAppContext) {
 }
 ```
 
-- [ ] **Step 2: Chạy test, thấy hỏng** — `cargo test -p lucerna-workbench --test find_widget toggle_keys`, FAIL.
+- [ ] **Step 2: Run the tests, see them fail** — `cargo test -p lucerna-workbench --test find_widget toggle_keys`, FAIL.
 
-- [ ] **Step 3: Cài đặt**
+- [ ] **Step 3: Implement**
 
-- Thêm `fn widget_for_toggle(view, cx) -> Entity<FindWidget>`: trả widget có sẵn (dù đang ẩn), không thì tạo `FindWidget::new` rồi gắn vào view mà không hiện. Cần thêm `CodeView::set_find_widget_hidden(find)` hoặc tương đương: đặt `self.find = Some(find)` mà không đổi `find_visible`.
-- Bốn lệnh gọi `toggle_*` trên widget đó. Widget đang ẩn thì `search` vẫn chạy nhưng không tô sáng: `apply` chỉ gọi `set_match_highlights` khi `view.find_widget().is_some()`. Kiểm tra lại `apply`: nó gọi vô điều kiện, nên cần thêm điều kiện này.
-- Keybinding, nối tiếp khối:
+- Add `fn widget_for_toggle(view, cx) -> Entity<FindWidget>`: return the existing widget (even when hidden), otherwise create `FindWidget::new` and attach it to the view without showing it. This needs a `CodeView::set_find_widget_hidden(find)` or equivalent: set `self.find = Some(find)` without changing `find_visible`.
+- The four commands call `toggle_*` on that widget. When the widget is hidden, `search` still runs but does not highlight: `apply` only calls `set_match_highlights` when `view.find_widget().is_some()`. Re-check `apply`: it calls it unconditionally, so this condition has to be added.
+- Keybindings, continuing the block:
   ```json
   { "key": "alt+cmd+c", "command": "toggleFindCaseSensitive", "when": "editorFocus" },
   { "key": "alt+cmd+w", "command": "toggleFindWholeWord", "when": "editorFocus" },
@@ -444,21 +444,21 @@ fn alt_cmd_c_in_explorer_still_copies_path(cx: &mut TestAppContext) {
   { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus" }
   ```
 
-- [ ] **Step 4: Chạy test, thấy qua** — `cargo test -p lucerna-workbench --test find_widget`, PASS.
+- [ ] **Step 4: Run the tests, see them pass** — `cargo test -p lucerna-workbench --test find_widget`, PASS.
 
-- [ ] **Step 5: Commit** các file của task. Message: `feat: find toggle shortcuts alt-cmd-c/w/r/p`.
+- [ ] **Step 5: Commit** the task's files. Message: `feat: find toggle shortcuts alt-cmd-c/w/r/p`.
 
 ---
 
-### Task 5: Tài liệu và kiểm tra toàn bộ
+### Task 5: Docs and a full check
 
 **Files:**
-- Modify: `docs/keyboard-shortcuts.md` (thêm dòng sau dòng `Cmd+F`: `Alt+Cmd+F` Replace in file, `Shift+Cmd+1` Replace one, `Alt+Cmd+Enter` Replace all, `Alt+Cmd+C/W/R/P` Toggle case / whole word / regex / preserve case)
-- Modify: `CHANGELOG.md` (dưới `## [Unreleased]`, thêm mục `### Added` riêng của tính năng này, ngay sau tiêu đề `[Unreleased]`, viết theo giọng các mục cũ)
-- Modify: `docs/roadmap.md` (đánh `[x]` cho dòng Find & Replace)
-- Modify: `docs/design-principles.md` §1.1 (bỏ câu ví dụ "chẳng hạn bỏ Replace vì Lucerna chỉ để xem code")
+- Modify: `docs/keyboard-shortcuts.md` (add lines after the `Cmd+F` line: `Alt+Cmd+F` Replace in file, `Shift+Cmd+1` Replace one, `Alt+Cmd+Enter` Replace all, `Alt+Cmd+C/W/R/P` Toggle case / whole word / regex / preserve case)
+- Modify: `CHANGELOG.md` (under `## [Unreleased]`, add this feature's own `### Added` entry, right after the `[Unreleased]` heading, written in the voice of the older entries)
+- Modify: `docs/roadmap.md` (mark the Find & Replace line `[x]`)
+- Modify: `docs/design-principles.md` §1.1 (remove the example sentence "for instance, dropping Replace because Lucerna is only for viewing code")
 
-- [ ] **Step 1:** Sửa bốn file trên.
-- [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-workbench && cargo test -p lucerna-project -p lucerna-editor -p lucerna-settings`. Expected: tất cả PASS.
-- [ ] **Step 3:** `cargo clippy --workspace --all-targets -- -D warnings` và `cargo fmt --all --check`. Expected: sạch.
-- [ ] **Step 4:** Commit bốn file docs, theo đường dẫn. Message: `docs: find and replace shortcuts, changelog, roadmap`.
+- [ ] **Step 1:** Edit the four files above.
+- [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-workbench && cargo test -p lucerna-project -p lucerna-editor -p lucerna-settings`. Expected: all PASS.
+- [ ] **Step 3:** `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`. Expected: clean.
+- [ ] **Step 4:** Commit the four docs files, by path. Message: `docs: find and replace shortcuts, changelog, roadmap`.

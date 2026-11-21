@@ -1,198 +1,198 @@
-# Review các flow cơ bản trước release: plan
+# Review of the basic flows before release: plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ra một báo cáo lỗi đã kiểm chứng, xếp theo mức độ, cho các flow cơ bản của Lucerna trước v0.1.0.
+**Goal:** Produce a verified bug report, ranked by severity, for Lucerna's basic flows before v0.1.0.
 
-**Architecture:** Năm agent review chỉ đọc code, chạy song song, mỗi agent một vùng flow (Task 1–5). Mỗi lỗi chúng báo được một agent kiểm chứng độc lập đọc lại code (Task 6). Lỗi đứng vững được gộp vào một báo cáo và commit (Task 7). Không sửa code sản phẩm.
+**Architecture:** Five read-only review agents run in parallel, one flow area each (Tasks 1–5). Each bug they report is re-read by an independent verification agent (Task 6). Bugs that hold up are merged into one report and committed (Task 7). No product code is changed.
 
-**Tech Stack:** Rust, GPUI. Công cụ: Agent tool (subagent `general-purpose`), Read, Grep, Bash chỉ để đọc.
+**Tech Stack:** Rust, GPUI. Tools: Agent tool (`general-purpose` subagent), Read, Grep, Bash for reading only.
 
 **Spec:** `docs/superpowers/specs/2026-11-15-release-flow-review-design.md`
 
 ## Global Constraints
 
-- Chỉ đọc code: không build, không `cargo test`, không tạo worktree, không sửa file trong `crates/`.
-- Phạm vi gồm bốn nhóm flow trong spec. Vim, LSP, extension, Markdown preview, diff view, hiệu năng, giao diện, docs và license nằm ngoài phạm vi, **trừ khi** chúng làm hỏng một flow cơ bản.
-- Mức độ: **P0** mất hoặc hỏng dữ liệu, crash. **P1** flow cơ bản không làm được. **P2** sai nhưng có cách khác. **P3** nhỏ.
-- Trích code vào báo cáo thật ngắn, chỉ đủ chỉ ra lỗi.
-- Commit theo đường dẫn cụ thể (`git commit -- <paths>`), trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Báo cáo: `docs/superpowers/reviews/2026-11-15-release-flow-review.md`.
+- Read code only: no build, no `cargo test`, no worktree, no edits to files in `crates/`.
+- The scope is the four flow groups in the spec. Vim, LSP, extensions, Markdown preview, diff view, performance, UI, docs and license are out of scope, **unless** they break a basic flow.
+- Severity: **P0** data loss or corruption, crash. **P1** a basic flow cannot be done. **P2** wrong but there is a workaround. **P3** minor.
+- Keep code quotes in the report very short, just enough to point at the bug.
+- Commit by specific path (`git commit -- <paths>`), with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Report: `docs/superpowers/reviews/2026-11-15-release-flow-review.md`.
 
 ## Review Focus
 
-Năm loại đầu vào dễ làm hỏng người dùng nhất. Mỗi dòng được gán vào checklist của task phụ trách:
+The five kinds of input most likely to hurt users. Each line is assigned to the checklist of the task in charge:
 
-1. **Agent ghi file trong lúc buffer đang có thay đổi chưa lưu.** Người dùng mong không mất bên nào, và không ghi đè mà không hỏi. (Task 1)
-2. **File CRLF, có BOM, không phải UTF-8, hoặc không có newline cuối.** Mong lưu lại đúng y như cũ, trừ phần người dùng sửa. (Task 1)
-3. **Đường dẫn có dấu cách, ký tự Unicode (tiếng Việt, NFD trên macOS), symlink, hoặc là file ẩn.** Mong mở, đổi tên, xoá và lưu đều đúng. (Task 2, 3)
-4. **Thoát app, hoặc đóng cửa sổ, khi một lần lưu hay một thao tác file đang dở.** Mong không mất dữ liệu và không còn file tạm. (Task 2)
-5. **Thư mục đang mở hoặc file đang mở bị xoá, đổi tên hay mount lại từ bên ngoài.** Mong không crash, tab báo rõ trạng thái. (Task 3, 4)
+1. **An agent writes a file while the buffer has unsaved changes.** The user expects to lose neither side, and no overwrite without asking. (Task 1)
+2. **Files with CRLF, a BOM, not UTF-8, or no final newline.** Expected: saved back exactly as before, except for what the user edited. (Task 1)
+3. **Paths with spaces, Unicode characters (Vietnamese, NFD on macOS), symlinks, or hidden files.** Expected: open, rename, delete and save all work correctly. (Tasks 2, 3)
+4. **Quitting the app, or closing a window, while a save or a file operation is half done.** Expected: no data lost and no temp file left behind. (Task 2)
+5. **The open folder or open file is deleted, renamed or remounted from outside.** Expected: no crash, and the tab shows its state clearly. (Tasks 3, 4)
 
 ---
 
-## Định dạng phát hiện (mọi task review dùng chung)
+## Finding Format (shared by every review task)
 
-Mỗi agent review trả về một danh sách. Mỗi mục có đủ các trường sau:
+Each review agent returns a list. Each item has all of these fields:
 
 ```
-- id: <T{task}-{n}>, ví dụ T1-3
+- id: <T{task}-{n}>, for example T1-3
   severity: P0 | P1 | P2 | P3
-  flow: <tên flow trong spec>
-  location: <crate/src/file.rs:dòng>
-  summary: <một câu nói lỗi là gì>
-  repro: <các bước cụ thể của người dùng, hoặc chuỗi sự kiện, dẫn tới lỗi>
-  evidence: <đường đi của code chứng minh, kèm file:dòng>
-  fix_hint: <một câu>
+  flow: <flow name in the spec>
+  location: <crate/src/file.rs:line>
+  summary: <one sentence saying what the bug is>
+  repro: <concrete user steps, or a chain of events, that lead to the bug>
+  evidence: <the code path that proves it, with file:line>
+  fix_hint: <one sentence>
   confidence: high | medium
 ```
 
-Không báo mục `low`. Không báo vấn đề về style, đặt tên hay hiệu năng. Thêm một mục `not_checked:` liệt kê những gì đọc code không kiểm được (ví dụ: focus, IME, thứ tự vẽ).
+Do not report `low` items. Do not report style, naming or performance issues. Add a `not_checked:` item listing what reading the code cannot verify (for example: focus, IME, paint order).
 
-## Brief chung cho agent review
+## Shared brief for the review agents
 
-Mỗi Task 1–5 gửi cho một subagent `general-purpose`. Brief gồm:
-- đoạn này,
-- Global Constraints,
-- Định dạng phát hiện,
-- phần "Flow" và "Bắt đầu đọc từ" của task đó.
+Each of Tasks 1–5 sends one `general-purpose` subagent. The brief consists of:
+- this section,
+- the Global Constraints,
+- the Finding Format,
+- the "Flow" and "Start reading from" parts of that task.
 
-> Bạn đang review code Lucerna, một code editor Rust/GPUI ở `/Users/duykhanh/Projects.nosync/lucerna`, trước bản phát hành đầu tiên. Chỉ đọc code, không sửa, không build, không chạy test. Với mỗi flow dưới đây, lần theo code từ thao tác của người dùng hoặc sự kiện file system đến kết quả cuối (ghi đĩa, cập nhật view, cập nhật cây thư mục). Tìm các loại lỗi sau:
-> - trường hợp biên chưa xử lý,
-> - race condition giữa watcher, ghi file và thao tác người dùng,
-> - `unwrap`, `expect` và index/slice có thể panic với dữ liệu thật,
-> - lỗi bị bỏ qua (`let _ =`, `.ok()`, `unwrap_or_default`) mà đáng ra phải báo cho người dùng,
-> - trạng thái tab, buffer và cây thư mục lệch nhau.
+> You are reviewing the code of Lucerna, a Rust/GPUI code editor at `/Users/duykhanh/Projects.nosync/lucerna`, before its first release. Read code only: do not edit, build or run tests. For each flow below, follow the code from the user's action or the file system event to the final result (disk write, view update, tree update). Look for these kinds of bugs:
+> - unhandled edge cases,
+> - race conditions between the watcher, file writes and user actions,
+> - `unwrap`, `expect` and index/slice operations that can panic on real data,
+> - errors that are swallowed (`let _ =`, `.ok()`, `unwrap_or_default`) but should be reported to the user,
+> - tab, buffer and tree state that drift apart.
 >
-> Đọc cả test hiện có để biết điều gì đã được kiểm. Chỉ báo lỗi bạn chỉ ra được bằng đường đi cụ thể trong code. Tài liệu hành vi mong đợi nằm ở `docs/features.md` và `docs/settings.md`.
+> Also read the existing tests to see what is already checked. Report only bugs you can show with a concrete path through the code. The documentation of expected behavior is in `docs/features.md` and `docs/settings.md`.
 
 ---
 
-### Task 1: Lưu file và conflict với thay đổi trên đĩa
+### Task 1: Saving files and conflicts with changes on disk
 
 **Flow:**
-- Sửa và lưu: ghi atomic; giữ encoding, BOM và kiểu xuống dòng; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`, `files.eol`, `files.autoSave`.
+- Edit and save: atomic write; keep encoding, BOM and line ending style; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`, `files.eol`, `files.autoSave`.
 - Save All, Save Without Formatting, Revert.
-- Undo và redo (gồm cursor undo).
-- File đổi trên đĩa khi buffer đang có thay đổi chưa lưu: conflict dot, conflict bar, hỏi trước khi ghi đè.
-- Review Focus 1 và 2.
+- Undo and redo (including cursor undo).
+- The file changes on disk while the buffer has unsaved changes: conflict dot, conflict bar, asking before overwriting.
+- Review Focus 1 and 2.
 
-**Bắt đầu đọc từ:**
+**Start reading from:**
 - `lucerna-text/src/{write,load,reload,buffer,history,patch,diff}.rs`
 - `lucerna-workbench/src/{save,documents,conflict_bar,editing}.rs`
 - `lucerna-workbench/src/code_view/transact.rs`
 - `lucerna-editor/src/merge.rs`
 - `lucerna-text/tests/`
 
-- [ ] **Step 1:** Gửi brief cho subagent, với description "Review save and conflict flows".
-- [ ] **Step 2:** Kiểm tra kết quả trả về đúng Định dạng phát hiện và mọi `location` trỏ tới file có thật (`test -f`). Mục nào thiếu trường thì gửi lại cho chính agent đó (SendMessage) để bổ sung.
+- [ ] **Step 1:** Send the brief to a subagent, with the description "Review save and conflict flows".
+- [ ] **Step 2:** Check that the returned result follows the Finding Format and that every `location` points to a real file (`test -f`). For any item missing a field, send it back to the same agent (SendMessage) to complete.
 
-### Task 2: Explorer, đóng tab và thoát app
+### Task 2: Explorer, closing tabs and quitting the app
 
 **Flow:**
-- Explorer: New File, New Folder, Rename (tab đang mở đi theo), Delete to Trash, Delete Permanently, copy và paste file.
-- Đóng tab, đóng group, đóng cửa sổ và thoát app khi còn file chưa lưu (hộp thoại hỏi; các nút Save, Don't Save, Cancel).
-- Close Folder khi còn file chưa lưu.
-- Review Focus 3 (phần thao tác file) và 4.
+- Explorer: New File, New Folder, Rename (an open tab follows), Delete to Trash, Delete Permanently, copy and paste files.
+- Closing a tab, closing a group, closing a window and quitting the app with unsaved files (the dialog that asks; the buttons Save, Don't Save, Cancel).
+- Close Folder with unsaved files.
+- Review Focus 3 (the file operations part) and 4.
 
-**Bắt đầu đọc từ:**
+**Start reading from:**
 - `lucerna-workbench/src/explorer/{commands,clipboard,model,view}.rs`
 - `lucerna-project/src/fs_ops.rs`
 - `lucerna-workbench/src/editor_groups/{model,view}.rs`
-- `lucerna-workbench/src/{app,app_menu,workbench}.rs` (phần quit/close)
+- `lucerna-workbench/src/{app,app_menu,workbench}.rs` (the quit/close parts)
 - `lucerna-project/tests/fs_ops.rs`
 
-- [ ] **Step 1:** Gửi brief cho subagent, với description "Review explorer and close flows".
-- [ ] **Step 2:** Kiểm tra định dạng và đường dẫn như Task 1, Step 2.
+- [ ] **Step 1:** Send the brief to a subagent, with the description "Review explorer and close flows".
+- [ ] **Step 2:** Check the format and the paths as in Task 1, Step 2.
 
-### Task 3: Mở folder, mở file và khôi phục workspace
+### Task 3: Opening a folder, opening a file and restoring the workspace
 
 **Flow:**
-- `luc .`, `luc <file>`, `luc <đường dẫn không tồn tại>`.
-- Mở từ Finder hoặc Dock, Open With (file trong folder đang mở thì mở thành tab, còn lại mở cửa sổ mới).
-- Khôi phục workspace (`window.restoreWindows`), Welcome page, Open Recent, Close Folder (Cmd+K F).
-- File lớn (trên 20 MB hoặc trên 300 nghìn dòng), dòng dài 5 MB, file nhị phân, UTF-16, Latin-1.
-- Workspace đã lưu trỏ tới folder hoặc file không còn tồn tại.
-- Review Focus 3 (phần mở) và 5 (phần folder biến mất).
+- `luc .`, `luc <file>`, `luc <nonexistent path>`.
+- Opening from Finder or the Dock, Open With (a file inside the open folder opens as a tab, any other opens a new window).
+- Workspace restore (`window.restoreWindows`), Welcome page, Open Recent, Close Folder (Cmd+K F).
+- Large files (over 20 MB or over 300 thousand lines), a 5 MB long line, binary files, UTF-16, Latin-1.
+- A saved workspace that points to a folder or file that no longer exists.
+- Review Focus 3 (the opening part) and 5 (the vanished folder part).
 
-**Bắt đầu đọc từ:**
+**Start reading from:**
 - `lucerna/src/{main,target}.rs`
 - `lucerna-workbench/src/{startup,open_commands,open_files,open_requests,recent,recent_picker,welcome,workspace_state,app_state,app_state_file}.rs`
 - `lucerna-text/src/load.rs`
-- `lucerna-workbench/src/documents.rs` (phần mở)
+- `lucerna-workbench/src/documents.rs` (the open part)
 
-- [ ] **Step 1:** Gửi brief cho subagent, với description "Review open and restore flows".
-- [ ] **Step 2:** Kiểm tra định dạng và đường dẫn như Task 1, Step 2.
+- [ ] **Step 1:** Send the brief to a subagent, with the description "Review open and restore flows".
+- [ ] **Step 2:** Check the format and the paths as in Task 1, Step 2.
 
-### Task 4: Theo dõi thay đổi của agent
+### Task 4: Following the agent's changes
 
 **Flow:**
-- Reload khi file trên đĩa đổi: ghi atomic (rename đè lên), xoá rồi tạo lại, `git checkout` hàng nghìn file.
-- Giữ vị trí cuộn, màu cú pháp và fold sau khi reload.
-- Đánh dấu file vừa đổi trên cây thư mục (10 giây).
-- Màu git trong Explorer và gutter cập nhật theo các lệnh `git`.
-- Cây thư mục tự cập nhật, tôn trọng `.gitignore` và `files.exclude`.
-- Review Focus 5 (phần file đang mở biến mất).
+- Reload when the file on disk changes: atomic write (rename over), delete then recreate, `git checkout` of thousands of files.
+- Keep scroll position, syntax colors and folds after a reload.
+- Mark a just-changed file in the tree (10 seconds).
+- Git colors in the Explorer and the gutter update with `git` commands.
+- The tree updates itself, respecting `.gitignore` and `files.exclude`.
+- Review Focus 5 (the open file vanishing part).
 
-**Bắt đầu đọc từ:**
+**Start reading from:**
 - `lucerna-project/src/{watch,worktree,coalesce,snapshot,ignored}.rs`
 - `lucerna-git/src/{watch,status,repo,hunks}.rs`
 - `lucerna-workbench/src/git/{mod,wiring,job,rollup}.rs`
 - `lucerna-text/src/reload.rs`
-- `lucerna-workbench/src/documents.rs` (phần reload)
+- `lucerna-workbench/src/documents.rs` (the reload part)
 - `lucerna-project/tests/`, `lucerna-git/tests/`
 
-- [ ] **Step 1:** Gửi brief cho subagent, với description "Review agent-follow flows".
-- [ ] **Step 2:** Kiểm tra định dạng và đường dẫn như Task 1, Step 2.
+- [ ] **Step 1:** Send the brief to a subagent, with the description "Review agent-follow flows".
+- [ ] **Step 2:** Check the format and the paths as in Task 1, Step 2.
 
-### Task 5: Điều hướng hằng ngày
+### Task 5: Everyday navigation
 
 **Flow:**
-- Quick Open: tên file, `>` cho lệnh, `:` cho đi tới dòng (kể cả dòng vượt cuối file).
-- Tìm trong project (Cmd+Shift+F), kể cả kết quả trong file vừa bị xoá.
-- Tìm trong file (Cmd+F), kể cả regex sai.
-- Split editor (Cmd+\), tab và preview tab.
-- Terminal: mở, đóng, nhiều tab, shell thoát.
-- Gõ IME tiếng Việt trong editor và các ô nhập.
+- Quick Open: file names, `>` for commands, `:` for go to line (including a line past the end of the file).
+- Search in the project (Cmd+Shift+F), including a result in a file that was just deleted.
+- Find in file (Cmd+F), including an invalid regex.
+- Split editor (Cmd+\), tabs and preview tabs.
+- Terminal: open, close, several tabs, the shell exits.
+- Typing Vietnamese with an IME in the editor and the input boxes.
 
-**Bắt đầu đọc từ:**
+**Start reading from:**
 - `lucerna-workbench/src/quick_open/`, `lucerna-workbench/src/search_view/`, `lucerna-project/src/{search,fuzzy}.rs`
 - `lucerna-workbench/src/{find_widget,goto,text_input}.rs`
 - `lucerna-workbench/src/editor_groups/`
 - `lucerna-workbench/src/terminal/{panel,view,commands}.rs`, `lucerna-terminal/src/{terminal,process}.rs`
 - `lucerna-workbench/src/code_view/input.rs`
 
-- [ ] **Step 1:** Gửi brief cho subagent, với description "Review navigation flows".
-- [ ] **Step 2:** Kiểm tra định dạng và đường dẫn như Task 1, Step 2.
+- [ ] **Step 1:** Send the brief to a subagent, with the description "Review navigation flows".
+- [ ] **Step 2:** Check the format and the paths as in Task 1, Step 2.
 
-> Task 1–5 độc lập với nhau: gửi cả năm trong cùng một message để chạy song song.
+> Tasks 1–5 are independent of each other: send all five in the same message so they run in parallel.
 
-### Task 6: Kiểm chứng từng phát hiện
+### Task 6: Verify each finding
 
 **Interfaces:**
-- Consumes: danh sách phát hiện từ Task 1–5, theo Định dạng phát hiện.
-- Produces: với mỗi `id`, một kết quả `verdict: confirmed | rejected | downgraded`, kèm `severity` cuối cùng và một câu lý do.
+- Consumes: the list of findings from Tasks 1–5, in the Finding Format.
+- Produces: for each `id`, a result `verdict: confirmed | rejected | downgraded`, with the final `severity` and a one-sentence reason.
 
-- [ ] **Step 1: Gộp và bỏ trùng.** Hai phát hiện cùng nguyên nhân gốc (cùng `location` hoặc cùng đường đi của code) được gộp thành một, giữ `id` nhỏ hơn và mức độ cao hơn.
-- [ ] **Step 2: Gửi agent kiểm chứng.** Mỗi task review có phát hiện thì gửi một subagent `general-purpose`, chạy song song. Brief của agent kiểm chứng chỉ gồm `summary`, `location` và `repro` của từng mục, **không** gồm `evidence` hay `confidence` để agent không bị neo vào kết luận cũ. Yêu cầu agent đọc code và trả lời ba câu:
-  - Với code hiện tại, các bước repro có dẫn tới lỗi này không?
-  - Có chỗ nào khác trong code đã chặn lỗi không?
-  - Mức độ đúng là gì?
-- [ ] **Step 3: Đối chiếu.** Mục `rejected` bị loại. Mục `downgraded` lấy mức độ mới. Nếu agent review và agent kiểm chứng không đồng ý về một mục P0 hoặc P1, tự đọc `location` đó để quyết định, và ghi lý do.
+- [ ] **Step 1: Merge and deduplicate.** Two findings with the same root cause (the same `location` or the same code path) are merged into one, keeping the smaller `id` and the higher severity.
+- [ ] **Step 2: Send the verification agents.** For each review task that has findings, send one `general-purpose` subagent, running in parallel. The verification agent's brief contains only the `summary`, `location` and `repro` of each item, and **not** the `evidence` or `confidence`, so the agent is not anchored on the earlier conclusion. Ask the agent to read the code and answer three questions:
+  - With the current code, do the repro steps lead to this bug?
+  - Is there anywhere else in the code that already prevents the bug?
+  - What is the correct severity?
+- [ ] **Step 3: Reconcile.** `rejected` items are dropped. `downgraded` items take the new severity. If the review agent and the verification agent disagree about a P0 or P1 item, read that `location` yourself to decide, and write down the reason.
 
-### Task 7: Viết báo cáo và commit
+### Task 7: Write the report and commit
 
 **Files:**
 - Create: `docs/superpowers/reviews/2026-11-15-release-flow-review.md`
 
-- [ ] **Step 1: Viết báo cáo**, gồm các phần:
-  1. **Tóm tắt:** số lỗi theo mức độ, và các lỗi P0 và P1 mỗi lỗi một dòng.
-  2. **Danh sách lỗi:** mỗi lỗi một mục `### <id> [P?] <summary>`, kèm flow, `location` (dạng link markdown tương đối), cách tái hiện, hướng sửa gợi ý. Sắp từ P0 đến P3, trong cùng mức độ thì theo thứ tự nhóm flow.
-  3. **Đã loại:** mỗi mục bị `rejected` một dòng, kèm lý do, để lần review sau không phải dò lại.
-  4. **Cần thử tay trước release:** gộp các `not_checked` của Task 1–5 thành một checklist có ô đánh dấu.
-- [ ] **Step 2: Kiểm tra link.** Mọi `location` trong báo cáo trỏ tới file có thật:
+- [ ] **Step 1: Write the report**, with these sections:
+  1. **Summary:** the number of bugs by severity, and the P0 and P1 bugs one line each.
+  2. **List of bugs:** each bug as one `### <id> [P?] <summary>` entry, with the flow, the `location` (as a relative markdown link), how to reproduce it, and a suggested fix. Sorted from P0 to P3, and within the same severity by flow group order.
+  3. **Rejected:** one line per `rejected` item with the reason, so the next review does not have to look again.
+  4. **To try by hand before release:** the `not_checked` items of Tasks 1–5 merged into one checklist with checkboxes.
+- [ ] **Step 2: Check the links.** Every `location` in the report points to a real file:
   `grep -o '](\.\./\.\./\.\./crates/[^):]*' docs/superpowers/reviews/2026-11-15-release-flow-review.md | sed 's/](\.\.\/\.\.\/\.\.\///' | sort -u | while read f; do test -f "$f" || echo "MISSING $f"; done`
-  Kết quả mong đợi: không in gì.
+  Expected result: prints nothing.
 - [ ] **Step 3: Commit.**
 
 ```bash
@@ -200,4 +200,4 @@ git add -- docs/superpowers/reviews/2026-11-15-release-flow-review.md docs/super
 git commit -m "docs(review): basic-flow review before v0.1.0" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- docs/superpowers/reviews/2026-11-15-release-flow-review.md docs/superpowers/plans/2026-11-15-release-flow-review.md
 ```
 
-- [ ] **Step 4:** Gửi người dùng phần tóm tắt và link báo cáo. Hỏi họ chọn những lỗi nào phải sửa trước release.
+- [ ] **Step 4:** Send the user the summary and the link to the report. Ask them which bugs must be fixed before release.
