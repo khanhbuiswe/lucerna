@@ -1,4 +1,4 @@
-# Replace trong project — Implementation Plan
+# Replace in project — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -527,7 +527,7 @@ assert_eq!(unsaved_message(1).as_deref(), Some("1 file with unsaved changes was 
   - `crates/lucerna-project/tests/replace_files.rs` (timing test)
   - `docs/keyboard-shortcuts.md`
   - `CHANGELOG.md` (lines appended under Unreleased)
-  - `docs/roadmap.md` (`- [x] Replace trong project (Search)`)
+  - `docs/roadmap.md` (`- [x] Replace in project (Search)`)
 
 - [ ] **Step 1:** Add `replace_files_2000_files` (`#[ignore]`-free but fast): 2,000 files of 10 lines each, all shown. Assert every file reads `bar` afterwards, and print the elapsed time with `eprintln!`. The UI-thread budget is covered by design (job on the background executor). Note the measured time in the commit message.
 - [ ] **Step 2:** Docs:
