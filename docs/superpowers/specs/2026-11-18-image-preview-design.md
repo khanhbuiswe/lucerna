@@ -1,261 +1,274 @@
-# Image preview — thiết kế
+# Image preview — design
 
-Ngày: 2026-11-18. Trạng thái: đã duyệt.
+Date: 2026-11-18. Status: approved.
 
-## 1. Ý định
+## 1. Intent
 
-Repo có nhiều asset: icon, logo, screenshot, ảnh minh hoạ trong docs. Người
-dùng bấm vào một file ảnh trong Explorer hoặc Quick Open để biết nó trông thế
-nào, mà không phải chuyển sang Finder hay Preview.
+The repo has many assets: icons, logos, screenshots, illustrations in the docs.
+Users click an image file in Explorer or Quick Open to see what it looks like,
+without switching to Finder or Preview.
 
-Hiện giờ Lucerna mở `.png` thì báo "The file appears to be binary." kèm nút
-"Open as Text". Còn `.svg` thì mở ra mã nguồn.
+Today Lucerna reports "The file appears to be binary." with an "Open as Text"
+button when opening a `.png`. A `.svg` opens as source code.
 
-Tính năng coi là thành công khi:
-- Bấm một file ảnh là thấy ảnh trong tab ngay, kèm kích thước tính bằng pixel
-  và dung lượng file.
-- Agent ghi đè file ảnh thì tab tự cập nhật.
-- Đóng tab thì bộ nhớ của ảnh được giải phóng.
+The feature counts as successful when:
+- Clicking an image file shows the image in the tab right away, with its size
+  in pixels and its file size.
+- When an agent overwrites the image file, the tab updates by itself.
+- Closing the tab frees the image's memory.
 
-## 2. Mục tiêu, không làm, phản mục tiêu
+## 2. Goals, non-goals, anti-goals
 
-**Mục tiêu**
-- Mở các file PNG, JPEG, GIF (có chuyển động), WebP, BMP, TIFF, ICO, SVG
-  trong một tab ảnh.
-- SVG mặc định mở ra ảnh, giống VS Code. Có lệnh, nút và ⌘⇧V để chuyển qua
-  lại với mã nguồn.
-- Tab ảnh hoạt động như tab file:
-  - mở dạng preview tab (chữ nghiêng),
-  - giữ lại tab bằng double-click,
-  - chia sang ô bên cạnh,
-  - lưu và khôi phục cùng workspace,
-  - đi theo file khi file bị đổi tên.
-- Ảnh được căn giữa. Ảnh lớn thu nhỏ cho vừa khung, ảnh nhỏ giữ nguyên kích
-  thước gốc. Phía sau ảnh có nền ô cờ để thấy rõ phần trong suốt.
-- Thanh trạng thái hiện `W × H • dung lượng`.
-- File đổi trên đĩa thì tab tự tải lại.
+**Goals**
+- Open PNG, JPEG, GIF (animated), WebP, BMP, TIFF, ICO and SVG files in an
+  image tab.
+- SVG opens as an image by default, like VS Code. A command, a button and
+  ⌘⇧V switch back and forth with the source code.
+- An image tab behaves like a file tab:
+  - opens as a preview tab (italic title),
+  - is kept by double-click,
+  - can be split to the neighboring pane,
+  - is saved and restored with the workspace,
+  - follows the file when it is renamed.
+- The image is centered. A large image is scaled down to fit the frame; a small
+  image keeps its original size. A checkerboard background sits behind the
+  image so transparent areas are easy to see.
+- The status bar shows `W × H • file size`.
+- When the file changes on disk, the tab reloads by itself.
 
-**Không làm (bản này)**
-- Zoom, kéo ảnh, xem đúng kích thước gốc khi ảnh lớn hơn khung.
-- Sửa ảnh, copy ảnh (`imagePreview.copyImage`).
-- So sánh ảnh trong git diff (Uncommitted Changes, `git.openChange`).
-- Video và âm thanh. Các định dạng GPUI không đọc được (AVIF, TGA, HDR,
-  EXR…).
-- Ảnh trong hover và trong Quick Open.
+**Non-goals (this version)**
+- Zoom, dragging the image, viewing at the original size when the image is
+  larger than the frame.
+- Editing the image, copying the image (`imagePreview.copyImage`).
+- Comparing images in a git diff (Uncommitted Changes, `git.openChange`).
+- Video and audio. Formats GPUI cannot read (AVIF, TGA, HDR, EXR…).
+- Images in hover and in Quick Open.
 
-**Phản mục tiêu** (chạy được nhưng vẫn coi là thất bại):
-- Luồng UI bị đứng khi đọc hoặc giải mã ảnh lớn.
-- Đóng tab mà RAM không giảm, hoặc tải lại liên tục làm RAM tăng dần.
-  Đo thực tế (2026-11-18): đóng tab giải phóng texture GPU và dữ liệu ảnh;
-  phần footprint còn lại là large cache của libmalloc trên macOS, không tăng
-  qua các lần mở lại, và ít hơn Zed lẫn VS Code. Chi tiết và quyết định chấp
-  nhận ở `docs/research/2026-11-18-image-preview.md` §6.
-- Ảnh cũ vẫn hiện sau khi file trên đĩa đã đổi.
-- Ảnh nháy trắng mỗi lần agent ghi lại file.
-- Thêm một crate mới vào `Cargo.lock`, hoặc binary tăng quá 200 KB.
-- Chạm vào luồng xử lý văn bản (`Documents`, lưu file, hot exit).
+**Anti-goals** (it runs but still counts as a failure):
+- The UI thread stalls while reading or decoding a large image.
+- Closing a tab does not reduce RAM, or constant reloading makes RAM grow
+  steadily. Measured (2026-11-18): closing a tab frees the GPU texture and the
+  image data; the remaining footprint is libmalloc's large cache on macOS, does
+  not grow across reopens, and is smaller than both Zed and VS Code. Details
+  and the decision to accept it are in
+  `docs/research/2026-11-18-image-preview.md` §6.
+- The old image still shows after the file on disk has changed.
+- The image flashes white every time an agent rewrites the file.
+- A new crate is added to `Cargo.lock`, or the binary grows by more than
+  200 KB.
+- The text-handling path is touched (`Documents`, saving files, hot exit).
 
-## 3. Tham khảo
+## 3. References
 
-Chi tiết ở `docs/research/2026-11-18-image-preview.md`. Tóm tắt:
+Details are in `docs/research/2026-11-18-image-preview.md`. Summary:
 
-| Mặt | VS Code | Zed | Lucerna |
+| Aspect | VS Code | Zed | Lucerna |
 |---|---|---|---|
-| SVG mặc định | ảnh | text | **VS Code** (ảnh) |
-| Chọn editor | `imagePreview.previewEditor`, priority builtin, đổi qua `workbench.editorAssociations` | danh sách đuôi cố định | **VS Code** |
-| Chuyển SVG ↔ mã nguồn | `imagePreview.reopenAsText` / `reopenAsPreview`, nút trên tiêu đề | không | lệnh **VS Code**, nút theo kiểu **Zed** (icon trên thanh đường dẫn, như markdown), thêm ⌘⇧V (lệch, §4.2) |
-| Kích thước khi mở | vừa khung, chỉ thu nhỏ | như VS Code | như nhau |
-| Nền | ô cờ 16px sau ảnh, viền 1px | `gpui::checkerboard`, viền 1px | **Zed** (`gpui::checkerboard`) |
-| Thanh trạng thái | zoom, `WxH`, KB | `WxH • size • kênh • định dạng` | **Zed** về hình thức, nội dung như **VS Code**: `W × H • size` |
-| Tải lại | watcher, giữ ảnh cũ nếu lỗi | đọc lại byte, giải mã xong mới thay, giải phóng ảnh cũ | **Zed** |
-| Helix | không có | | |
+| SVG default | image | text | **VS Code** (image) |
+| Editor choice | `imagePreview.previewEditor`, builtin priority, changed via `workbench.editorAssociations` | fixed list of extensions | **VS Code** |
+| Switch SVG ↔ source | `imagePreview.reopenAsText` / `reopenAsPreview`, button in the title | none | **VS Code** commands, **Zed**-style button (icon on the breadcrumb bar, like markdown), plus ⌘⇧V (a deviation, §4.2) |
+| Size when opened | fit the frame, shrink only | same as VS Code | same |
+| Background | 16px checkerboard behind the image, 1px border | `gpui::checkerboard`, 1px border | **Zed** (`gpui::checkerboard`) |
+| Status bar | zoom, `WxH`, KB | `WxH • size • channels • format` | **Zed** in form, **VS Code** in content: `W × H • size` |
+| Reload | watcher, keeps the old image on error | re-reads the bytes, replaces only after decoding, frees the old image | **Zed** |
+| Helix | none | | |
 
-## 3b. Các cách đã cân nhắc
+## 3b. Options considered
 
-1. **Thêm một loại tab ảnh riêng** (`TabItem::ImagePreview`,
-   `FileView::Image`), không đi qua `Documents`. **Người dùng chọn cách
-   này.** Không đụng vào markdown preview, ảnh tách biệt với luồng văn bản.
-   Cái giá là lặp lại một ít logic chuyển qua lại giữa mã nguồn và preview.
-2. **Gộp với markdown thành một loại "rendered".** Logic chuyển qua lại chỉ
-   có ở một chỗ, nhưng phải sửa markdown preview (preview động, đồng bộ
-   cuộn) là phần ảnh không cần. Dễ gây lỗi cho tính năng đang chạy ổn.
-3. **Vẽ ảnh vào màn hình "binary" của `Documents`.** Ít code nhất, nhưng
-   trộn ảnh vào luồng văn bản (encoding, lưu, hot exit). SVG không bao giờ
-   tới được nhánh đó. Thông tin trên thanh trạng thái cũng khó gắn vào.
+1. **Add a separate image tab kind** (`TabItem::ImagePreview`,
+   `FileView::Image`), not going through `Documents`. **The user chose this
+   option.** It does not touch the markdown preview, and the image stays
+   separate from the text path. The cost is repeating a little of the
+   switch-between-source-and-preview logic.
+2. **Merge with markdown into one "rendered" kind.** The switching logic lives
+   in one place, but the markdown preview has to be changed (dynamic preview,
+   scroll sync), which images do not need. Likely to break a feature that works
+   fine today.
+3. **Draw the image into the "binary" screen of `Documents`.** The least code,
+   but it mixes images into the text path (encoding, saving, hot exit). SVG
+   never reaches that branch. The status bar information is also hard to attach.
 
-## 4. Quyết định
+## 4. Decisions
 
-### 4.1 File nào mở ra ảnh
+### 4.1 Which files open as an image
 
-Thêm `FileView::Image` vào enum đang chọn giữa mã nguồn và preview. Hàm
-`editor_for` (`markdown_preview/commands.rs`) trả về:
-1. Khi `workbench.editorAssociations` có glob khớp: `Image` nếu id là
-   `imagePreview.previewEditor`, `Source` nếu id là `default`, và `Preview`
-   cho markdown như hiện nay.
-2. Khi không glob nào khớp mà đuôi file (không phân biệt hoa thường) nằm
-   trong danh sách ảnh: `Image`. Đây là priority `builtin` của VS Code, nên
-   không cần thêm các đuôi ảnh vào giá trị mặc định của setting.
+Add `FileView::Image` to the enum that chooses between source and preview. The
+`editor_for` function (`markdown_preview/commands.rs`) returns:
+1. When a glob in `workbench.editorAssociations` matches: `Image` if the id is
+   `imagePreview.previewEditor`, `Source` if the id is `default`, and `Preview`
+   for markdown as today.
+2. When no glob matches and the file extension (case-insensitive) is in the
+   image list: `Image`. This is VS Code's `builtin` priority, so the image
+   extensions do not need to be added to the setting's default value.
 
-Danh sách đuôi ảnh: `png jpg jpeg jpe gif webp bmp ico tif tiff svg`.
+Image extension list: `png jpg jpeg jpe gif webp bmp ico tif tiff svg`.
 
-Ai muốn SVG mở ra mã nguồn như trước thì đặt
-`"workbench.editorAssociations": { "*.svg": "default" }`. Cũng làm được như
-vậy với đuôi khác, nhưng ảnh raster lúc đó sẽ ra màn hình "binary" hiện có.
+Anyone who wants SVG to open as source code as before sets
+`"workbench.editorAssociations": { "*.svg": "default" }`. The same works for
+other extensions, but raster images then land on the existing "binary" screen.
 
-Mọi đường mở file đều đi qua chỗ này: Explorer, Quick Open, Open Recent,
-`luc file`, phiên được khôi phục. Mở kèm số dòng (`file.svg:12`, Go to
-Definition, kết quả tìm kiếm) thì vẫn mở mã nguồn, như `.md` đang làm.
+Every path that opens a file goes through here: Explorer, Quick Open, Open
+Recent, `luc file`, restored sessions. Opening with a line number
+(`file.svg:12`, Go to Definition, search results) still opens source code, as
+`.md` does today.
 
-### 4.2 Chuyển qua lại giữa SVG và mã nguồn
+### 4.2 Switching between SVG and source
 
-- **Lệnh** (theo VS Code):
-  - `imagePreview.reopenAsText` ("Reopen as Text"): thay tab ảnh đang mở
-    bằng tab mã nguồn ở cùng vị trí.
-  - `imagePreview.reopenAsPreview` ("Reopen as Image Preview"): làm ngược
-    lại.
-  - Chỉ hiện trong command palette khi tab đang mở là SVG.
-- **Nút:** icon trên thanh đường dẫn, cùng chỗ và cùng kiểu với nút preview
-  của markdown.
-- **Phím:** ⌘⇧V gọi đúng lệnh còn lại. VS Code không gán phím cho việc này.
-  Lucerna gán vì ⌘⇧V đã quen tay ở markdown và người dùng đã chọn cách
-  này. Đây là một chỗ lệch có chủ ý.
-  - Cách gán: hai dòng keybinding cho ⌘⇧V, mỗi dòng có điều kiện `when`
-    theo loại tab (SVG ở dạng mã nguồn, SVG ở dạng ảnh). Dòng của markdown
-    giữ nguyên.
-  - Trên tab ảnh raster, ⌘⇧V không làm gì.
-  - *(Claude quyết định.)* Chuyển đổi luôn diễn ra tại chỗ, giống
-    `markdown.togglePreview` đang làm. Nếu nhóm đã có tab ở dạng kia của cùng
-    file thì kích hoạt tab đó thay vì tạo tab trùng, giống cách markdown
-    xử lý hiện nay.
-- **Explorer:** menu chuột phải của file `.svg` có "Open Preview", giống
+- **Commands** (following VS Code):
+  - `imagePreview.reopenAsText` ("Reopen as Text"): replaces the open image tab
+    with a source tab at the same position.
+  - `imagePreview.reopenAsPreview` ("Reopen as Image Preview"): does the
+    reverse.
+  - Shown in the command palette only when the current tab is an SVG.
+- **Button:** an icon on the breadcrumb bar, in the same place and style as
+  markdown's preview button.
+- **Key:** ⌘⇧V invokes whichever command is the other one. VS Code assigns no
+  key for this. Lucerna assigns it because ⌘⇧V is already familiar from
+  markdown and the user chose this approach. This is a deliberate deviation.
+  - How it is bound: two keybinding rows for ⌘⇧V, each with a `when` condition
+    on the tab kind (SVG as source, SVG as image). The markdown row stays
+    unchanged.
+  - On a raster image tab, ⌘⇧V does nothing.
+  - *(Claude decided.)* The switch always happens in place, as
+    `markdown.togglePreview` does today. If the group already has a tab for the
+    other form of the same file, that tab is activated instead of creating a
+    duplicate, the way markdown handles it today.
+- **Explorer:** the right-click menu of a `.svg` file has "Open Preview", like
   `.md`.
-- Ảnh raster không có lệnh nào ở trên. Muốn xem dạng text thì dùng nút
-  "Open as Text" trên màn hình lỗi (§4.6).
+- Raster images have none of the commands above. To view one as text, use the
+  "Open as Text" button on the error screen (§4.6).
 
-### 4.3 Tab
+### 4.3 Tabs
 
-- Thêm `TabItem::ImagePreview(Arc<Path>)`. Không phải singleton: mở bao nhiêu
-  cũng được, giống `File` và `MarkdownPreview`.
-- Tiêu đề tab là tên file, icon theo loại file như tab file.
-- Preview tab, pin tab, mở ở ô bên cạnh: cùng luật với tab file. Trong một
-  nhóm, mở lại một file đang có tab ảnh thì kích hoạt tab đó.
-- Lưu vào `GroupState::tabs` với tiền tố `lucerna:image-preview:` cộng đường
-  dẫn tuyệt đối, như `MARKDOWN_PREVIEW_STATE_PREFIX`.
-- File bị đổi tên: tab đi theo tên mới, như tab file và tab markdown.
-- File bị xóa: tab giữ ảnh cuối cùng, tiêu đề tab gạch ngang như tab file.
-  Không có thanh Close/Keep, vì thanh đó lấy trạng thái từ `Documents`.
-  Khi file xuất hiện lại thì tab tải lại ảnh và bỏ gạch ngang. *(Claude
-  quyết định.)*
-- Tải lại không phải là thao tác của người dùng. Preview tab (chữ nghiêng)
-  vẫn là preview tab sau khi tải lại.
-- Tab ảnh không bao giờ ở trạng thái dirty. ⌘S không làm gì. Các lệnh soạn
-  thảo (find, go to line, format…) không áp dụng cho tab này.
+- Add `TabItem::ImagePreview(Arc<Path>)`. Not a singleton: any number can be
+  opened, like `File` and `MarkdownPreview`.
+- The tab title is the file name, with an icon by file type as in file tabs.
+- Preview tab, pinned tab, open in the neighboring pane: same rules as file
+  tabs. Within a group, reopening a file that already has an image tab
+  activates that tab.
+- Stored in `GroupState::tabs` with the prefix `lucerna:image-preview:` plus
+  the absolute path, like `MARKDOWN_PREVIEW_STATE_PREFIX`.
+- When the file is renamed: the tab follows the new name, like file tabs and
+  markdown tabs.
+- When the file is deleted: the tab keeps the last image, and the tab title is
+  struck through like a file tab. There is no Close/Keep bar, because that bar
+  takes its state from `Documents`. When the file reappears, the tab reloads the
+  image and the strikethrough is removed. *(Claude decided.)*
+- Reloading is not a user action. A preview tab (italic title) is still a
+  preview tab after a reload.
+- An image tab is never dirty. ⌘S does nothing. Editing commands (find, go to
+  line, format…) do not apply to this tab.
 
-### 4.4 View ảnh
+### 4.4 Image view
 
-- Một entity `ImagePreview` mới nằm ở `lucerna-workbench`, trong module
-  `image_preview/`. View này không dùng `Documents`.
-- **Tải:** đọc byte và giải mã ở nền, dùng `Image::from_bytes`. Định dạng
-  đoán từ byte; không đoán được mà đuôi là `.svg` thì thử SVG. Đồng thời đọc
-  kích thước pixel. Vẽ bằng `img(ImageSource::Image(Arc<Image>))` để id ảnh
-  theo nội dung, không theo đường dẫn.
-- Trong lúc đang tải lần đầu, khung để trống, không có spinner, như markdown
-  preview.
-- **Bố cục:**
-  - Ảnh nằm giữa khung. Tỉ lệ là `min(khung / ảnh, 1)` theo cả hai chiều.
-  - Khung có lề vài pixel, dùng chung spacing token với các view khác.
-  - Nền khung là màu nền editor. Riêng vùng ngay dưới ảnh có
-    `gpui::checkerboard` với màu lấy từ theme, cộng viền 1px.
-  - Khung đổi kích thước thì ảnh tính lại tỉ lệ.
-- **SVG** vẽ ở độ phân giải đúng với kích thước hiển thị và scale factor của
-  màn hình, để không bị mờ trên màn hình Retina. Kích thước "gốc" của SVG lấy
-  từ `width`/`height`/`viewBox` của file.
-  - *(Claude quyết định.)* Ở revision GPUI đang pin, `Image::from_bytes` với
-    SVG luôn raster ở scale 1.0, nên trên Retina sẽ bị mờ. Vì vậy SVG có
-    đường raster riêng:
-    - Đọc kích thước gốc bằng `usvg`, crate này đã có trong `Cargo.lock` qua
-      GPUI (thêm làm dependency trực tiếp, đúng version 0.46).
-    - Raster bằng `SvgRenderer::render_single_frame(bytes, scale)` của GPUI,
-      với `scale` là scale factor của cửa sổ.
-    - Vì ảnh chỉ thu nhỏ, không bao giờ phóng to, nên một bản raster ở kích
-      thước gốc nhân scale factor luôn đủ nét. Không cần raster lại khi
-      khung đổi kích thước, chỉ khi scale factor đổi (ví dụ kéo cửa sổ sang
-      màn hình khác).
-    - Nếu bản raster vượt giới hạn megapixel ở §4.6 thì hạ `scale` cho vừa,
-      thay vì báo lỗi.
-- GIF chuyển động thì chạy, nhờ GPUI.
+- A new `ImagePreview` entity lives in `lucerna-workbench`, in the
+  `image_preview/` module. This view does not use `Documents`.
+- **Loading:** read the bytes and decode in the background, using
+  `Image::from_bytes`. The format is guessed from the bytes; if it cannot be
+  guessed and the extension is `.svg`, try SVG. The pixel size is read at the
+  same time. Draw with `img(ImageSource::Image(Arc<Image>))` so the image id
+  follows the content, not the path.
+- While the first load is in progress, the frame stays empty, with no spinner,
+  like the markdown preview.
+- **Layout:**
+  - The image sits in the middle of the frame. The scale is
+    `min(frame / image, 1)` in both dimensions.
+  - The frame has a margin of a few pixels, using the same spacing tokens as
+    the other views.
+  - The frame background is the editor background color. Only the area right
+    under the image gets `gpui::checkerboard` with colors taken from the theme,
+    plus a 1px border.
+  - When the frame is resized, the image scale is recomputed.
+- **SVG** is drawn at the exact resolution for the displayed size and the
+  display's scale factor, so it is not blurry on Retina displays. The SVG's
+  "original" size comes from the file's `width`/`height`/`viewBox`.
+  - *(Claude decided.)* At the GPUI revision currently pinned,
+    `Image::from_bytes` with an SVG always rasterizes at scale 1.0, so it would
+    be blurry on Retina. SVG therefore has its own raster path:
+    - Read the original size with `usvg`, a crate already in `Cargo.lock` via
+      GPUI (add it as a direct dependency, exactly version 0.46).
+    - Rasterize with GPUI's `SvgRenderer::render_single_frame(bytes, scale)`,
+      where `scale` is the window's scale factor.
+    - Because the image is only ever scaled down, never up, one raster at the
+      original size times the scale factor is always sharp enough. There is no
+      need to re-rasterize when the frame is resized, only when the scale
+      factor changes (for example dragging the window to another display).
+    - If the raster exceeds the megapixel limit in §4.6, lower `scale` to fit
+      instead of reporting an error.
+- An animated GIF plays, thanks to GPUI.
 
-### 4.5 Tải lại và bộ nhớ
+### 4.5 Reload and memory
 
-- Theo dõi file qua `WorktreeEvent` sẵn có của workbench. Event này chỉ phủ
-  thư mục đang mở. Ảnh nằm ngoài workspace (`luc file /nơi/khác.png`, phiên
-  được khôi phục) chỉ được đọc một lần, không tự tải lại. *(Claude quyết
-  định.)*
-- Khi file của tab thay đổi trên đĩa thì đọc lại byte, sau 100 ms debounce
-  như VS Code. File
-  bị ghi liên tục thì chỉ đọc lần cuối.
-- Giải mã xong mới thay ảnh. Đọc hoặc giải mã lỗi trong lúc tải lại thì giữ
-  ảnh cũ, không đổi sang màn hình lỗi (file có thể đang được ghi dở). Lần
-  thay đổi kế tiếp sẽ thử lại.
-- Thay ảnh hoặc đóng tab thì giải phóng ảnh cũ ngay bằng `window.drop_image`
-  và `remove_asset`.
-- Byte chỉ giữ trong lúc giải mã, sau đó bỏ đi.
+- Watch the file through the workbench's existing `WorktreeEvent`. This event
+  covers only the open folder. An image outside the workspace
+  (`luc file /somewhere/else.png`, a restored session) is read once and does not
+  reload by itself. *(Claude decided.)*
+- When the tab's file changes on disk, re-read the bytes after a 100 ms
+  debounce, as VS Code does. If the file is written continuously, only the last
+  write is read.
+- Replace the image only after decoding finishes. If reading or decoding fails
+  during a reload, keep the old image and do not switch to the error screen (the
+  file may be half-written). The next change will try again.
+- When the image is replaced or the tab is closed, free the old image right away
+  with `window.drop_image` and `remove_asset`.
+- The bytes are kept only while decoding, then discarded.
 
-### 4.6 Giới hạn và lỗi
+### 4.6 Limits and errors
 
-- File lớn hơn `MAX_IMAGE_BYTES` (20 MB, dùng chung với markdown preview)
-  thì không đọc. Ảnh có `width × height` hơn 100 megapixel cũng không giải
-  mã, vì RGBA của nó chiếm trên 400 MB RAM.
-- Cả hai trường hợp, và khi không giải mã được, khung hiện một dòng thông
-  báo căn giữa (bằng tiếng Anh) kèm nút:
+- A file larger than `MAX_IMAGE_BYTES` (20 MB, shared with the markdown
+  preview) is not read. An image whose `width × height` is over 100 megapixels
+  is not decoded either, because its RGBA takes over 400 MB of RAM.
+- In both cases, and when decoding fails, the frame shows a centered message
+  line (in English) with a button:
   - `The image is too large to preview (34.2 MB).`
   - `The image is too large to preview (20000 × 12000).`
   - `The image could not be loaded.`
-  - Nút "Open as Text" mở tab mã nguồn với `force_text`. Cách này dùng lại
-    `Documents::open_as_text` hiện có.
-  - Thông báo và nút dùng component có sẵn trong `ui.rs`, giống màn hình
-    binary hiện nay.
-- File con trỏ Git LFS (file văn bản bắt đầu bằng
-  `version https://git-lfs.github.com/spec/`) hiện:
+  - The "Open as Text" button opens a source tab with `force_text`. This reuses
+    the existing `Documents::open_as_text`.
+  - The message and button use the components already in `ui.rs`, like the
+    current binary screen.
+- A Git LFS pointer file (a text file starting with
+  `version https://git-lfs.github.com/spec/`) shows:
   `This image is stored with Git LFS and has not been downloaded.`
 
-### 4.7 Thanh trạng thái
+### 4.7 Status bar
 
-- Khi tab ảnh đang được chọn, các mục của editor văn bản (vị trí con trỏ,
-  encoding, line ending, ngôn ngữ) ẩn đi. Thay vào đó là một mục bên phải:
-  `512 × 512 • 3.2 KB`.
-- Dung lượng: cơ số 1024, ghi `B`, `KB`, `MB` với một chữ số thập phân. Cách
-  ghi giống VS Code; Lucerna không có setting `unit`.
-- Chưa tải xong thì chỉ hiện dung lượng. Có lỗi thì cũng chỉ hiện dung
-  lượng.
+- When an image tab is selected, the text editor's items (cursor position,
+  encoding, line ending, language) are hidden. In their place is one item on the
+  right: `512 × 512 • 3.2 KB`.
+- File size: base 1024, written as `B`, `KB`, `MB` with one decimal place. The
+  notation matches VS Code; Lucerna has no `unit` setting.
+- While loading has not finished, only the file size is shown. On an error,
+  only the file size is shown too.
 
-## 5. Kiểm thử
+## 5. Testing
 
-- **Unit** (không cần GPUI):
-  - `editor_for` với danh sách đuôi, với association `default` và
-    `imagePreview.previewEditor`, với đuôi viết hoa.
-  - Định dạng `W × H • size`.
-  - Giới hạn byte và megapixel.
-  - Nhận diện file con trỏ LFS.
-  - Lưu và khôi phục tiền tố `lucerna:image-preview:`.
+- **Unit** (no GPUI needed):
+  - `editor_for` with the extension list, with the `default` and
+    `imagePreview.previewEditor` associations, with an uppercase extension.
+  - The `W × H • size` format.
+  - The byte and megapixel limits.
+  - LFS pointer file detection.
+  - Saving and restoring the `lucerna:image-preview:` prefix.
 - **UI** (`gpui::TestAppContext`):
-  - Mở `.png` từ Explorer ra tab ảnh dạng preview tab.
-  - Mở `.svg` ra ảnh; ⌘⇧V chuyển sang mã nguồn rồi chuyển lại.
-  - Mở `file.svg:3` ra mã nguồn.
-  - Ghi đè file thì ảnh mới thay ảnh cũ và kích thước trên thanh trạng
-    thái đổi theo.
-  - Ghi file hỏng thì vẫn giữ ảnh cũ.
-  - Đóng tab thì ảnh được giải phóng.
-  - Tab ảnh được khôi phục sau khi mở lại workspace.
-- **Kiểm tra tay:**
-  - Ảnh trong suốt hiện đúng trên cả theme sáng và theme tối.
-  - SVG không bị mờ trên màn hình Retina.
-  - RAM giảm lại sau khi đóng một ảnh 20 MB.
+  - Opening a `.png` from Explorer gives an image tab as a preview tab.
+  - Opening a `.svg` gives an image; ⌘⇧V switches to source and back.
+  - Opening `file.svg:3` gives source code.
+  - Overwriting the file replaces the old image with the new one and the size in
+    the status bar changes accordingly.
+  - Writing a corrupt file still keeps the old image.
+  - Closing the tab frees the image.
+  - The image tab is restored after reopening the workspace.
+- **Manual checks:**
+  - A transparent image displays correctly on both light and dark themes.
+  - SVG is not blurry on a Retina display.
+  - RAM drops back after closing a 20 MB image.
 
-## 6. Để người làm tự quyết
+## 6. Left to the implementer
 
-- Kích thước ô cờ và màu cụ thể lấy từ token nào của theme.
-- Chia code giữa `image_preview/` và `markdown_preview/commands.rs`. Hàm
-  `editor_for` có thể chuyển ra một module chung nếu cách đó gọn hơn.
-- Có dùng `RetainAllImageCache` cho view hay tự quản lý `Arc<Image>`, miễn
-  là đạt §4.5.
+- Which theme tokens supply the checkerboard cell size and colors.
+- How to split the code between `image_preview/` and
+  `markdown_preview/commands.rs`. The `editor_for` function can move to a shared
+  module if that is cleaner.
+- Whether to use `RetainAllImageCache` for the view or manage the `Arc<Image>`
+  directly, as long as §4.5 is met.

@@ -1,36 +1,37 @@
-# Reopen Closed Editor và Close Others
+# Reopen Closed Editor and Close Others
 
-Ngày: 2026-11-18. Trạng thái: bản nháp, chờ duyệt.
+Date: 2026-11-18. Status: draft, awaiting approval.
 
-## Mục đích
+## Purpose
 
-Người chuyển từ VS Code sang có hai thói quen với tab mà Lucerna chưa có:
+People moving from VS Code have two habits with tabs that Lucerna does not support yet:
 
-1. Lỡ tay ⌘W thì bấm ⇧⌘T để mở lại tab vừa đóng, đúng chỗ cũ, con trỏ và cuộn như trước. Bấm
-   tiếp thì lùi dần về các tab đóng trước đó.
-2. Dọn tab hàng loạt: Close Others (⌥⌘T), đóng các tab bên phải/trái, đóng các tab đã lưu, đóng
-   cả nhóm. Họ làm bằng phím hoặc bằng chuột phải lên tab.
+1. After an accidental ⌘W, press ⇧⌘T to reopen the tab just closed, in the same place, with the
+   cursor and scroll as before. Pressing it again steps back through earlier closed tabs.
+2. Cleaning up tabs in bulk: Close Others (⌥⌘T), close the tabs to the right/left, close the saved
+   tabs, close the whole group. They do it with keys or by right-clicking a tab.
 
-Đây là mục tier 1 của `docs/roadmap.md`: những gì chặn người mới từ VS Code. Lệnh, phím và hành vi
-theo VS Code; giao diện menu theo Zed.
+This is a tier 1 item in `docs/roadmap.md`: the things that block newcomers from VS Code. Commands,
+keys and behavior follow VS Code; the menu UI follows Zed.
 
-## Mục tiêu
+## Goals
 
-- `workbench.action.reopenClosedEditor` (⇧⌘T): mở lại lượt đóng gần nhất, vào nhóm cũ, đúng vị
-  trí, với con trỏ và cuộn. Bấm lại thì lùi tiếp. Lịch sử nhớ 20 tab.
-- Đóng hàng loạt, mỗi lệnh nhắm vào một tab đích (tab đang active, hoặc tab bị chuột phải):
+- `workbench.action.reopenClosedEditor` (⇧⌘T): reopen the most recent close, into its old group, at
+  the exact position, with cursor and scroll. Pressing again steps back further. The history
+  remembers 20 tabs.
+- Bulk close, each command targeting one tab (the active tab, or the right-clicked tab):
 
-  | Lệnh | Tiêu đề trong Command Palette | Phím (mac) |
+  | Command | Title in the Command Palette | Key (mac) |
   |---|---|---|
   | `workbench.action.closeOtherEditors` | View: Close Other Editors in Group | ⌥⌘T |
   | `workbench.action.closeEditorsToTheRight` | View: Close Editors to the Right in Group | — |
   | `workbench.action.closeEditorsToTheLeft` | View: Close Editors to the Left in Group | — |
   | `workbench.action.closeUnmodifiedEditors` | View: Close Saved Editors in Group | ⌘K U |
   | `workbench.action.closeEditorsInGroup` | View: Close All Editors in Group | ⌘K W |
-  | `workbench.action.closeAllEditors` (đã có) | View: Close All Editors | ⌘K ⌘W (thêm phím) |
+  | `workbench.action.closeAllEditors` (already exists) | View: Close All Editors | ⌘K ⌘W (key added) |
   | `workbench.action.reopenClosedEditor` | View: Reopen Closed Editor | ⇧⌘T |
 
-- Menu chuột phải trên tab, chỉ có nhóm lệnh đóng (thứ tự và cách chia nhóm theo Zed):
+- A right-click menu on tabs, with only the close group of commands (order and grouping follow Zed):
 
   ```
   Close
@@ -43,264 +44,286 @@ theo VS Code; giao diện menu theo Zed.
   Close All
   ```
 
-  Menu nhắm vào tab bị chuột phải. Mục không có tác dụng thì làm mờ: Close Others khi nhóm chỉ có
-  1 tab; Close to the Left trên tab đầu; Close to the Right trên tab cuối. "Close All" ở đây là
-  Close All Editors **in Group** (`closeEditorsInGroup`), giống VS Code và Zed.
-- Đóng nhiều tab có document chưa lưu: hỏi **một hộp chung** (luồng `request_close_all` hiện có).
+  The menu targets the right-clicked tab. An item with no effect is dimmed: Close Others when the
+  group has only 1 tab; Close to the Left on the first tab; Close to the Right on the last tab.
+  "Close All" here is Close All Editors **in Group** (`closeEditorsInGroup`), like VS Code and Zed.
+- Closing several tabs that have unsaved documents: ask **one shared dialog** (the existing
+  `request_close_all` flow).
 
-## Không làm (lần này)
+## Non-goals (this time)
 
-- Các mục khác của menu tab: Copy Path, Copy Relative Path, Reveal in Explorer, Pin/Keep Open, Split.
-- Tab sticky (pin kiểu VS Code). Lucerna chỉ có tab preview và tab thường, nên lệnh đóng hàng loạt
-  không có tab nào phải chừa ra.
-- Lưu lịch sử tab đã đóng qua lần mở app sau.
-- Mở lại một tab Untitled đã bỏ (xem bên dưới).
-- Context key `canReopenClosedEditor`, chọn nhiều tab rồi đóng một lần.
-- Khôi phục nhóm đã bị xóa: sau Close All ở 2 nhóm, ⇧⌘T mở tất cả vào nhóm đang active.
+- The other items of the tab menu: Copy Path, Copy Relative Path, Reveal in Explorer, Pin/Keep Open,
+  Split.
+- Sticky tabs (VS Code-style pinning). Lucerna only has preview tabs and normal tabs, so the bulk
+  close commands have no tab that must be spared.
+- Saving the closed-tab history across the next app launch.
+- Reopening a discarded Untitled tab (see below).
+- The context key `canReopenClosedEditor`, selecting several tabs and closing them at once.
+- Restoring a deleted group: after Close All with 2 groups, ⇧⌘T opens everything into the active
+  group.
 
-## Không được xảy ra
+## Must not happen
 
-- Một đường đóng tab nào đó (⌘W, ×, chuột giữa, `:q`, `:qa`, Close All, nút Close của thanh file bị
-  xóa, các lệnh mới) không vào lịch sử, khiến ⇧⌘T "không làm gì" một cách khó hiểu.
-- Đóng hàng loạt mà mất thay đổi chưa lưu không hỏi, hoặc hỏi một hộp riêng cho từng file.
-- Bấm Cancel ở hộp hỏi mà vẫn có tab bị đóng.
-- ⇧⌘T mở một tab rỗng cho file đã bị xóa, hoặc mở thêm một tab trùng với tab đang có.
-- UI bị chặn: kiểm tra file còn tồn tại chỉ là một `stat` mỗi mục khi bấm phím, như Go Back.
+- Some path that closes a tab (⌘W, ×, middle click, `:q`, `:qa`, Close All, the Close button of the
+  deleted-file bar, the new commands) does not go into the history, making ⇧⌘T "do nothing" in a
+  confusing way.
+- A bulk close that loses unsaved changes without asking, or asks a separate dialog for each file.
+- Pressing Cancel in the dialog while some tab is still closed.
+- ⇧⌘T opens an empty tab for a deleted file, or opens another tab duplicating an existing one.
+- A blocked UI: checking that the file still exists is just one `stat` per entry when the key is
+  pressed, like Go Back.
 
-## Tham khảo
+## References
 
-Đọc từ mã nguồn bản main/master, tháng 11/2026.
+Read from the source of the main/master branch, November 2026.
 
 ### VS Code
 
-- **Reopen.** `ReopenClosedEditorAction` (`browser/parts/editor/editorActions.ts`), ⇧⌘T, gọi
+- **Reopen.** `ReopenClosedEditorAction` (`browser/parts/editor/editorActions.ts`), ⇧⌘T, calls
   `HistoryService.reopenLastClosedEditor()` (`services/history/browser/historyService.ts`).
-  - `MAX_RECENTLY_CLOSED_EDITORS = 20`. Lịch sử chung cả cửa sổ; quá 20 thì bỏ mục cũ nhất.
-  - Mỗi mục (`IRecentlyClosedEditor`) giữ: dạng untyped của editor, resource, `index`, `sticky`,
-    `batchId`. **Không** giữ nhóm và cờ preview: luôn mở lại vào nhóm active, ở dạng ghim, đúng
-    `index` cũ.
-  - **Batch** (mới trên main): các lần đóng trong cùng một lượt đồng bộ có chung `batchId`; một lần
-    ⇧⌘T mở lại cả loạt (sau Close Others hay Close All).
-  - Không ghi lần đóng `REPLACE` (preview bị preview khác thay) và `MOVE`. Đóng lại cùng editor thì
-    mục cũ bị xóa trước, không trùng.
-  - Untitled được ghi nhưng nội dung không giữ: mở lại ra file rỗng.
-  - Nhóm active đã chứa editor đó thì không mở thêm. Không mở được mục nào của một batch thì lùi
-    sang batch trước.
-  - File bị xóa (watcher hoặc thao tác xóa) thì bị gỡ khỏi lịch sử; file đổi tên thì mục được sửa
-    theo.
-  - Con trỏ và cuộn không nằm trong mục mà trong `EditorMemento` theo nhóm, khóa theo resource
-    (100 mục), bật bằng `workbench.editor.restoreViewState`.
-- **Lệnh đóng.** `closeOtherEditors` (⌥⌘T, chỉ mac), `closeEditorsToTheRight`/`Left` (không phím),
+  - `MAX_RECENTLY_CLOSED_EDITORS = 20`. The history is shared across the whole window; beyond 20, the
+    oldest entry is dropped.
+  - Each entry (`IRecentlyClosedEditor`) keeps: the untyped form of the editor, resource, `index`,
+    `sticky`, `batchId`. It does **not** keep the group or the preview flag: it always reopens into
+    the active group, as pinned, at the exact old `index`.
+  - **Batch** (new on main): closes within the same synchronous run share a `batchId`; one ⇧⌘T
+    reopens the whole batch (after Close Others or Close All).
+  - A `REPLACE` close (a preview replaced by another preview) and `MOVE` are not recorded. Closing
+    the same editor again first removes the old entry, so there is no duplicate.
+  - Untitled is recorded but its content is not kept: reopening gives an empty file.
+  - If the active group already contains that editor, it is not opened again. If no entry of a batch
+    can be opened, it steps back to the previous batch.
+  - A deleted file (watcher or a delete action) is removed from the history; a renamed file has its
+    entry updated.
+  - Cursor and scroll are not in the entry but in a per-group `EditorMemento`, keyed by resource (100
+    entries), enabled by `workbench.editor.restoreViewState`.
+- **Close commands.** `closeOtherEditors` (⌥⌘T, mac only), `closeEditorsToTheRight`/`Left` (no key),
   `closeUnmodifiedEditors` "Close Saved Editors in Group" (⌘K U), `closeEditorsInGroup` (⌘K W),
-  `closeAllEditors` (⌘K ⌘W). Tất cả chừa tab sticky. Từ menu tab thì nhắm vào tab bị chuột phải,
-  không thì tab active. Close Others và Close to the Right ghim tab giữ lại.
-  - Tab chưa lưu: các lệnh theo nhóm hỏi **từng file một**, Cancel đầu tiên dừng cả loạt; chỉ
-    Close All Editors hỏi một hộp chung.
-  - Menu tab: Close · Close Others · Close to the Right · Close Saved · Close All │ Copy Path · Copy
-    Relative Path │ Reopen Editor With… │ Reveal… │ Keep Open · Pin │ Split… Không có Close to the
-    Left.
+  `closeAllEditors` (⌘K ⌘W). All spare sticky tabs. From the tab menu they target the right-clicked
+  tab, otherwise the active tab. Close Others and Close to the Right pin the tab that is kept.
+  - Unsaved tabs: the per-group commands ask **one file at a time**, the first Cancel stops the whole
+    batch; only Close All Editors asks one shared dialog.
+  - Tab menu: Close · Close Others · Close to the Right · Close Saved · Close All │ Copy Path · Copy
+    Relative Path │ Reopen Editor With… │ Reveal… │ Keep Open · Pin │ Split… There is no Close to
+    the Left.
 
 ### Zed
 
-- `pane::ReopenClosedItem` (cmd-shift-t): `closed_stack` trong `NavHistory` của từng pane,
-  `MAX_NAVIGATION_HISTORY_LEN = 1024`, không lưu qua lần mở sau. Mục giữ item, đường dẫn, dữ liệu
-  điều hướng (anchor con trỏ, vị trí cuộn), cờ preview. **Tab preview đóng thì không ghi.**
-  - Mở lại vào pane active, **cạnh tab active** (không theo vị trí cũ), mỗi lần một tab. Item còn mở
-    thì activate nó; mở lỗi thì thử mục kế. Untitled không mở lại được. File bị xóa bị gỡ khỏi
-    lịch sử.
-- Lệnh đóng: `CloseOtherItems` (alt-cmd-t; `CloseInactiveItems` giờ là alias cũ),
+- `pane::ReopenClosedItem` (cmd-shift-t): `closed_stack` in each pane's `NavHistory`,
+  `MAX_NAVIGATION_HISTORY_LEN = 1024`, not persisted across launches. An entry keeps the item, path,
+  navigation data (cursor anchor, scroll position), preview flag. **A closed preview tab is not
+  recorded.**
+  - Reopens into the active pane, **next to the active tab** (not at the old position), one tab at a
+    time. If the item is still open, it activates it; if opening fails, it tries the next entry.
+    Untitled cannot be reopened. A deleted file is removed from the history.
+- Close commands: `CloseOtherItems` (alt-cmd-t; `CloseInactiveItems` is now an old alias),
   `CloseItemsToTheLeft` (cmd-k e), `CloseItemsToTheRight` (cmd-k t), `CloseCleanItems` (cmd-k u),
-  `CloseAllItems` (cmd-k w). Mặc định chừa tab ghim.
-  - Nhiều tab chưa lưu: **một hộp chung** "Do you want to save changes to the following files?",
-    Save all / Discard all / Cancel; một tab thì hộp thường.
-  - Menu tab: Close · Close Others │ Close Left · Close Right │ Close Clean · Close All │ Pin Tab │ …
-    │ Copy Path · Copy Relative Path │ Reveal… Mục không tác dụng thì làm mờ.
+  `CloseAllItems` (cmd-k w). By default they spare pinned tabs.
+  - Several unsaved tabs: **one shared dialog** "Do you want to save changes to the following
+    files?", Save all / Discard all / Cancel; one tab gets the ordinary dialog.
+  - Tab menu: Close · Close Others │ Close Left · Close Right │ Close Clean · Close All │ Pin Tab │ …
+    │ Copy Path · Copy Relative Path │ Reveal… Items with no effect are dimmed.
 
 ### Helix
 
-`:buffer-close-others` (`:bco`), `:buffer-close-all` (`:bca`), có bản `!`. Đóng các buffer sạch, rồi
-báo lỗi "N unsaved buffers remaining" chứ không hỏi. Không có pin, không có mở lại buffer đã đóng.
+`:buffer-close-others` (`:bco`), `:buffer-close-all` (`:bca`), with `!` variants. They close the clean
+buffers, then report the error "N unsaved buffers remaining" instead of asking. No pinning, no
+reopening a closed buffer.
 
-### Lucerna chọn gì, và vì sao
+### What Lucerna chooses, and why
 
-| Điểm | Chọn | Lý do |
+| Point | Choice | Reason |
 |---|---|---|
-| Lệnh, phím, tiêu đề | VS Code | quy tắc §1 của design-principles |
-| Số mục | 20 (VS Code) | đủ cho "lỡ tay"; VS Code là thói quen của người dùng |
-| Batch | mở lại cả loạt (VS Code main) | Close Others lỡ tay thì một phím là xong |
-| Nhóm đích | **nhóm cũ nếu còn**, không thì nhóm active | lệch VS Code: brief yêu cầu "in its group"; với nhiều nhóm, mở lại vào nhóm khác làm người dùng lạc. Khi chỉ có một nhóm thì giống hệt VS Code |
-| Vị trí | `index` cũ (VS Code) | Zed đặt cạnh tab active, kém chính xác hơn |
-| Preview hay ghim | luôn ghim (VS Code) | |
-| Preview bị thay chỗ | không ghi (cả hai) | |
-| Con trỏ và cuộn | giữ trong mục (cách Zed) | Lucerna chưa có memento theo file; giữ trong mục là đủ cho tính năng này |
-| Tab chưa lưu khi đóng nhiều | một hộp chung (Zed, và Close All của VS Code) | luồng Lucerna đã có; hỏi từng file một rất phiền |
-| Menu tab | theo Zed, chỉ nhóm đóng, có Close to the Left | giao diện theo Zed; người dùng chọn chỉ nhóm đóng |
+| Commands, keys, titles | VS Code | rule §1 of design-principles |
+| Number of entries | 20 (VS Code) | enough for "accidental"; VS Code is the user's habit |
+| Batch | reopen the whole batch (VS Code main) | an accidental Close Others is undone with one key |
+| Target group | **the old group if it still exists**, otherwise the active group | a deviation from VS Code: the brief asks for "in its group"; with several groups, reopening into a different group makes users lose their place. With a single group it is identical to VS Code |
+| Position | the old `index` (VS Code) | Zed places it next to the active tab, which is less exact |
+| Preview or pinned | always pinned (VS Code) | |
+| A replaced preview | not recorded (both) | |
+| Cursor and scroll | kept in the entry (Zed's way) | Lucerna has no per-file memento yet; keeping them in the entry is enough for this feature |
+| Unsaved tabs when closing several | one shared dialog (Zed, and VS Code's Close All) | the flow Lucerna already has; asking file by file is very annoying |
+| Tab menu | follows Zed, only the close group, with Close to the Left | UI follows Zed; the user chose only the close group |
 
-## Thiết kế
+## Design
 
-### Lịch sử trong model (`editor_groups/model.rs`)
+### History in the model (`editor_groups/model.rs`)
 
-`EditorGroups` có thêm danh sách tab đã đóng, cũ nhất trước, tối đa 20 mục:
+`EditorGroups` gains a list of closed tabs, oldest first, at most 20 entries:
 
 ```rust
 pub struct ClosedTab {
     pub item: TabItem,
-    pub group: GroupId,       // nhóm lúc đóng
-    pub index: usize,         // vị trí trong nhóm trước lượt đóng (trước cả batch)
-    pub was_active: bool,     // là tab active của nhóm lúc đóng
-    pub batch: u64,           // các tab đóng trong một lần gọi có chung batch
-    pub tab: TabId,           // id cũ, để view gắn con trỏ và cuộn
+    pub group: GroupId,       // group at close time
+    pub index: usize,         // position in the group before the close (before the whole batch)
+    pub was_active: bool,     // was the group's active tab at close time
+    pub batch: u64,           // tabs closed in one call share a batch
+    pub tab: TabId,           // old id, so the view can attach cursor and scroll
     pub view: Option<TabViewState>,
 }
 pub struct TabViewState { pub cursor: Point, pub scroll_top_row: u32 }
 ```
 
-- `close(id)` vẫn như cũ và ghi một mục (batch riêng). Thêm `close_many(ids)`: đóng từng tab theo
-  thứ tự, mọi mục chung một batch. `index` lấy từ vị trí **trước** khi batch bắt đầu đóng. Ví dụ
-  Close Others trên C trong [A,B,C,D] ghi A=0, B=1, D=3, nên mở lại theo `index` tăng dần sẽ đưa
-  từng tab về đúng chỗ cũ. Mọi lệnh đóng hàng loạt, cả `request_close_all`, đi qua đây.
-- **Chỉ ghi tab có file:** `TabItem::File` và `TabItem::MarkdownPreview` (bản tĩnh). Các tab khác
-  (Search, References, log và Health của server ngôn ngữ, Extensions, Uncommitted Changes, diff
-  một file, Changes since, Get Started, preview động) không vào lịch sử. Chúng phụ thuộc trạng thái
-  bên ngoài (kết quả tìm, server đang chạy, file đang active), nên mở lại dễ ra thứ cũ hoặc vô
-  nghĩa, và đều mở lại được bằng lệnh riêng của chúng. Đây là lựa chọn của mình; VS Code ghi gần
-  như mọi editor.
-- **Chỉ ghi lần đóng do người dùng:** `close` và `close_many` ghi lịch sử. Thêm `remove(id)` đóng tab
-  mà không ghi, dùng cho các lần code tự đóng tab:
-  - `Workbench::close_file_tabs` (Save As ghi đè một file đang mở);
-  - `Workbench::paths_deleted` (xóa file trong Explorer);
+- `close(id)` stays as before and records one entry (its own batch). Add `close_many(ids)`: closes
+  each tab in order, all entries sharing one batch. `index` is taken from the position **before** the
+  batch starts closing. For example, Close Others on C in [A,B,C,D] records A=0, B=1, D=3, so
+  reopening by ascending `index` puts each tab back in its exact old place. Every bulk close command,
+  including `request_close_all`, goes through here.
+- **Only tabs with a file are recorded:** `TabItem::File` and `TabItem::MarkdownPreview` (the static
+  one). Other tabs (Search, References, language server log and Health, Extensions, Uncommitted
+  Changes, single-file diff, Changes since, Get Started, dynamic preview) do not go into the history.
+  They depend on outside state (search results, a running server, the active file), so reopening
+  easily gives something stale or meaningless, and all can be reopened with their own commands. This
+  is our own choice; VS Code records almost every editor.
+- **Only user-initiated closes are recorded:** `close` and `close_many` record history. Add
+  `remove(id)`, which closes a tab without recording, for the times code closes a tab on its own:
+  - `Workbench::close_file_tabs` (Save As overwriting an open file);
+  - `Workbench::paths_deleted` (deleting a file in Explorer);
   - `finish_onboarding`;
-  - lần `replace_item` tự đóng tab khi đã có tab cùng item.
+  - the `replace_item` times when it closes a tab itself because a tab with the same item already
+    exists.
 
-  Nút Close trên thanh báo file đã bị xóa là thao tác của người dùng nên vẫn ghi. File không còn
-  thì ⇧⌘T sẽ bỏ qua mục đó.
-- **Không ghi:**
-  - tab preview bị `open_file` thay chỗ;
-  - tab bị `replace_item` thay (đổi qua lại source/preview Markdown);
-  - tab Untitled (`TabItem::File` hay `MarkdownPreview` của đường `untitled:`): document mất theo
-    tab, mở lại chỉ ra file rỗng. Lệch nhỏ so với VS Code, ghi rõ ở đây.
-- Ghi một item đã có trong lịch sử với cùng nhóm thì xóa mục cũ trước, nên không có mục trùng.
-  Quá 20 thì bỏ mục cũ nhất. Nếu một batch lớn hơn 20 (Close All với 30 tab) thì chỉ giữ 20 tab
-  cuối của batch.
-- `retarget(from, to)` (đổi tên, di chuyển file) cũng sửa đường dẫn trong lịch sử.
+  The Close button on the deleted-file bar is a user action, so it still records. If the file no
+  longer exists, ⇧⌘T skips that entry.
+- **Not recorded:**
+  - a preview tab replaced by `open_file`;
+  - a tab replaced by `replace_item` (toggling between Markdown source/preview);
+  - an Untitled tab (`TabItem::File` or `MarkdownPreview` of an `untitled:` path): the document goes
+    away with the tab, and reopening only gives an empty file. A small deviation from VS Code, noted
+    here.
+- Recording an item already in the history with the same group first removes the old entry, so there
+  are no duplicate entries. Beyond 20, the oldest entry is dropped. If a batch is larger than 20
+  (Close All with 30 tabs), only the last 20 tabs of the batch are kept.
+- `retarget(from, to)` (rename, move a file) also fixes the paths in the history.
 - `reopen_closed(exists: impl Fn(&Path) -> bool) -> Vec<(TabId, Option<TabViewState>)>`:
-  1. Lấy batch mới nhất ra khỏi lịch sử. Bỏ những mục có `exists` trả `false` và những mục mà
-     nhóm đích đã có tab cùng item.
-  2. Không còn mục nào để mở:
-     - nếu có mục bị bỏ vì tab của nó **đang mở lại** trong nhóm đích, activate tab đó rồi dừng
-       (mục đã dùng hết, không lùi sang batch cũ hơn), như VS Code và Zed;
-     - chỉ khi mọi mục bị bỏ vì **file không còn**, mới lùi sang batch trước;
-     - hết lịch sử thì trả rỗng, không làm gì.
-  3. Mỗi mục mở vào nhóm có `GroupId` cũ nếu còn, không thì nhóm active, ở vị trí
-     `min(index, số tab)`, dạng ghim. Trong một nhóm, mở theo `index` tăng dần để các tab về
-     đúng chỗ.
-  4. Tab active sau đó: batch một tab thì tab đó được activate, nhóm của nó thành nhóm active.
-     Batch nhiều tab thì những tab `was_active` được activate trong nhóm của chúng. Nhóm active
-     là nhóm của tab `was_active` cuối cùng; nếu không có tab nào như vậy (Close Others), tab và
-     nhóm active giữ nguyên.
-  5. Trả về id mới của các tab đã mở cùng con trỏ và cuộn của chúng.
-- `set_closed_view(tab: TabId, view: TabViewState)`: gắn con trỏ và cuộn vào mục có id cũ `tab`.
+  1. Take the newest batch out of the history. Drop the entries for which `exists` returns `false`
+     and the entries whose item already has a tab in the target group.
+  2. If no entry is left to open:
+     - if some entry was dropped because its tab is **already reopened** in the target group,
+       activate that tab and stop (the entry is used up, do not step back to an older batch), like
+       VS Code and Zed;
+     - only when every entry was dropped because the **file no longer exists**, step back to the
+       previous batch;
+     - when the history is exhausted, return empty and do nothing.
+  3. Open each entry into the group with the old `GroupId` if it still exists, otherwise the active
+     group, at position `min(index, tab count)`, as pinned. Within one group, open by ascending
+     `index` so the tabs return to the exact place.
+  4. Active tab afterwards: for a one-tab batch, that tab is activated and its group becomes the
+     active group. For a multi-tab batch, the tabs with `was_active` are activated in their groups.
+     The active group is the group of the last `was_active` tab; if there is no such tab (Close
+     Others), the active tab and group stay unchanged.
+  5. Return the new ids of the opened tabs together with their cursor and scroll.
+- `set_closed_view(tab: TabId, view: TabViewState)`: attaches cursor and scroll to the entry with the
+  old id `tab`.
 
-### Con trỏ và cuộn (`editor_groups/view.rs`)
+### Cursor and scroll (`editor_groups/view.rs`)
 
-`EditorGroupsView::update_model` chụp lại các mục mới vào lịch sử sau khi `f` chạy. Lúc này body
-của tab vẫn còn trong `bodies` (chỉ bị dọn ở lần vẽ sau). Nếu body là `CodeView` thì đọc `cursor()`
-và `scroll_top_row()` rồi gọi `set_closed_view`. Cách này bắt được mọi đường đóng mà không phải
-sửa từng chỗ gọi.
+`EditorGroupsView::update_model` captures the new entries into the history after `f` runs. At this
+point the tab's body is still in `bodies` (it is only cleaned up on the next paint). If the body is a
+`CodeView`, read `cursor()` and `scroll_top_row()` then call `set_closed_view`. This catches every
+close path without editing each call site.
 
-Khi mở lại, lệnh `reopenClosedEditor` (ở `Workbench`) áp con trỏ và cuộn giống `navigate`: tab đã
-có view thì `go_to_and_scroll`, chưa có thì `go_to_and_scroll_when_opened(path, …)`. Batch nhiều
-tab mà một file mở ở hai tab cùng lúc thì chỉ đảm bảo tab active; đây là việc cho người làm.
+On reopening, the `reopenClosedEditor` command (in `Workbench`) applies cursor and scroll like
+`navigate`: if the tab already has a view, `go_to_and_scroll`; if not,
+`go_to_and_scroll_when_opened(path, …)`. For a multi-tab batch where one file is open in two tabs at
+once, only the active tab is guaranteed; this is left to the implementer.
 
-### Đóng hàng loạt và hộp hỏi (`editor_groups/view.rs`)
+### Bulk close and the dialog (`editor_groups/view.rs`)
 
-Gộp `request_close` và `request_close_all` thành một `request_close_tabs(ids: Vec<TabId>, …)`:
+Merge `request_close` and `request_close_all` into one `request_close_tabs(ids: Vec<TabId>, …)`:
 
-- Document **cần hỏi** là document chưa lưu của một tab trong `ids` mà **không** tab nào ngoài
-  `ids` đang hiện (tổng quát hóa `last_tab_of_dirty`).
-- Không có document nào cần hỏi: `close_many(ids)` ngay.
-- Có: `save::prompt_unsaved_all(names)`. Một file thì đây là hộp Save / Don't Save / Cancel như
-  hôm nay; nhiều file thì Save All / Don't Save / Cancel.
-  - Save / Save All: `save_each` rồi chỉ đóng khi mọi document đó vẫn sạch. Giữ nguyên quy tắc
-    hiện có: gõ thêm trong lúc lưu thì không đóng tab nào.
-  - Don't Save: `close_many(ids)` rồi `discard` từng document.
-  - Cancel: không đóng gì.
-- `request_close(id)` và `request_close_all` thành vỏ mỏng gọi hàm này. Mọi test hiện có
-  (`save.rs`, `untitled.rs`, `hot_exit.rs`) phải vẫn qua.
+- A document that **needs asking** is an unsaved document of a tab in `ids` such that **no** tab
+  outside `ids` is showing it (a generalization of `last_tab_of_dirty`).
+- No document needs asking: `close_many(ids)` right away.
+- Otherwise: `save::prompt_unsaved_all(names)`. For one file this is the Save / Don't Save / Cancel
+  dialog as today; for several files it is Save All / Don't Save / Cancel.
+  - Save / Save All: `save_each`, then close only if every such document is still clean. Keep the
+    existing rule: typing more during the save means no tab is closed.
+  - Don't Save: `close_many(ids)` then `discard` each document.
+  - Cancel: close nothing.
+- `request_close(id)` and `request_close_all` become thin wrappers calling this function. All
+  existing tests (`save.rs`, `untitled.rs`, `hot_exit.rs`) must still pass.
 
-Tập tab cho từng lệnh, trong nhóm của tab đích `t`:
+The tab set for each command, within the group of the target tab `t`:
 
-| Lệnh | Đóng | Ghi chú |
+| Command | Closes | Notes |
 |---|---|---|
-| Close Others | mọi tab trừ `t` | ghim `t`, activate nó |
-| Close to the Right | các tab sau `t` | ghim `t`; nếu tab active bị đóng thì activate `t` |
-| Close to the Left | các tab trước `t` | như trên (VS Code không ghim ở đây; Lucerna làm giống Right cho nhất quán, đây là lựa chọn của mình) |
-| Close Saved | mọi tab của nhóm mà document không dirty; tab không phải file coi là đã lưu | không bao giờ hỏi |
-| Close All in Group | mọi tab của nhóm | nhóm rỗng bị xóa nếu còn nhóm khác, như `close` hôm nay |
+| Close Others | every tab except `t` | pins `t`, activates it |
+| Close to the Right | the tabs after `t` | pins `t`; if the active tab is closed, activates `t` |
+| Close to the Left | the tabs before `t` | as above (VS Code does not pin here; Lucerna does the same as Right for consistency, our own choice) |
+| Close Saved | every tab of the group whose document is not dirty; a tab that is not a file counts as saved | never asks |
+| Close All in Group | every tab of the group | an empty group is removed if other groups remain, like `close` today |
 
-Tab và nhóm active sau lệnh:
-- Close Others, Left và Right: `t` thành tab active, nhóm của nó thành nhóm active, kể cả khi lệnh
-  chạy từ menu trên một nhóm không active. Phím gõ tiếp sẽ vào `t`, giống bấm vào tab đó.
-- Close Saved và Close All in Group: tab active của nhóm là tab còn lại được dùng gần nhất. Nhóm
-  active giữ nguyên, trừ khi nó bị xóa (khi đó theo quy tắc của `close`).
+Active tab and group after a command:
+- Close Others, Left and Right: `t` becomes the active tab, its group becomes the active group, even
+  when the command runs from the menu on a non-active group. Typing continues into `t`, like clicking
+  that tab.
+- Close Saved and Close All in Group: the group's active tab is the most recently used remaining tab.
+  The active group stays unchanged, unless it is removed (then it follows the rules of `close`).
 
-Close Others, Left và Right ghim `t` trước khi hỏi. Nếu người dùng bấm Cancel thì `t` vẫn đã ghim,
-và mình coi chuyện đó là vô hại.
+Close Others, Left and Right pin `t` before asking. If the user presses Cancel, `t` is still pinned,
+and we consider that harmless.
 
-### Tab đích và đối số lệnh
+### Target tab and command arguments
 
-Các lệnh nhận đối số tùy chọn `{"tab": <số>}` (id của tab, `TabId::as_u64`). Không có đối số thì
-tab đích là tab active của nhóm active; không có tab active thì lệnh không làm gì. Có đối số mà id
-không còn (tab đã đóng) thì lệnh không làm gì, để không đóng nhầm tab quanh một tab khác. Menu chuột phải truyền id của tab bị bấm. `closeActiveEditor` cũng nhận đối số này để mục
-"Close" của menu đóng đúng tab bị chuột phải.
+The commands accept an optional argument `{"tab": <number>}` (the tab's id, `TabId::as_u64`). With no
+argument, the target tab is the active tab of the active group; if there is no active tab the command
+does nothing. If there is an argument but the id no longer exists (the tab is already closed), the
+command does nothing, so that tabs around another tab are not closed by mistake. The right-click menu
+passes the id of the clicked tab. `closeActiveEditor` also accepts this argument so that the menu's
+"Close" item closes exactly the right-clicked tab.
 
-### Menu chuột phải trên tab
+### Right-click menu on tabs
 
-- `EditorGroupsView` nghe `on_mouse_down(MouseButton::Right)` trên mỗi tab và dựng `ContextMenu`
-  (`context_menu.rs`) với các mục ở phần Mục tiêu, có `disabled_when` cho mục không tác dụng.
-- Giữ menu bằng `DeployedMenu` trong view và vẽ bằng `render_deployed`, giống Explorer.
-- Mục được chọn thì chạy lệnh qua `Workbench::run_command(command, args)` với `{"tab": id}`, sau khi
-  lượt cập nhật hiện tại xong (`window.defer`), như Explorer.
-- Menu hiện phím tắt của từng mục (`shortcut_label`, đã có sẵn trong component).
-- Chuột phải không đổi tab active (VS Code và Zed cũng vậy).
+- `EditorGroupsView` listens to `on_mouse_down(MouseButton::Right)` on each tab and builds a
+  `ContextMenu` (`context_menu.rs`) with the items from the Goals section, with `disabled_when` for
+  items that have no effect.
+- Hold the menu with `DeployedMenu` in the view and draw it with `render_deployed`, like Explorer.
+- A selected item runs its command through `Workbench::run_command(command, args)` with
+  `{"tab": id}`, after the current update pass finishes (`window.defer`), like Explorer.
+- The menu shows each item's shortcut (`shortcut_label`, already in the component).
+- Right-click does not change the active tab (VS Code and Zed are the same).
 
-### Phím, menu app, tài liệu
+### Keys, app menu, docs
 
-- `default-keybindings.json`, thêm một khối ở cuối:
+- `default-keybindings.json`, add one block at the end:
   - `shift+cmd+t` → reopenClosedEditor
   - `alt+cmd+t` → closeOtherEditors
   - `cmd+k u` → closeUnmodifiedEditors
   - `cmd+k w` → closeEditorsInGroup
   - `cmd+k cmd+w` → closeAllEditors
 
-  Không cái nào đụng phím đang có (`cmd+k cmd+u` là removeCommentLine, khác `cmd+k u`).
-- `app_menu.rs`: thêm "Reopen Closed Editor" vào menu File, ngay dưới "Close Editor" (lựa chọn của
-  mình; VS Code đặt nó trong Open Recent).
-- Cập nhật `docs/keyboard-shortcuts.md`, `CHANGELOG.md` (Unreleased → Added) và đánh dấu mục này
-  trong `docs/roadmap.md`. Chỉ thêm dòng, không sửa dòng có sẵn, để dễ merge với nhánh Replace in
-  project.
+  None collides with an existing key (`cmd+k cmd+u` is removeCommentLine, different from `cmd+k u`).
+- `app_menu.rs`: add "Reopen Closed Editor" to the File menu, right under "Close Editor" (our own
+  choice; VS Code puts it in Open Recent).
+- Update `docs/keyboard-shortcuts.md`, `CHANGELOG.md` (Unreleased → Added) and mark this item in
+  `docs/roadmap.md`. Only add lines, do not edit existing lines, to make merging with the Replace in
+  project branch easy.
 
-## Kiểm thử
+## Testing
 
-- **Unit test model** (`tests/editor_groups_model.rs`):
-  - ghi lịch sử, giới hạn 20, không trùng;
-  - không ghi preview bị thay, `replace_item`, Untitled, tab không phải file, `remove`;
-  - batch: `close_many` tạo một batch, mở lại cả batch;
-  - đúng nhóm, đúng `index`, tab active sau khi mở lại;
-  - nhóm đã mất thì mở vào nhóm active;
-  - bỏ mục có file không còn và lùi batch; mục đã mở lại thì activate tab đó, không lùi batch;
-  - `retarget` sửa lịch sử.
-- **Test GPUI** (`tests/editor_groups_view.rs` hoặc file mới `tests/tab_close_commands.rs`):
-  - ⇧⌘T sau ⌘W khôi phục tab, con trỏ và cuộn;
-  - từng lệnh đóng hàng loạt, cả bản có đối số `tab`;
-  - hộp hỏi chung khi có nhiều file dirty: Save All, Don't Save, Cancel;
-  - document đang hiện ở nhóm khác thì không hỏi;
-  - menu chuột phải hiện đúng mục, mục mờ đúng chỗ, chọn mục thì chạy lệnh với tab bị chuột phải;
-  - các lệnh mới có trong registry và có phím.
-- Toàn bộ test `lucerna-workbench`, clippy, fmt và `cargo deny check` phải sạch.
+- **Model unit tests** (`tests/editor_groups_model.rs`):
+  - recording history, the limit of 20, no duplicates;
+  - not recording a replaced preview, `replace_item`, Untitled, tabs that are not files, `remove`;
+  - batch: `close_many` creates one batch, reopening the whole batch;
+  - correct group, correct `index`, active tab after reopening;
+  - a lost group means opening into the active group;
+  - dropping entries whose file no longer exists and stepping back a batch; an entry already
+    reopened activates that tab, without stepping back a batch;
+  - `retarget` fixes the history.
+- **GPUI tests** (`tests/editor_groups_view.rs` or a new file `tests/tab_close_commands.rs`):
+  - ⇧⌘T after ⌘W restores the tab, cursor and scroll;
+  - each bulk close command, including the version with the `tab` argument;
+  - the shared dialog when several files are dirty: Save All, Don't Save, Cancel;
+  - a document showing in another group is not asked about;
+  - the right-click menu shows the right items, dimmed in the right places, selecting an item runs the
+    command with the right-clicked tab;
+  - the new commands are in the registry and have keys.
+- All `lucerna-workbench` tests, clippy, fmt and `cargo deny check` must be clean.
 
-## Để lại cho người làm
+## Left to the implementer
 
-- Đặt tên hàm và tách file (ví dụ tách lịch sử ra `editor_groups/closed.rs` nếu `model.rs` quá dài).
-- Vị trí pixel của menu: tại con trỏ chuột như Explorer.
-- Trường hợp một file mở ở hai tab trong cùng batch: chỉ cần tab active có đúng con trỏ.
+- Naming functions and splitting files (for example splitting the history out into
+  `editor_groups/closed.rs` if `model.rs` gets too long).
+- The pixel position of the menu: at the mouse cursor like Explorer.
+- The case of one file open in two tabs in the same batch: only the active tab needs the right cursor.
