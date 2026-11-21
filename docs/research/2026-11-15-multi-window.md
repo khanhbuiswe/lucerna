@@ -1,221 +1,221 @@
-# Nghiên cứu: một tiến trình, nhiều cửa sổ
+# Research: one process, many windows
 
-Ngày 2026-11-15. Nghiên cứu cho việc Lucerna chuyển từ "mỗi cửa sổ một tiến trình `luc`" sang "một tiến trình, nhiều cửa sổ".
+Date 2026-11-15. Research for moving Lucerna from "one `luc` process per window" to "one process, many windows".
 
-Nguồn:
-- Zed: `~/.cargo/git/checkouts/zed-a70e2ad075855582/b5cd310/` (rev `b5cd310b3b`, cùng rev Lucerna pin cho gpui). Các crate Zed trừ gpui là GPL: ở đây chỉ ghi thiết kế, tên định danh và vài dòng ngắn.
-- GPUI (Apache-2.0): `crates/gpui`, `crates/gpui_macos` ở cùng rev.
-- VS Code: `microsoft/vscode` nhánh `main`, lấy ngày 2026-11-15 (file gốc dưới `src/vs/...`, đường dẫn ghi bên dưới).
+Sources:
+- Zed: `~/.cargo/git/checkouts/zed-a70e2ad075855582/b5cd310/` (rev `b5cd310b3b`, the same rev Lucerna pins for gpui). Zed crates other than gpui are GPL: here only the design, identifier names and a few short lines are recorded.
+- GPUI (Apache-2.0): `crates/gpui`, `crates/gpui_macos` at the same rev.
+- VS Code: `microsoft/vscode` branch `main`, fetched on 2026-11-15 (source files under `src/vs/...`, paths given below).
 
-Đường dẫn bắt đầu bằng `crates/` ở dưới là tương đối so với bản checkout của Zed.
+Paths starting with `crates/` below are relative to the Zed checkout.
 
-Lưu ý quan trọng về rev Zed này: Zed giờ có **`MultiWorkspace`** làm view gốc của mọi cửa sổ. Một cửa sổ có thể chứa nhiều `Workspace` (project), chuyển qua một sidebar ("threads sidebar"). Vì vậy "mở thư mục" trong Zed có thể là (a) cửa sổ mới, (b) thêm một workspace mới vào sidebar của cửa sổ hiện tại, hoặc (c) kích hoạt một workspace có sẵn. Zed cũ (và VS Code) chỉ có (a) và "thay thế cửa sổ". Lucerna không cần sidebar; khi sidebar không liên quan, đọc `MultiWorkspace` bên dưới như "cửa sổ".
+Important note about this Zed rev: Zed now has **`MultiWorkspace`** as the root view of every window. One window can hold several `Workspace`s (projects), switched through a sidebar ("threads sidebar"). So "open folder" in Zed can mean (a) a new window, (b) adding a new workspace to the sidebar of the current window, or (c) activating an existing workspace. Older Zed (and VS Code) only have (a) and "replace window". Lucerna does not need a sidebar; where the sidebar is irrelevant, read `MultiWorkspace` below as "window".
 
 ---
 
-## 1. Zed: app giữ nhiều cửa sổ thế nào
+## 1. Zed: how the app holds many windows
 
-### 1.1 Trạng thái dùng chung và theo từng cửa sổ
+### 1.1 Shared state and per-window state
 
-- `AppState` (`crates/workspace/src/workspace.rs:1329`) là một `Arc` lưu như global của GPUI (`GlobalAppState`). Mọi cửa sổ dùng chung: `languages: Arc<LanguageRegistry>`, `client`, `user_store`, `workspace_store`, `fs`, `build_window_options: fn(Option<Uuid>, &mut App) -> WindowOptions`, `node_runtime`, `session: Entity<AppSession>`.
-- `WorkspaceStore` (`workspace.rs:1361`) chỉ là một tập `(AnyWindowHandle, WeakEntity<Workspace>)` dùng cho cộng tác/follow; nó **không** phải nguồn sự thật cho "những cửa sổ nào đang tồn tại". Mọi chỗ cần liệt kê cửa sổ đều dùng `cx.windows()` rồi downcast sang `WindowHandle<MultiWorkspace>` (ví dụ `workspace_windows_for_location`, `workspace.rs:11094`).
-- Theo từng cửa sổ: `MultiWorkspace` (`crates/workspace/src/multi_workspace.rs:305`) → một hoặc nhiều `Workspace` → mỗi `Workspace` sở hữu một entity `Project`.
-- Theo từng project (thực tế là theo cửa sổ): `Project` sở hữu `BufferStore`, `LspStore`, `WorktreeStore`, `terminals`, git store, task store (`crates/project/src/project.rs:247-255`). Hai cửa sổ trên các thư mục chồng lên nhau có hai `Project` độc lập, nên có hai buffer store và hai bộ language server.
+- `AppState` (`crates/workspace/src/workspace.rs:1329`) is an `Arc` stored as a GPUI global (`GlobalAppState`). Shared by every window: `languages: Arc<LanguageRegistry>`, `client`, `user_store`, `workspace_store`, `fs`, `build_window_options: fn(Option<Uuid>, &mut App) -> WindowOptions`, `node_runtime`, `session: Entity<AppSession>`.
+- `WorkspaceStore` (`workspace.rs:1361`) is just a set of `(AnyWindowHandle, WeakEntity<Workspace>)` used for collaboration/follow; it is **not** the source of truth for "which windows exist". Everywhere that needs to list windows uses `cx.windows()` and then downcasts to `WindowHandle<MultiWorkspace>` (for example `workspace_windows_for_location`, `workspace.rs:11094`).
+- Per window: `MultiWorkspace` (`crates/workspace/src/multi_workspace.rs:305`) → one or more `Workspace`s → each `Workspace` owns a `Project` entity.
+- Per project (in practice per window): `Project` owns `BufferStore`, `LspStore`, `WorktreeStore`, `terminals`, the git store, the task store (`crates/project/src/project.rs:247-255`). Two windows on overlapping folders have two independent `Project`s, hence two buffer stores and two sets of language servers.
 
-### 1.2 `workspace::open_paths` và cách chọn cửa sổ
+### 1.2 `workspace::open_paths` and how a window is chosen
 
-`open_paths(abs_paths, app_state, OpenOptions, cx)` (`workspace.rs:11436`) là điểm vào duy nhất cho CLI, mở từ Finder/Dock, hộp thoại Open và khôi phục session. Các bước:
+`open_paths(abs_paths, app_state, OpenOptions, cx)` (`workspace.rs:11436`) is the single entry point for the CLI, opening from Finder/Dock, the Open dialog and session restore. The steps:
 
-1. `find_existing_workspace` (`workspace.rs:11158`) duyệt `cx.windows()` → mọi workspace trong mọi cửa sổ, hỏi project qua `visibility_for_paths` / `visibility_for_subpaths`, giữ kết quả khớp nhất. Độ rộng của việc khớp lấy từ `OpenOptions.workspace_matching` (`WorkspaceMatching`, `workspace.rs:11254`): `None` (luôn mở mới), `MatchExact` (mặc định: đường dẫn là gốc worktree hoặc là file/thư mục nằm trong một worktree), `MatchSubpaths` (nằm trong, nhưng không phải chính gốc), `MatchSubdirectory` (`zed -a`: nằm trong bất kỳ worktree nào, nếu không thì lùi về cửa sổ bất kỳ).
-2. Nếu không khớp và **mọi đường dẫn đều là file**, `preferred_target_for_files` (`workspace.rs:11118`) chọn workspace của cửa sổ đang active, không thì cửa sổ khác bất kỳ. Nên file lẻ không bao giờ sinh cửa sổ mới khi đã có cửa sổ.
-3. Nếu không khớp và các đường dẫn có thư mục, cờ `add_dirs_to_sidebar` (lấy từ setting) quyết định thư mục thành workspace mới trong cửa sổ active hay mở cửa sổ mới.
-4. Còn lại thì `Workspace::new_local(..., requesting_window, ..., open_mode)` (`workspace.rs:2160`) tạo `Project` mới và đặt vào `requesting_window` (`OpenMode::Activate`/`Add`) hoặc mở cửa sổ OS mới (`OpenMode::NewWindow`, `workspace.rs:1690`).
+1. `find_existing_workspace` (`workspace.rs:11158`) walks `cx.windows()` → every workspace in every window, asks the project through `visibility_for_paths` / `visibility_for_subpaths`, and keeps the best match. How wide the match is comes from `OpenOptions.workspace_matching` (`WorkspaceMatching`, `workspace.rs:11254`): `None` (always open new), `MatchExact` (default: the path is a worktree root, or is a file/folder inside a worktree), `MatchSubpaths` (inside, but not the root itself), `MatchSubdirectory` (`zed -a`: inside any worktree, otherwise fall back to any window).
+2. If nothing matches and **every path is a file**, `preferred_target_for_files` (`workspace.rs:11118`) picks the workspace of the active window, otherwise any other window. So a lone file never creates a new window when a window already exists.
+3. If nothing matches and the paths include folders, the `add_dirs_to_sidebar` flag (taken from a setting) decides whether the folder becomes a new workspace in the active window or opens a new window.
+4. Otherwise `Workspace::new_local(..., requesting_window, ..., open_mode)` (`workspace.rs:2160`) creates a new `Project` and puts it in `requesting_window` (`OpenMode::Activate`/`Add`) or opens a new OS window (`OpenMode::NewWindow`, `workspace.rs:1690`).
 
-`OpenOptions` (`workspace.rs:11272`): `visible`, `focus`, `workspace_matching`, `add_dirs_to_sidebar`, `wait`, `requesting_window`, `open_mode`, `env`, `open_in_dev_container`. `should_reuse_existing_window()` trả false với `WorkspaceMatching::None | MatchSubpaths` hoặc `OpenMode::NewWindow`.
+`OpenOptions` (`workspace.rs:11272`): `visible`, `focus`, `workspace_matching`, `add_dirs_to_sidebar`, `wait`, `requesting_window`, `open_mode`, `env`, `open_in_dev_container`. `should_reuse_existing_window()` returns false for `WorkspaceMatching::None | MatchSubpaths` or `OpenMode::NewWindow`.
 
-### 1.3 "Open folder" từ trong app
+### 1.3 "Open folder" from inside the app
 
-Action `Open` (`workspace.rs:~997`, `prompt_and_open_paths`): cờ `create_new_window` lấy từ action hoặc từ setting `default_open_behavior` (`existing_window` mặc định | `new_window`).
-- Không phải cửa sổ mới → `multi_workspace.open_project(paths, OpenMode::Activate)` (thêm vào cửa sổ hiện tại).
-- Cửa sổ mới → `Workspace::open_workspace_for_paths(OpenMode::NewWindow, …)` (`workspace.rs:4072`). Hàm này có một quy tắc đáng học: **nếu workspace hiện tại trống (không worktree, không remote, không item dirty) thì hạ xuống `Activate`, tức là dùng lại cửa sổ trống này thay vì để nó lại.**
-- "Replace window" (hành vi Zed cũ, vẫn gọi được qua `zed -r` / `OpenBehavior::Reuse`) đóng project hiện tại bằng `CloseIntent::ReplaceWindow` và nạp project mới vào cùng cửa sổ. Test: `test_replace_window_without_worktrees_prompts`, `test_replace_window_with_worktrees_hot_exits` (`workspace.rs:13857/13895`).
+The `Open` action (`workspace.rs:~997`, `prompt_and_open_paths`): the `create_new_window` flag comes from the action or from the `default_open_behavior` setting (`existing_window` default | `new_window`).
+- Not a new window → `multi_workspace.open_project(paths, OpenMode::Activate)` (add to the current window).
+- New window → `Workspace::open_workspace_for_paths(OpenMode::NewWindow, …)` (`workspace.rs:4072`). This function has a rule worth learning: **if the current workspace is empty (no worktree, no remote, no dirty item), it is downgraded to `Activate`, meaning this empty window is reused instead of being left behind.**
+- "Replace window" (old Zed behavior, still callable through `zed -r` / `OpenBehavior::Reuse`) closes the current project with `CloseIntent::ReplaceWindow` and loads the new project into the same window. Tests: `test_replace_window_without_worktrees_prompts`, `test_replace_window_with_worktrees_hot_exits` (`workspace.rs:13857/13895`).
 
-### 1.4 Cửa sổ mới (cmd-shift-n)
+### 1.4 New window (cmd-shift-n)
 
-- Keymap: `cmd-shift-n` → `workspace::NewWindow` (`assets/keymaps/default-macos.json:722`), `ctrl-shift-n` trên Linux.
-- Handler (`crates/zed/src/zed.rs:1337`): `open_new(Default::default(), …)` → `Workspace::new_local(vec![], …)` với `Project` rỗng, rồi `initialize_new_window` (`zed.rs:2418`) theo `on_new_window`: `launchpad` (mặc định: trang recent-projects trong pane trống), `empty_tab` (một buffer untitled), `readme`.
-- Mục "New Window" của menu Dock đặt bằng `cx.set_dock_menu` (`zed.rs:2340`).
-- Kích thước/vị trí cho cửa sổ mới (`workspace.rs:~2320`): override từ env → bounds và display đã lưu của chính workspace (project mở lại) → `read_default_window_bounds` (bounds gần nhất của bất kỳ cửa sổ nào) → mặc định của GPUI (xếp chồng bậc thang).
+- Keymap: `cmd-shift-n` → `workspace::NewWindow` (`assets/keymaps/default-macos.json:722`), `ctrl-shift-n` on Linux.
+- Handler (`crates/zed/src/zed.rs:1337`): `open_new(Default::default(), …)` → `Workspace::new_local(vec![], …)` with an empty `Project`, then `initialize_new_window` (`zed.rs:2418`) according to `on_new_window`: `launchpad` (default: the recent-projects page in an empty pane), `empty_tab` (one untitled buffer), `readme`.
+- The Dock menu's "New Window" entry is set with `cx.set_dock_menu` (`zed.rs:2340`).
+- Size/position for a new window (`workspace.rs:~2320`): override from env → the workspace's own saved bounds and display (reopened project) → `read_default_window_bounds` (the most recent bounds of any window) → GPUI's default (cascading).
 
-## 2. Zed: CLI `zed` và app đang chạy
+## 2. Zed: the `zed` CLI and the running app
 
-File: `crates/cli/src/cli.rs`, `crates/cli/src/main.rs`, `crates/zed/src/zed/open_listener.rs`, `crates/zed/src/zed/mac_only_instance.rs`, `crates/zed/src/main.rs`.
+Files: `crates/cli/src/cli.rs`, `crates/cli/src/main.rs`, `crates/zed/src/zed/open_listener.rs`, `crates/zed/src/zed/mac_only_instance.rs`, `crates/zed/src/main.rs`.
 
-- CLI là một **binary nhỏ riêng**. Nó tạo `ipc_channel::IpcOneShotServer<IpcHandshake>` và dựng URL `zed-cli://<server_name>` (`cli/src/main.rs:537`).
-- macOS: gọi `LSOpenFromURLSpec` với app bundle làm `appURL` và URL `zed-cli://…` làm item, cờ `kLSLaunchDefaults | kLSLaunchDontSwitch` (`cli/src/main.rs:1334`). LaunchServices hoặc khởi động Zed.app, hoặc chuyển URL cho bản đang chạy; cả hai đường đều đến `application:openURLs:` của GPUI → `App::on_open_urls` → `OpenListener` (`zed/src/main.rs:457`). (Bundle chỉ khai báo `zed://`, `crates/zed/Cargo.toml:293`; `zed-cli://` chạy được vì app đích được gọi đích danh.)
-- Linux: app bind một `UnixDatagram` tại `<data_dir>/zed-<channel>.sock` (`open_listener.rs:409`), xóa socket cũ khi gặp `ConnectionRefused`; CLI gửi URL `zed-cli://` vào đó, hoặc spawn binary nếu không ai lắng nghe.
-- App parse `zed-cli://name` (`open_listener.rs:158`), kết nối ngược lại (`connect_to_cli`, `open_listener.rs:433`) và trao đổi thông điệp có kiểu: `CliRequest::Open { paths, urls, diff_paths, wait, open_behavior, env, cwd, … }` và `CliResponse::{Ping, Stdout, Stderr, Exit{status}}` (`cli/src/cli.rs:55-80`). Nhờ đó CLI nhận được stdout/stderr thật và exit status từ app.
-- Cờ → `cli::OpenBehavior` (`cli/src/cli.rs:18`): `-n/--new` `AlwaysNew`, `-a/--add` `Add`, `-e/--existing` `ExistingWindow`, `--classic` (ẩn; thư mục mở cửa sổ mới, file dùng lại cửa sổ: hành vi trước khi có sidebar) và `-r/--reuse` (ẩn; thay workspace của một cửa sổ). Không cờ → `Default`, quyết định từ `cli_default_open_behavior` (`existing_window` | `new_window`); lần đầu dùng Zed thậm chí có thể hỏi và ghi setting (`resolve_open_behavior`, `open_listener.rs:688`). Ánh xạ sang `OpenOptions` nằm ở `open_options_for_behavior` (`open_listener.rs:790`).
-- `--wait` (`open_listener.rs:~1005`): với file, thu thập các future `item.on_release`; với thư mục hoặc không có đường dẫn, chờ entity workspace bị release (cửa sổ đóng). CLI giữ kết nối đến lúc đó rồi nhận `Exit`.
-- Không có đường dẫn và không có `-n` → `restore_or_create_workspace` (giống Dock reopen).
-- **Single instance:** macOS dùng TCP listener trên 127.0.0.1 với port suy ra từ release channel + uid (`mac_only_instance.rs`): nếu nhận lại chuỗi handshake thì đã có instance khác, tiến trình mới in "zed is already running" rồi thoát. Cái này chặn người dùng chạy binary hai lần; CLI thông thường đi qua LaunchServices. Kênh dev và `ZED_STATELESS` bỏ qua bước kiểm tra (`main.rs:354`).
-- Race khi khởi động nguội: khi mở nguội, yêu cầu CLI có thể đến lúc session đang được khôi phục; Zed chờ khôi phục xong (hoặc có cửa sổ đầu tiên) rồi mới khớp đường dẫn, nếu không sẽ mở cửa sổ trùng (comment nhắc issue #61346, `main.rs:~985`).
+- The CLI is a **separate small binary**. It creates an `ipc_channel::IpcOneShotServer<IpcHandshake>` and builds the URL `zed-cli://<server_name>` (`cli/src/main.rs:537`).
+- macOS: it calls `LSOpenFromURLSpec` with the app bundle as `appURL` and the `zed-cli://…` URL as the item, flags `kLSLaunchDefaults | kLSLaunchDontSwitch` (`cli/src/main.rs:1334`). LaunchServices either starts Zed.app or hands the URL to the running instance; both paths end up at GPUI's `application:openURLs:` → `App::on_open_urls` → `OpenListener` (`zed/src/main.rs:457`). (The bundle only declares `zed://`, `crates/zed/Cargo.toml:293`; `zed-cli://` works because the target app is called by name.)
+- Linux: the app binds a `UnixDatagram` at `<data_dir>/zed-<channel>.sock` (`open_listener.rs:409`), deleting the stale socket on `ConnectionRefused`; the CLI sends the `zed-cli://` URL into it, or spawns the binary if nobody is listening.
+- The app parses `zed-cli://name` (`open_listener.rs:158`), connects back (`connect_to_cli`, `open_listener.rs:433`) and exchanges typed messages: `CliRequest::Open { paths, urls, diff_paths, wait, open_behavior, env, cwd, … }` and `CliResponse::{Ping, Stdout, Stderr, Exit{status}}` (`cli/src/cli.rs:55-80`). This is how the CLI gets real stdout/stderr and the exit status from the app.
+- Flags → `cli::OpenBehavior` (`cli/src/cli.rs:18`): `-n/--new` `AlwaysNew`, `-a/--add` `Add`, `-e/--existing` `ExistingWindow`, `--classic` (hidden; folders open a new window, files reuse a window: the behavior from before the sidebar) and `-r/--reuse` (hidden; replaces a window's workspace). No flag → `Default`, decided from `cli_default_open_behavior` (`existing_window` | `new_window`); the first time Zed is used it may even ask and write the setting (`resolve_open_behavior`, `open_listener.rs:688`). The mapping to `OpenOptions` is in `open_options_for_behavior` (`open_listener.rs:790`).
+- `--wait` (`open_listener.rs:~1005`): for files, it collects the `item.on_release` futures; for a folder or no paths, it waits for the workspace entity to be released (window closed). The CLI holds the connection until then and then receives `Exit`.
+- No paths and no `-n` → `restore_or_create_workspace` (same as Dock reopen).
+- **Single instance:** macOS uses a TCP listener on 127.0.0.1 with a port derived from release channel + uid (`mac_only_instance.rs`): if the handshake string comes back, another instance exists, and the new process prints "zed is already running" and exits. This stops users from running the binary twice; the normal CLI goes through LaunchServices. The dev channel and `ZED_STATELESS` skip the check (`main.rs:354`).
+- Cold-start race: on a cold launch, a CLI request can arrive while the session is still being restored; Zed waits for restore to finish (or for the first window) before matching paths, otherwise it would open a duplicate window (a comment cites issue #61346, `main.rs:~985`).
 
-## 3. Zed: settings theo worktree và toàn cục
+## 3. Zed: per-worktree and global settings
 
-- Một `SettingsStore` toàn cục (`crates/settings/src/settings_store.rs:154`) với các lớp: default, user, global, extension, server, và `local_settings: BTreeMap<(WorktreeId, Arc<RelPath>), SettingsContent>`. `WorktreeId` là duy nhất trong cả tiến trình, nên một store phục vụ mọi cửa sổ.
-- `.zed/settings.json` (`paths::local_settings_file_relative_path`) có thể nằm ở bất kỳ thư mục nào trong worktree; `Project` theo dõi chúng và gọi `set_local_settings(worktree_id, dir, kind, content)` (`project_settings.rs:1658`). Các loại: `Settings`, `Tasks`, `Debug`, `Editorconfig`.
-- File local chỉ được parse thành `ProjectSettingsContent` (`settings_store.rs:~1110`), một tập con của `SettingsContent` (`settings_content.rs:174` flatten `project` + `theme` + …). Vì vậy theme, keymap, tùy chọn toàn UI **không** đặt theo project được; chúng là toàn cục.
-- Tra cứu: `Settings::get(Some(SettingsLocation { worktree_id, path }), cx)`; `value_for_path` (`settings_store.rs:1653`) duyệt ngược các giá trị local và trả về thư mục sâu nhất có path là tiền tố, nếu không thì dùng giá trị toàn cục đã merge. `get_global(cx)` = `get(None)`. Setting của editor/ngôn ngữ truyền vị trí file của buffer; code toàn app (hành vi đóng cửa sổ, restore) gọi `get_global`.
-- Keymap là toàn cục (`cx.bind_keys` sau `cx.clear_key_bindings`), theme cũng là global; menu được dựng lại sau khi nạp lại keymap (`reload_menus`).
+- One global `SettingsStore` (`crates/settings/src/settings_store.rs:154`) with layers: default, user, global, extension, server, and `local_settings: BTreeMap<(WorktreeId, Arc<RelPath>), SettingsContent>`. `WorktreeId` is unique across the whole process, so one store serves every window.
+- `.zed/settings.json` (`paths::local_settings_file_relative_path`) can sit in any directory inside the worktree; `Project` watches them and calls `set_local_settings(worktree_id, dir, kind, content)` (`project_settings.rs:1658`). Kinds: `Settings`, `Tasks`, `Debug`, `Editorconfig`.
+- Local files are parsed only as `ProjectSettingsContent` (`settings_store.rs:~1110`), a subset of `SettingsContent` (`settings_content.rs:174` flattens `project` + `theme` + …). So theme, keymap and whole-UI options **cannot** be set per project; they are global.
+- Lookup: `Settings::get(Some(SettingsLocation { worktree_id, path }), cx)`; `value_for_path` (`settings_store.rs:1653`) walks the local values backwards and returns the deepest directory whose path is a prefix, otherwise the merged global value. `get_global(cx)` = `get(None)`. Editor/language settings pass the buffer's file location; app-wide code (window close behavior, restore) calls `get_global`.
+- The keymap is global (`cx.bind_keys` after `cx.clear_key_bindings`), the theme is global too; menus are rebuilt after the keymap reloads (`reload_menus`).
 
-## 4. Zed: khôi phục khi khởi động
+## 4. Zed: restore on startup
 
-- Setting `restore_on_startup` (`settings_content/src/workspace.rs:525`): `last_session` (mặc định), `last_workspace`, `empty_tab`, `launchpad` (`assets/settings/default.json:171` vẫn ghi `none`).
-- Theo dõi session (`crates/session/src/session.rs`): mỗi lần chạy có một `session_id` UUID; cái trước được giữ làm `last_session_id` trong KV store. `AppSession` poll `cx.window_stack()` và lưu thứ tự cửa sổ (`session_window_stack`), rồi lưu thêm một lần nữa trong `app_will_quit`.
-- DB workspace (`crates/workspace/src/persistence.rs`) lưu mỗi workspace cùng `session_id`, `window_id`, `window_bounds`, `display` (uuid), dock, các item đang mở. `prepare_windows_to_quit` flush việc serialize trước khi thoát (`workspace.rs:12112`). Khi đóng một cửa sổ (không phải thoát), workspace bị xóa khỏi session (`remove_from_session`), nên chỉ những cửa sổ còn mở lúc thoát mới được khôi phục.
-- `restore_or_create_workspace` (`crates/zed/src/main.rs:1422`): `restorable_workspace_locations` → với `last_session`, `last_session_workspace_locations(db, last_session_id, window_stack)`, rồi **đảo ngược** để cửa sổ trước nhất được mở sau cùng và nằm trên cùng (`main.rs:~1640`); các workspace được gom lại thành cửa sổ theo `window_id` (`persistence.rs:332`). Lùi về `last_workspace` khi không có session trước. Lỗi hiện toast; nếu không cửa sổ nào sống sót thì mở một cửa sổ trống.
-- Mỗi cửa sổ khôi phục có bounds và display riêng đã lưu (xem 1.4). Các cửa sổ remote khôi phục dùng `WorkspaceMatching::None` để hai cửa sổ chung một gốc đều được khôi phục.
-- Cùng hàm này chạy cho Dock reopen và `zed` không có đường dẫn.
+- Setting `restore_on_startup` (`settings_content/src/workspace.rs:525`): `last_session` (default), `last_workspace`, `empty_tab`, `launchpad` (`assets/settings/default.json:171` still says `none`).
+- Session tracking (`crates/session/src/session.rs`): each run has a UUID `session_id`; the previous one is kept as `last_session_id` in the KV store. `AppSession` polls `cx.window_stack()` and saves the window order (`session_window_stack`), then saves once more in `app_will_quit`.
+- The workspace DB (`crates/workspace/src/persistence.rs`) stores each workspace with `session_id`, `window_id`, `window_bounds`, `display` (uuid), docks, and open items. `prepare_windows_to_quit` flushes serialization before quitting (`workspace.rs:12112`). When a window is closed (not a quit), the workspace is removed from the session (`remove_from_session`), so only windows still open at quit time are restored.
+- `restore_or_create_workspace` (`crates/zed/src/main.rs:1422`): `restorable_workspace_locations` → for `last_session`, `last_session_workspace_locations(db, last_session_id, window_stack)`, then **reversed** so the frontmost window is opened last and ends up on top (`main.rs:~1640`); workspaces are grouped into windows by `window_id` (`persistence.rs:332`). Falls back to `last_workspace` when there is no previous session. Errors show a toast; if no window survives, an empty window is opened.
+- Each restored window has its own saved bounds and display (see 1.4). Restored remote windows use `WorkspaceMatching::None` so two windows sharing a root are both restored.
+- The same function runs for Dock reopen and `zed` with no paths.
 
-## 5. Zed: thoát và đóng cửa sổ cuối
+## 5. Zed: quitting and closing the last window
 
-- `Quit` (`crates/zed/src/zed.rs:1754`): prompt `confirm_quit` tùy chọn; sau đó sắp xếp cửa sổ để **cửa sổ active hỏi trước**, rồi `prepare_windows_to_quit` (`workspace.rs:12075`) chạy `prepare_window_to_close(window, CloseIntent::Quit)` **lần lượt từng cửa sổ**. Bất kỳ lần cancel nào cũng dừng việc thoát (các cửa sổ đã chuẩn bị được flush; thoát bị hủy).
-- `Workspace::prepare_to_close` (`workspace.rs:3733`): với `CloseIntent::Quit` được phép hot-exit: buffer dirty được serialize vào DB một cách im lặng và khôi phục lần chạy sau; không có prompt lưu. Với đóng cửa sổ thường, hot-exit chỉ được phép nếu tìm lại được workspace (có worktree hiển thị, hoặc đây là cửa sổ cuối và đóng nó là thoát); nếu không thì hiện prompt lưu/bỏ.
-- Nút đóng cửa sổ: `window.on_window_should_close` trả `false` và chạy `MultiWorkspace::close_window` bất đồng bộ (prompt, flush, rồi `window.remove_window()`), `zed.rs:494`, `multi_workspace.rs:555`.
-- Đóng cửa sổ cuối: setting `on_last_window_closed` = `platform_default` (macOS: vẫn chạy; nền tảng khác: thoát) | `quit_app` (`settings_content/src/workspace.rs:760`). Cài đặt ở `bind_on_window_closed` (`zed.rs:336`): `cx.on_window_closed(|cx, _| if cx.windows().is_empty() { cx.quit() })`, bind lại khi settings đổi. `closing_last_window_quits_app` (`workspace_settings.rs:53`) là predicate dùng chung (luôn true ngoài macOS).
-- `when_closing_with_no_tabs` (`platform_default` = đóng cửa sổ trên macOS, giữ lại ở nơi khác): đóng tab cuối thì đóng cửa sổ.
-- Bấm Dock khi không còn cửa sổ: `app.on_reopen` → `restore_or_create_workspace` (`main.rs:467`).
+- `Quit` (`crates/zed/src/zed.rs:1754`): an optional `confirm_quit` prompt; then windows are sorted so the **active window asks first**, then `prepare_windows_to_quit` (`workspace.rs:12075`) runs `prepare_window_to_close(window, CloseIntent::Quit)` **one window at a time**. Any cancel stops the quit (the windows already prepared are flushed; the quit is canceled).
+- `Workspace::prepare_to_close` (`workspace.rs:3733`): with `CloseIntent::Quit` hot exit is allowed: dirty buffers are serialized to the DB silently and restored next run; no save prompt. For an ordinary window close, hot exit is allowed only if the workspace can be found again (it has a visible worktree, or it is the last window and closing it quits); otherwise a save/discard prompt appears.
+- The window close button: `window.on_window_should_close` returns `false` and runs `MultiWorkspace::close_window` asynchronously (prompt, flush, then `window.remove_window()`), `zed.rs:494`, `multi_workspace.rs:555`.
+- Closing the last window: setting `on_last_window_closed` = `platform_default` (macOS: keep running; other platforms: quit) | `quit_app` (`settings_content/src/workspace.rs:760`). Installed in `bind_on_window_closed` (`zed.rs:336`): `cx.on_window_closed(|cx, _| if cx.windows().is_empty() { cx.quit() })`, rebound when settings change. `closing_last_window_quits_app` (`workspace_settings.rs:53`) is the shared predicate (always true outside macOS).
+- `when_closing_with_no_tabs` (`platform_default` = close the window on macOS, keep it elsewhere): closing the last tab closes the window.
+- Clicking the Dock with no windows left: `app.on_reopen` → `restore_or_create_workspace` (`main.rs:467`).
 
 ## 6. Zed: terminal, language server, trust
 
-- Terminal: thuộc `Project.terminals`; panel terminal là theo từng `Workspace`. Không chia sẻ giữa các cửa sổ.
-- Language server: `LspStore` theo từng `Project` (`LocalLspStore.language_servers`, `lsp_store.rs:~359`). `LanguageRegistry` (adapter, grammar, tải về) dùng chung qua `AppState.languages`, nhưng **tiến trình server không chia sẻ giữa các cửa sổ**: hai cửa sổ Rust chạy hai rust-analyzer.
-- Trust (`crates/project/src/trusted_worktrees.rs`): một entity `TrustedWorktrees` toàn cục, khởi tạo một lần từ DB (`fetch_trusted_worktrees`, `main.rs:~487`). Trust tính theo đường dẫn worktree (file đơn < thư mục < override ở đường dẫn cha), được lưu bền và dùng chung cho mọi cửa sổ; mỗi `Workspace` subscribe `TrustedWorktreesEvent::Trusted` và serialize lại. Project bị hạn chế hiện modal bảo mật khi mở (`show_worktree_trust_security_modal`, `workspace.rs:~2440`).
+- Terminal: belongs to `Project.terminals`; the terminal panel is per `Workspace`. Not shared between windows.
+- Language server: `LspStore` is per `Project` (`LocalLspStore.language_servers`, `lsp_store.rs:~359`). `LanguageRegistry` (adapters, grammars, downloads) is shared through `AppState.languages`, but **server processes are not shared between windows**: two Rust windows run two rust-analyzers.
+- Trust (`crates/project/src/trusted_worktrees.rs`): a global `TrustedWorktrees` entity, initialized once from the DB (`fetch_trusted_worktrees`, `main.rs:~487`). Trust is by worktree path (single file < directory < override at a parent path), persisted and shared by every window; each `Workspace` subscribes to `TrustedWorktreesEvent::Trusted` and re-serializes. A restricted project shows a security modal on open (`show_worktree_trust_security_modal`, `workspace.rs:~2440`).
 
-## 7. GPUI ở b5cd310 (Apache-2.0): API nhiều cửa sổ
+## 7. GPUI at b5cd310 (Apache-2.0): the multi-window API
 
-Tất cả trong `crates/gpui/src/app.rs` trừ khi ghi khác.
+Everything is in `crates/gpui/src/app.rs` unless noted otherwise.
 
-| API | Ghi chú |
+| API | Notes |
 |---|---|
-| `cx.open_window(options, build_root)` (`app.rs:1605`) | trả `WindowHandle<V>`; vẽ một lần trước khi trả về. |
-| `cx.windows()` (`:1581`) | mọi cửa sổ đang mở dạng `AnyWindowHandle`; `downcast::<V>()` để lọc theo view gốc. Thứ tự là thứ tự slot-map, không phải z-order. |
-| `cx.window_stack()` (`:1593`) | thứ tự từ trước ra sau; là `Option` vì platform có thể không cài (impl mặc định của trait trả `None`, `platform.rs:402`; macOS dùng `NSApp orderedWindows`). |
-| `cx.active_window()` (`:1598`) | key window của platform. Có thể là `None` khi app không ở foreground, nên lùi về `window_stack().first()` hoặc cửa sổ focus gần nhất mà bạn tự theo dõi. |
-| `cx.on_window_closed(\|cx, WindowId\|)` (`:2867`) | chạy sau khi cửa sổ đã bị gỡ (không truy cập được nữa). |
-| `QuitMode` + `Application::with_quit_mode` / `cx.set_quit_mode` (`:526`, `:291`, `:2096`) | `Default` = `Explicit` trên macOS, `LastWindowClosed` ở nơi khác; được kiểm tra ngay sau các observer closed (`:3294`). Lucerna có thể dùng cái này thay cho `on_window_closed` quit tự viết. |
-| `Application::on_reopen` (`:369`) | macOS `applicationShouldHandleReopen:hasVisibleWindows:`; GPUI chỉ gọi lại **khi không còn cửa sổ nào hiển thị** (`gpui_macos/src/platform.rs:1373`). |
-| `Application::on_open_urls` (`:359`) | macOS `application:openURLs:` (Finder Open With, `open -a`, URL LaunchServices gồm cả `file://`). Phải đăng ký trước `run`. |
-| `cx.on_app_quit(\|cx\| future)` (`:2842`) | chạy trong `shutdown`, future được cấp `SHUTDOWN_TIMEOUT`; **không hủy được**. Không có hook "should quit" để veto: Zed veto bằng cách làm mọi prompt trong action `Quit` *trước khi* gọi `cx.quit()`. `Platform::on_quit` nối với `applicationWillTerminate:`. |
-| `window.on_window_should_close(cx, \|window, cx\| -> bool)` (`window.rs:7162`) | veto theo cửa sổ cho nút đóng; trả `false` và đóng sau bằng `window.remove_window()` (`window.rs:2599`). |
-| `cx.quit()` (`:1343`) | macOS: `[NSApp terminate:]` bất đồng bộ. Lưu ý: thoát do hệ thống (logout, Dock "Quit") bỏ qua action `Quit` của bạn; lúc đó chỉ `on_app_quit` chạy. |
-| `cx.set_menus(..)` (`:2902`) | một thanh menu cho cả app; mục menu gửi action đến cửa sổ đang focus, không thì đến handler global `cx.on_action`. Action phải chạy được khi không có cửa sổ (Quit, Open, New Window, Open Recent) cần handler global. |
-| `cx.set_dock_menu(..)`, `cx.add_recent_document(path)` | menu Dock / tài liệu gần đây. |
-| `cx.activate(ignoring_other_apps)`, `window.activate_window()` | đưa app / một cửa sổ lên trước. |
-| `WindowOptions.tabbing_identifier` (`gpui_macos/src/window.rs:1011, 1248, 1290`) | `Some(id)` bật tab tự động của `NSWindow`; cửa sổ mới gia nhập cửa sổ chính như một tab native khi tùy chọn hệ thống "prefer tabs" của người dùng là Always (hoặc InFullScreen khi đang fullscreen). `None` tắt tab toàn cục. Zed phơi ra là `use_system_window_tabs`. |
+| `cx.open_window(options, build_root)` (`app.rs:1605`) | returns `WindowHandle<V>`; draws once before returning. |
+| `cx.windows()` (`:1581`) | every open window as `AnyWindowHandle`; `downcast::<V>()` to filter by root view. The order is slot-map order, not z-order. |
+| `cx.window_stack()` (`:1593`) | front-to-back order; an `Option` because a platform may not implement it (the trait's default impl returns `None`, `platform.rs:402`; macOS uses `NSApp orderedWindows`). |
+| `cx.active_window()` (`:1598`) | the platform's key window. Can be `None` when the app is not in the foreground, so fall back to `window_stack().first()` or the most recently focused window that you track yourself. |
+| `cx.on_window_closed(\|cx, WindowId\|)` (`:2867`) | runs after the window has been removed (no longer accessible). |
+| `QuitMode` + `Application::with_quit_mode` / `cx.set_quit_mode` (`:526`, `:291`, `:2096`) | `Default` = `Explicit` on macOS, `LastWindowClosed` elsewhere; checked right after the closed observers (`:3294`). Lucerna could use this instead of a hand-written `on_window_closed` quit. |
+| `Application::on_reopen` (`:369`) | macOS `applicationShouldHandleReopen:hasVisibleWindows:`; GPUI only calls back **when no window is visible** (`gpui_macos/src/platform.rs:1373`). |
+| `Application::on_open_urls` (`:359`) | macOS `application:openURLs:` (Finder Open With, `open -a`, LaunchServices URLs including `file://`). Must be registered before `run`. |
+| `cx.on_app_quit(\|cx\| future)` (`:2842`) | runs in `shutdown`, the future is given `SHUTDOWN_TIMEOUT`; **cannot be canceled**. There is no "should quit" hook to veto: Zed vetoes by doing every prompt in the `Quit` action *before* calling `cx.quit()`. `Platform::on_quit` hooks into `applicationWillTerminate:`. |
+| `window.on_window_should_close(cx, \|window, cx\| -> bool)` (`window.rs:7162`) | per-window veto for the close button; return `false` and close later with `window.remove_window()` (`window.rs:2599`). |
+| `cx.quit()` (`:1343`) | macOS: asynchronous `[NSApp terminate:]`. Note: a system-initiated quit (logout, Dock "Quit") bypasses your `Quit` action; only `on_app_quit` runs then. |
+| `cx.set_menus(..)` (`:2902`) | one menu bar for the whole app; a menu item sends its action to the focused window, otherwise to the global `cx.on_action` handler. Actions that must work with no window (Quit, Open, New Window, Open Recent) need a global handler. |
+| `cx.set_dock_menu(..)`, `cx.add_recent_document(path)` | Dock menu / recent documents. |
+| `cx.activate(ignoring_other_apps)`, `window.activate_window()` | bring the app / one window to the front. |
+| `WindowOptions.tabbing_identifier` (`gpui_macos/src/window.rs:1011, 1248, 1290`) | `Some(id)` enables `NSWindow` automatic tabs; a new window joins the main window as a native tab when the user's system "prefer tabs" option is Always (or InFullScreen while in fullscreen). `None` turns tabs off globally. Zed exposes it as `use_system_window_tabs`. |
 
-Hỗ trợ test (`crates/gpui/src/app/test_context.rs`, `crates/gpui/src/platform/test/platform.rs`):
+Test support (`crates/gpui/src/app/test_context.rs`, `crates/gpui/src/platform/test/platform.rs`):
 - `TestAppContext::add_window(|window, cx| V)` → `WindowHandle<V>`; `add_window_view` / `add_empty_window` → `&mut VisualTestContext`; `cx.windows()`; `cx.update_window(..)`; `run_until_parked()`.
-- `VisualTestContext::simulate_close()` gọi handler should-close của cửa sổ và trả về việc nó có cho đóng hay không.
-- `simulate_prompt_answer(button)`, `has_pending_prompt()`, `simulate_path_prompt_response` cho các luồng prompt (ví dụ prompt buffer dirty giữa các cửa sổ).
-- `TestPlatform::active_window` là một `RefCell` được đặt khi cửa sổ test được activate (`window.rs:423`), nên `cx.active_window()` chạy được trong test; `window_stack()` trả `None` (impl mặc định).
-- `TestPlatform::on_open_urls` và `on_reopen` là **`unimplemented!()`** và `quit()` không làm gì. Giữ logic định tuyến trong các hàm thường nhận `&mut App` (như `handle_open_request`, `restore_or_create_workspace` của Zed) và test chúng; chỉ phần nối mỏng `Application::on_*` là không test.
-- `TestAppContext::new_app()` dựng một app thứ hai trên cùng dispatcher (hữu ích cho test kiểu "instance thứ hai").
+- `VisualTestContext::simulate_close()` calls the window's should-close handler and returns whether it allowed the close.
+- `simulate_prompt_answer(button)`, `has_pending_prompt()`, `simulate_path_prompt_response` for prompt flows (for example a dirty-buffer prompt across windows).
+- `TestPlatform::active_window` is a `RefCell` set when a test window is activated (`window.rs:423`), so `cx.active_window()` works in tests; `window_stack()` returns `None` (default impl).
+- `TestPlatform::on_open_urls` and `on_reopen` are **`unimplemented!()`** and `quit()` does nothing. Keep the routing logic in ordinary functions that take `&mut App` (like Zed's `handle_open_request`, `restore_or_create_workspace`) and test those; only the thin `Application::on_*` glue goes untested.
+- `TestAppContext::new_app()` builds a second app on the same dispatcher (useful for "second instance"-style tests).
 
 ## 8. VS Code
 
-File (microsoft/vscode `main`): `src/vs/platform/windows/electron-main/windowsMainService.ts`, `windowsFinder.ts`, `windowsStateHandler.ts`, `src/vs/platform/launch/electron-main/launchMainService.ts`, `src/vs/code/electron-main/main.ts`, `app.ts`, `src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts`, `src/vs/code/node/cli.ts`, `src/vs/platform/environment/node/argv.ts`, `src/vs/workbench/browser/workbench.contribution.ts`, `src/vs/workbench/electron-browser/desktop.contribution.ts`, `src/vs/workbench/contrib/files/browser/files.contribution.ts`, `src/vs/workbench/services/workingCopy/electron-browser/workingCopyBackupTracker.ts`.
+Files (microsoft/vscode `main`): `src/vs/platform/windows/electron-main/windowsMainService.ts`, `windowsFinder.ts`, `windowsStateHandler.ts`, `src/vs/platform/launch/electron-main/launchMainService.ts`, `src/vs/code/electron-main/main.ts`, `app.ts`, `src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts`, `src/vs/code/node/cli.ts`, `src/vs/platform/environment/node/argv.ts`, `src/vs/workbench/browser/workbench.contribution.ts`, `src/vs/workbench/electron-browser/desktop.contribution.ts`, `src/vs/workbench/contrib/files/browser/files.contribution.ts`, `src/vs/workbench/services/workingCopy/electron-browser/workingCopyBackupTracker.ts`.
 
-### 8.1 Mô hình tiến trình
-Một tiến trình main Electron sở hữu mọi cửa sổ (`windowsMainService`). Mỗi cửa sổ là một renderer với **extension host riêng**, nên extension và language server chúng khởi động chạy một lần cho mỗi cửa sổ. Pty của terminal tích hợp nằm trong một tiến trình "pty host" dùng chung, nhưng terminal thuộc về một cửa sổ.
+### 8.1 Process model
+One Electron main process owns every window (`windowsMainService`). Each window is a renderer with **its own extension host**, so the extensions and language servers they start run once per window. The integrated terminal's pty lives in a shared "pty host" process, but a terminal belongs to one window.
 
-### 8.2 Settings chọn cửa sổ
-- `window.openFoldersInNewWindow` (`on` | `off` | `default`, mặc định `default`, scope APPLICATION): `on` cửa sổ mới; `off` **thay thế cửa sổ active gần nhất**; `default` = cửa sổ mới, trừ khi chọn từ trong app (menu File/hộp thoại) thì thay thế. Bị bỏ qua khi có `--new-window` / `--reuse-window`.
-- `window.openFilesInNewWindow` (`on` | `off` | `default`, mặc định `off`): `off` = cửa sổ đang mở thư mục chứa file, không thì cửa sổ active gần nhất. `default` trên macOS = như `off` trừ khi mở qua Dock hoặc Finder; trên Linux/Windows là cửa sổ mới trừ khi mở từ hộp thoại/menu hoặc từ terminal của chính VS Code (`TERM_PROGRAM=vscode`). Logic: `shouldOpenNewWindow` (`windowsMainService.ts:1432`).
-- `window.openWithoutArgumentsInNewWindow` (`on` | `off`, mặc định `off` trên macOS, `on` ở nơi khác): lần chạy thứ hai không có tham số sẽ làm gì (`launchMainService.ts:~171`): cửa sổ trống mới hay focus cửa sổ active gần nhất.
-- `window.restoreWindows` (`preserve` | `all` | `folders` | `one` | `none`, mặc định `all`): `preserve` mở lại mọi cửa sổ *và* vẫn mở các thư mục từ CLI thành cửa sổ thêm; `all` mở lại mọi cửa sổ trừ khi dòng lệnh có truyền thư mục/workspace/file; `folders` chỉ các cửa sổ có thư mục; `one` chỉ cửa sổ active gần nhất; `none` một cửa sổ trống. Sau khi cập nhật nó luôn hành xử như `all` (`getRestoreWindowsSetting`, `windowsMainService.ts:1134`).
-- `window.closeWhenEmpty` (mặc định false): đóng editor cuối thì đóng cửa sổ, chỉ cho cửa sổ không có thư mục.
-- `window.newWindowDimensions` (`default` | `inherit` | `offset` | `maximized` | `fullscreen`), `window.restoreFullscreen`, `window.nativeTabs` (tab native macOS, cần khởi động lại), `window.confirmBeforeClose` (`always` | `keyboardOnly` | `never`, mặc định desktop `never`).
+### 8.2 Settings that choose the window
+- `window.openFoldersInNewWindow` (`on` | `off` | `default`, default `default`, scope APPLICATION): `on` new window; `off` **replaces the most recently active window**; `default` = new window, unless chosen from inside the app (File menu/dialog), in which case it replaces. Ignored when `--new-window` / `--reuse-window` is given.
+- `window.openFilesInNewWindow` (`on` | `off` | `default`, default `off`): `off` = the window that has the file's folder open, otherwise the most recently active window. `default` on macOS = same as `off` unless opened through the Dock or Finder; on Linux/Windows it is a new window unless opened from a dialog/menu or from VS Code's own terminal (`TERM_PROGRAM=vscode`). Logic: `shouldOpenNewWindow` (`windowsMainService.ts:1432`).
+- `window.openWithoutArgumentsInNewWindow` (`on` | `off`, default `off` on macOS, `on` elsewhere): what a second launch with no arguments does (`launchMainService.ts:~171`): a new empty window or focus the most recently active window.
+- `window.restoreWindows` (`preserve` | `all` | `folders` | `one` | `none`, default `all`): `preserve` reopens every window *and* still opens folders from the CLI as extra windows; `all` reopens every window unless the command line passes a folder/workspace/file; `folders` only windows that have a folder; `one` only the most recently active window; `none` one empty window. After an update it always behaves like `all` (`getRestoreWindowsSetting`, `windowsMainService.ts:1134`).
+- `window.closeWhenEmpty` (default false): closing the last editor closes the window, only for windows with no folder.
+- `window.newWindowDimensions` (`default` | `inherit` | `offset` | `maximized` | `fullscreen`), `window.restoreFullscreen`, `window.nativeTabs` (native macOS tabs, needs a restart), `window.confirmBeforeClose` (`always` | `keyboardOnly` | `never`, desktop default `never`).
 
-### 8.3 Tìm cửa sổ cho một đường dẫn
+### 8.3 Finding a window for a path
 `windowsFinder.ts`:
-- `findWindowOnFile(windows, fileUri)`: trước hết các workspace multi-root có thư mục chứa file, rồi các cửa sổ một thư mục là cha của file, **thư mục sâu nhất thắng** (sắp theo độ dài đường dẫn).
-- `findWindowOnWorkspaceOrFolder`: khớp chính xác URI thư mục hoặc file workspace; dùng để mở một thư mục đã mở thì focus cửa sổ đó.
-- Trong `doOpen` (`windowsMainService.ts:~620`): file từ CLI/Dock/desktop/link dùng `findWindowOnFile`, không thì cửa sổ active gần nhất; nếu cửa sổ đó có thư mục, thư mục được "mở lại" (focus) cùng các file; nếu nó trống, file vào thẳng đó; nếu không có cửa sổ, mở cái mới.
-- Truyền nhiều thư mục trên CLI thì thành một workspace multi-root untitled.
-- Một cửa sổ bị "thay thế" (mở thư mục với `openFoldersInNewWindow: off`): renderer được unload với `ShutdownReason.LOAD` (kiểm tra dirty / hot exit) và nạp thư mục mới trong cùng cửa sổ native.
+- `findWindowOnFile(windows, fileUri)`: first multi-root workspaces that have a folder containing the file, then single-folder windows whose folder is a parent of the file, **the deepest folder wins** (sorted by path length).
+- `findWindowOnWorkspaceOrFolder`: exact match on a folder URI or workspace file; used so that opening an already open folder focuses that window.
+- In `doOpen` (`windowsMainService.ts:~620`): files from the CLI/Dock/desktop/links use `findWindowOnFile`, otherwise the most recently active window; if that window has a folder, the folder is "reopened" (focused) along with the files; if it is empty, the files go straight into it; if there is no window, a new one opens.
+- Passing several folders on the CLI makes one untitled multi-root workspace.
+- A window being "replaced" (opening a folder with `openFoldersInNewWindow: off`): the renderer is unloaded with `ShutdownReason.LOAD` (dirty check / hot exit) and the new folder is loaded in the same native window.
 
-### 8.4 CLI `code <path>`
-- `code` chạy `cli.ts` dưới Electron-as-Node. Trên macOS nó khởi động app bằng `open -a <app> --args …` (env truyền qua `--env`); nơi khác thì spawn binary.
-- Tiến trình main mới thử **chiếm main IPC socket** (`environmentMainService.mainIPCHandle`, Unix socket / named pipe; `main.ts:352 claimInstance`). `EADDRINUSE` → kết nối làm client, gọi `launch.start(args, env)` trên instance đang chạy rồi thoát ("Sent env to running instance. Terminating..."). Nếu kết nối lỗi vì socket cũ, nó unlink và thử lại một lần.
-- `launchMainService.start` ánh xạ cờ: `-n/--new-window` → `forceNewWindow`, `-r/--reuse-window` → `forceReuseWindow`, `-a/--add` → `addMode` (thêm thư mục vào cửa sổ active gần nhất; bị bỏ qua khi không có cửa sổ hoặc lúc khởi động), `--remove`, `-g/--goto file:line[:col]` → `gotoLineMode`, `-d/--diff`, `--merge`. `preferNewWindow = !reuse && !wait`.
-- `-w/--wait`: CLI tạo một file "wait marker" tạm và truyền `--waitMarkerFilePath`; app xóa nó khi editor/cửa sổ đóng; CLI poll `whenDeleted`. Chính instance thứ hai cũng chờ `whenClosedOrLoaded` của cửa sổ được dùng.
-- Môi trường từ shell được chuyển tiếp (`userEnv`) và dùng cho cửa sổ (terminal, task).
+### 8.4 The `code <path>` CLI
+- `code` runs `cli.ts` under Electron-as-Node. On macOS it starts the app with `open -a <app> --args …` (env passed through `--env`); elsewhere it spawns the binary.
+- The new main process first tries to **claim the main IPC socket** (`environmentMainService.mainIPCHandle`, Unix socket / named pipe; `main.ts:352 claimInstance`). `EADDRINUSE` → connect as a client, call `launch.start(args, env)` on the running instance, and exit ("Sent env to running instance. Terminating..."). If the connection fails because of a stale socket, it unlinks it and retries once.
+- `launchMainService.start` maps the flags: `-n/--new-window` → `forceNewWindow`, `-r/--reuse-window` → `forceReuseWindow`, `-a/--add` → `addMode` (add the folder to the most recently active window; ignored when there is no window or at startup), `--remove`, `-g/--goto file:line[:col]` → `gotoLineMode`, `-d/--diff`, `--merge`. `preferNewWindow = !reuse && !wait`.
+- `-w/--wait`: the CLI creates a temporary "wait marker" file and passes `--waitMarkerFilePath`; the app deletes it when the editor/window closes; the CLI polls `whenDeleted`. The second instance itself also waits on the used window's `whenClosedOrLoaded`.
+- The shell's environment is forwarded (`userEnv`) and used for the window (terminal, tasks).
 
-### 8.5 Cửa sổ cuối trên macOS, Dock, cửa sổ mới
-- `lifecycleMainService.ts:300`: `window-all-closed` chỉ thoát nếu có yêu cầu thoát hoặc không phải macOS. Nên trên macOS app vẫn chạy chỉ với thanh menu.
-- `app.on('activate', (e, hasVisibleWindows))` (`app.ts:562`): không có cửa sổ hiển thị → `openEmptyWindow({ context: DOCK })`. Nó **không** khôi phục session cuối (khôi phục chỉ xảy ra lúc khởi động).
-- `app.on('new-window-for-tab')` → cửa sổ trống (nút "+" của tab macOS).
-- `workbench.action.newWindow` (cmd+shift+n / ctrl+shift+n) mở cửa sổ trống (`forceNewWindow`, `forceEmpty`); nó hiện trang Welcome theo `workbench.startupEditor`. Cửa sổ mới kế thừa profile của cửa sổ active gần nhất.
-- Bounds cửa sổ: `windowsStateHandler.ts` lưu `windowsState` = `{ lastActiveWindow, openedWindows[] }` với uiState (bounds, mode, display) theo từng thư mục/workspace/backup trống; thư mục mở lại có bounds riêng, cửa sổ mới xếp bậc thang từ cửa sổ active gần nhất (`ensureNoOverlap`). Trên macOS trạng thái của cửa sổ vừa đóng cuối được giữ trong bộ nhớ để dùng cho cửa sổ kế tiếp.
+### 8.5 Last window on macOS, Dock, new window
+- `lifecycleMainService.ts:300`: `window-all-closed` only quits if a quit was requested or the OS is not macOS. So on macOS the app keeps running with just the menu bar.
+- `app.on('activate', (e, hasVisibleWindows))` (`app.ts:562`): no visible window → `openEmptyWindow({ context: DOCK })`. It does **not** restore the last session (restore only happens at startup).
+- `app.on('new-window-for-tab')` → empty window (the macOS tab "+" button).
+- `workbench.action.newWindow` (cmd+shift+n / ctrl+shift+n) opens an empty window (`forceNewWindow`, `forceEmpty`); it shows the Welcome page according to `workbench.startupEditor`. The new window inherits the profile of the most recently active window.
+- Window bounds: `windowsStateHandler.ts` saves `windowsState` = `{ lastActiveWindow, openedWindows[] }` with uiState (bounds, mode, display) per folder/workspace/empty backup; a reopened folder has its own bounds, a new window cascades from the most recently active window (`ensureNoOverlap`). On macOS the state of the window closed last is kept in memory for the next window.
 
-### 8.6 Thoát khi còn editor dirty
-- Thoát: Electron `before-quit` → mỗi cửa sổ được unload với `ShutdownReason.QUIT`; bất kỳ cửa sổ nào cũng có thể veto, làm hủy cả việc thoát.
-- `files.hotExit` (`off` | `onExit` mặc định | `onExitAndWindowClose`): khi QUIT mọi thứ dirty được backup, **không prompt**, khôi phục lần chạy sau (`workingCopyBackupTracker.ts:217`). Khi đóng cửa sổ (CLOSE) với `onExit`: macOS hoặc nhiều hơn một cửa sổ → prompt (cửa sổ có thư mục chỉ tự backup scratchpad); cửa sổ cuối trên Win/Linux → backup, vì app thoát ngay sau đó. `onExitAndWindowClose` → backup cả cửa sổ có thư mục khi đóng.
-- Với `hotExit: off`, mỗi cửa sổ lần lượt prompt trong lúc thoát.
+### 8.6 Quitting with dirty editors
+- Quit: Electron `before-quit` → each window is unloaded with `ShutdownReason.QUIT`; any window can veto, which cancels the whole quit.
+- `files.hotExit` (`off` | `onExit` default | `onExitAndWindowClose`): on QUIT everything dirty is backed up, **no prompt**, restored next run (`workingCopyBackupTracker.ts:217`). On window close (CLOSE) with `onExit`: macOS or more than one window → prompt (a window with a folder only backs up the scratchpad automatically); the last window on Win/Linux → backup, because the app quits right after. `onExitAndWindowClose` → also backs up a window with a folder when it closes.
+- With `hotExit: off`, each window prompts in turn during quit.
 
 ### 8.7 Workspace trust, settings
-- Trust tính theo URI thư mục (hoặc thư mục cha), lưu một lần trong application storage và dùng chung cho mọi cửa sổ; mỗi cửa sổ tự đánh giá trust cho các thư mục của mình và phản ứng với thay đổi làm ở cửa sổ khác. Cửa sổ trống theo `security.workspace.trust.emptyWindow`.
-- Settings: settings user (theo profile) dùng chung cho mọi cửa sổ; settings workspace (`.vscode/settings.json` hoặc file `.code-workspace`) theo từng cửa sổ; settings folder theo từng gốc trong multi-root. Scope của setting: `application` (chỉ từ settings user, do tiến trình main đọc, ví dụ mọi `window.open*`/`restoreWindows`), `machine`, `window`, `resource`, `language-overridable`.
+- Trust is by folder URI (or parent folder), stored once in application storage and shared by every window; each window evaluates trust for its own folders and reacts to changes made in another window. An empty window follows `security.workspace.trust.emptyWindow`.
+- Settings: user settings (per profile) are shared by every window; workspace settings (`.vscode/settings.json` or a `.code-workspace` file) are per window; folder settings are per root in multi-root. Setting scopes: `application` (only from user settings, read by the main process, for example every `window.open*`/`restoreWindows`), `machine`, `window`, `resource`, `language-overridable`.
 
-## 9. Giống và khác
+## 9. Similarities and differences
 
-| Chủ đề | VS Code | Zed (b5cd310) |
+| Topic | VS Code | Zed (b5cd310) |
 |---|---|---|
-| Đơn vị mỗi cửa sổ | 1 workspace (thư mục hoặc multi-root) | `MultiWorkspace`: N project + sidebar |
-| Mở thư mục mặc định | cửa sổ mới; từ menu thì thay cửa sổ hiện tại | thêm vào cửa sổ hiện tại (`existing_window`) |
-| Mở file | cửa sổ chứa nó (thư mục sâu nhất), không thì cửa sổ active gần nhất | workspace chứa nó, không thì cửa sổ active |
-| Mở thư mục đã mở | focus cửa sổ đó | focus workspace đó (MatchExact) |
-| Dùng lại cửa sổ trống | cửa sổ trống nhận file | workspace trống hạ NewWindow→Activate |
-| Kênh CLI | main IPC socket do instance đầu tiên chiếm | URL LaunchServices (mac) / unix datagram (Linux) + kênh ngược ipc-channel |
-| Cờ CLI | `-n -r -a -g -w --remove` | `-n -a -e -w` (+ ẩn `-r --classic`) |
-| Khôi phục | `restoreWindows` all/preserve/folders/one/none | `restore_on_startup` last_session/last_workspace/empty_tab/launchpad |
-| Cửa sổ cuối (mac) | app vẫn chạy; Dock → cửa sổ trống | app vẫn chạy; Dock → khôi phục session (hoặc tạo mới) |
-| Cửa sổ cuối (Linux/Win) | thoát | thoát (`on_last_window_closed`) |
-| Thoát khi còn dirty | hot exit mặc định, không prompt | hot exit vào DB, không prompt; cửa sổ active trước |
-| Language server | theo cửa sổ (extension host) | theo project (≈ theo cửa sổ) |
-| Terminal | theo cửa sổ, pty host dùng chung | theo project |
-| Settings project | `.vscode/settings.json` theo cửa sổ | `.zed/settings.json` theo thư mục worktree, một store toàn cục khóa theo worktree |
-| Theme/keymap | cấp user (theme có thể là setting workspace) | chỉ toàn cục |
-| Trust | theo thư mục, kho toàn cục | theo đường dẫn worktree, kho toàn cục |
+| Unit per window | 1 workspace (folder or multi-root) | `MultiWorkspace`: N projects + sidebar |
+| Default open folder | new window; from the menu, replaces the current window | add to the current window (`existing_window`) |
+| Open file | the window that contains it (deepest folder), otherwise the most recently active window | the workspace that contains it, otherwise the active window |
+| Open an already open folder | focus that window | focus that workspace (MatchExact) |
+| Reuse an empty window | an empty window receives files | an empty workspace downgrades NewWindow→Activate |
+| CLI channel | main IPC socket claimed by the first instance | LaunchServices URL (mac) / unix datagram (Linux) + ipc-channel back channel |
+| CLI flags | `-n -r -a -g -w --remove` | `-n -a -e -w` (+ hidden `-r --classic`) |
+| Restore | `restoreWindows` all/preserve/folders/one/none | `restore_on_startup` last_session/last_workspace/empty_tab/launchpad |
+| Last window (mac) | app keeps running; Dock → empty window | app keeps running; Dock → restore session (or create new) |
+| Last window (Linux/Win) | quit | quit (`on_last_window_closed`) |
+| Quit with dirty buffers | hot exit by default, no prompt | hot exit into DB, no prompt; active window first |
+| Language server | per window (extension host) | per project (≈ per window) |
+| Terminal | per window, shared pty host | per project |
+| Project settings | `.vscode/settings.json` per window | `.zed/settings.json` per worktree directory, one global store keyed by worktree |
+| Theme/keymap | user level (theme can be a workspace setting) | global only |
+| Trust | by folder, global store | by worktree path, global store |
 
-## 10. Lucerna cần chú ý gì
+## 10. What Lucerna needs to watch
 
-Lucerna hiện tại (xem chỉ-đọc `crates/lucerna-workbench/src/app.rs`, `app_state.rs`, `process.rs`): `Router { shown: Option<…> }` giả định một cửa sổ; `start()` thoát khi đóng cửa sổ cuối; `open_requests::route` có thể trả `Route::NewProcess` và `process::spawn` khởi động thêm một `luc`; `AppState.settings` là một `SettingsStore` với đúng một lớp `workspace`.
+Lucerna today (read-only look at `crates/lucerna-workbench/src/app.rs`, `app_state.rs`, `process.rs`): `Router { shown: Option<…> }` assumes one window; `start()` quits when the last window closes; `open_requests::route` can return `Route::NewProcess` and `process::spawn` starts another `luc`; `AppState.settings` is one `SettingsStore` with exactly one `workspace` layer.
 
-1. **Phân lớp settings là cái bẫy lớn nhất.** `AppState.settings` trộn lớp user và *một* lớp workspace ở mức toàn cục. Với hai cửa sổ trên hai thư mục, lớp workspace phải theo từng cửa sổ (hoặc khóa theo gốc như Zed làm với `(WorktreeId, path)`). Mọi chỗ gọi `settings.get(..)` khi đó cần một vị trí (cửa sổ/gốc hoặc đường dẫn file). Theo scope của VS Code: các setting điều khiển cửa sổ (`window.*`, restore, hành vi mở) là scope application, chỉ đọc từ settings user.
-2. **Hành vi theo VS Code, cơ chế theo GPUI**: cài `window.openFoldersInNewWindow`, `window.openFilesInNewWindow`, `window.restoreWindows`, `window.closeWhenEmpty`, `window.openWithoutArgumentsInNewWindow`, ngữ nghĩa `files.hotExit`; dùng quy tắc finder của VS Code (thư mục sâu nhất thắng; thư mục đã mở thì focus). Chép quy tắc "cửa sổ trống được dùng lại" của Zed.
-3. **Mọi lần mở đi qua một hàm** (như `open_paths`) nhận một struct options và trả về cửa sổ được dùng; Finder, Dock, CLI, menu, danh sách recent, restore đều gọi nó. Giữ nó là `fn(&mut App)` thường để test được: `TestPlatform::on_open_urls`/`on_reopen` panic.
-4. **CLI → app đang chạy**: Lucerna đã nhận đường dẫn qua `on_open_urls`. Với `luc <path>` kèm cờ (`-n`, `-r`, `-a`, `-g`, `-w`), CLI cần một kênh mang cờ và env, và một câu trả lời cho `--wait`. Lựa chọn: socket kiểu VS Code (instance đầu tiên chiếm `<data_dir>/luc.sock`; xử lý socket cũ) hoặc URL kiểu Zed với kênh ngược one-shot. Tránh kiểm tra single-instance bằng cổng TCP của Zed; Unix socket trong thư mục data đơn giản hơn và mang sang Linux được. Chú ý race khởi động nguội (issue #61346 của Zed): xếp hàng các yêu cầu CLI cho đến khi restore đã mở xong các cửa sổ.
-5. **Thoát**: `on_app_quit` của GPUI không veto được. Làm prompt/hot exit trong action `Quit` trên mọi cửa sổ *trước* `cx.quit()`, cửa sổ active trước, từng cái một; Cancel hủy cả việc thoát. Thoát do hệ thống (logout, Dock Quit) chỉ chạy `on_app_quit`, nên hot exit cũng phải an toàn ở đó (ghi backup đồng bộ trong `SHUTDOWN_TIMEOUT`, hoặc luôn giữ backup cập nhật). Language server: `QuitShutdown` đã theo dõi mọi entity `LanguageServers`; kiểm tra nó vẫn đúng khi có nhiều cửa sổ.
-6. **Đóng cửa sổ cuối**: thay `on_window_closed → quit` tự viết trong `start()` bằng `QuitMode::Default` (macOS vẫn chạy, nơi khác thoát) hoặc giữ observer nhưng chỉ ngoài macOS. Rồi cài `on_reopen` (bấm Dock khi không còn cửa sổ) và làm cho action menu chạy được khi không có cửa sổ (`cx.on_action` global cho Quit, Open, Open Recent, New Window, Settings).
-7. **`active_window()` có thể là `None`** khi app ở background (ví dụ CLI chạy từ Terminal). Tự theo dõi "cửa sổ workbench active gần nhất" (như `getLastActiveWindow` của VS Code), lùi về `window_stack()`.
-8. **Khôi phục**: lưu danh sách cửa sổ và thứ tự trước ra sau lúc thoát (`window_stack`), xóa cửa sổ khỏi session khi người dùng đóng nó, khôi phục theo thứ tự đảo ngược để cửa sổ trước nhất nằm trên cùng, và giữ bounds + display theo từng thư mục. Cần quyết định hành vi Dock reopen: VS Code mở cửa sổ trống, Zed khôi phục session.
-9. **Cùng file ở hai cửa sổ**: hai editor có buffer riêng (Zed và VS Code đều làm vậy giữa các cửa sổ). Lucerna cần reload khi đĩa đổi và xử lý xung đột chạy đúng khi cửa sổ kia lưu; cân nhắc focus cửa sổ đã có file (finder của VS Code) để trường hợp này hiếm.
-10. **Tài nguyên theo cửa sổ và dùng chung**: language server theo cửa sổ khớp cả hai editor và giữ mọi thứ đơn giản; chia sẻ một server giữa các cửa sổ cần hỗ trợ workspace-folder cho từng server. Giữ `LanguageRegistry`, theme, icon theme, extension, keymap là global của app. Kho trust là global, đánh giá theo gốc của từng cửa sổ; đổi trust ở một cửa sổ phải cập nhật các cửa sổ khác.
-11. **Global giả định một cửa sổ**: rà các kiểu `impl Global` (`StatusMessage`, `SystemShellGlobal`, `Spawner`, `DefaultTerminalSpawner`, `QuitShutdown`, `TestRouter`) và trường `Router.shown`. Riêng status message ở cả hai editor đều theo từng cửa sổ.
-12. **Tab native macOS**: GPUI chỉ bật khi `WindowOptions.tabbing_identifier` là `Some`; để `None` (`window.nativeTabs` của VS Code mặc định false) trừ khi có setting yêu cầu.
-13. **Test**: dùng `TestAppContext::add_window` cho nhiều cửa sổ, `cx.windows()`, `VisualTestContext::simulate_close()`, `simulate_prompt_answer` cho luồng thoát khi còn dirty. `window_stack()` là `None` trong test, nên code không được dựa vào nó để đúng.
-14. **Tách riêng code theo nền tảng**: đường dẫn socket, LaunchServices, Dock reopen và "thoát khi đóng cửa sổ cuối" khác nhau theo OS; đặt chúng sau các hàm nhỏ để Linux/Windows theo sau được.
+1. **Settings layering is the biggest trap.** `AppState.settings` mixes the user layer and *one* workspace layer at global level. With two windows on two folders, the workspace layer must be per window (or keyed by root as Zed does with `(WorktreeId, path)`). Every `settings.get(..)` call then needs a location (window/root or file path). By VS Code's scopes: the settings that control windows (`window.*`, restore, open behavior) are application scope, read only from user settings.
+2. **Behavior follows VS Code, mechanism follows GPUI**: implement `window.openFoldersInNewWindow`, `window.openFilesInNewWindow`, `window.restoreWindows`, `window.closeWhenEmpty`, `window.openWithoutArgumentsInNewWindow`, the `files.hotExit` semantics; use VS Code's finder rules (deepest folder wins; an already open folder gets focused). Copy Zed's "reuse the empty window" rule.
+3. **Every open goes through one function** (like `open_paths`) that takes an options struct and returns the window that was used; Finder, Dock, CLI, menu, the recent list and restore all call it. Keep it a plain `fn(&mut App)` so it is testable: `TestPlatform::on_open_urls`/`on_reopen` panic.
+4. **CLI → running app**: Lucerna already receives paths through `on_open_urls`. For `luc <path>` with flags (`-n`, `-r`, `-a`, `-g`, `-w`), the CLI needs a channel that carries flags and env, and an answer for `--wait`. Options: a VS Code-style socket (the first instance claims `<data_dir>/luc.sock`; handle stale sockets) or a Zed-style URL with a one-shot back channel. Avoid Zed's TCP-port single-instance check; a Unix socket in the data directory is simpler and carries over to Linux. Watch for the cold-start race (Zed issue #61346): queue CLI requests until restore has finished opening the windows.
+5. **Quit**: GPUI's `on_app_quit` cannot veto. Do the prompt/hot exit in the `Quit` action across all windows *before* `cx.quit()`, active window first, one at a time; Cancel cancels the whole quit. A system quit (logout, Dock Quit) only runs `on_app_quit`, so hot exit must also be safe there (write the backup synchronously within `SHUTDOWN_TIMEOUT`, or always keep the backup up to date). Language servers: `QuitShutdown` already tracks every `LanguageServers` entity; check that it is still correct with several windows.
+6. **Closing the last window**: replace the hand-written `on_window_closed → quit` in `start()` with `QuitMode::Default` (macOS keeps running, elsewhere quits) or keep the observer but only outside macOS. Then implement `on_reopen` (Dock click with no windows left) and make menu actions work with no window (a global `cx.on_action` for Quit, Open, Open Recent, New Window, Settings).
+7. **`active_window()` can be `None`** when the app is in the background (for example a CLI run from Terminal). Track the "most recently active workbench window" yourself (like VS Code's `getLastActiveWindow`), falling back to `window_stack()`.
+8. **Restore**: save the list of windows and their front-to-back order at quit (`window_stack`), remove a window from the session when the user closes it, restore in reverse order so the frontmost window ends up on top, and keep bounds + display per folder. A decision is needed on Dock reopen behavior: VS Code opens an empty window, Zed restores the session.
+9. **Same file in two windows**: two editors have separate buffers (both Zed and VS Code do this across windows). Lucerna needs reload-on-disk-change and conflict handling that work correctly when the other window saves; consider focusing the window that already has the file (VS Code's finder) so this case is rare.
+10. **Per-window and shared resources**: per-window language servers match both editors and keep things simple; sharing one server across windows needs per-server workspace-folder support. Keep `LanguageRegistry`, theme, icon theme, extensions and keymap as app globals. The trust store is global, evaluated against each window's roots; changing trust in one window must update the other windows.
+11. **Globals that assume one window**: review the `impl Global` types (`StatusMessage`, `SystemShellGlobal`, `Spawner`, `DefaultTerminalSpawner`, `QuitShutdown`, `TestRouter`) and the `Router.shown` field. In both editors, the status message in particular is per window.
+12. **macOS native tabs**: GPUI only enables them when `WindowOptions.tabbing_identifier` is `Some`; leave it `None` (VS Code's `window.nativeTabs` defaults to false) unless a setting asks for it.
+13. **Tests**: use `TestAppContext::add_window` for several windows, `cx.windows()`, `VisualTestContext::simulate_close()`, `simulate_prompt_answer` for the quit-with-dirty flow. `window_stack()` is `None` in tests, so the code must not rely on it to be correct.
+14. **Keep platform-specific code separate**: the socket path, LaunchServices, Dock reopen and "quit on closing the last window" differ by OS; put them behind small functions so Linux/Windows can follow.
 
-## 11. Lucerna chọn gì
+## 11. What Lucerna chooses
 
-- Một tiến trình `luc` cho mọi cửa sổ; Dock một icon.
-- Theme, icon theme, keymap: chung cho cả app, chỉ đọc từ settings user (theo Zed; lệch VS Code vì VS Code cho đặt `workbench.colorTheme` trong workspace). Lý do: giữ nguyên ~140 chỗ đọc màu, mọi cửa sổ trông như nhau.
-- Settings: lớp default và user dùng chung; lớp workspace (`.lucerna/settings.json`) theo từng cửa sổ, là một entity riêng mà mỗi `Workbench` sở hữu và truyền xuống các entity con (theo VS Code: mỗi cửa sổ có `ConfigurationService` riêng). Không theo kiểu khóa theo vị trí của Zed vì Lucerna chỉ có một file settings ở thư mục gốc.
-- Đóng cửa sổ cuối: macOS app vẫn chạy, bấm Dock mở Welcome (theo VS Code); Linux/Windows thoát.
-- `luc <path>`: Unix socket trong thư mục data (theo VS Code), không dùng LaunchServices.
-- `window.restoreWindows` mặc định `"all"` như VS Code.
-- Mở thư mục đã mở ở cửa sổ khác thì focus cửa sổ đó; file mở ở cửa sổ có thư mục chứa nó sâu nhất (`findWindowOnFile`).
-- Language server, terminal: theo từng cửa sổ như cả hai bên. Trust: một kho chung, đánh giá theo gốc của từng cửa sổ, đổi ở cửa sổ này thì cửa sổ khác cập nhật.
+- One `luc` process for every window; one Dock icon.
+- Theme, icon theme, keymap: shared by the whole app, read only from user settings (following Zed; deviating from VS Code, which lets `workbench.colorTheme` be set in a workspace). Reason: keeps the ~140 color-reading sites unchanged, and every window looks the same.
+- Settings: the default and user layers are shared; the workspace layer (`.lucerna/settings.json`) is per window, a separate entity that each `Workbench` owns and passes down to its child entities (following VS Code: each window has its own `ConfigurationService`). Not Zed's location-keyed approach, because Lucerna has only one settings file at the root.
+- Closing the last window: on macOS the app keeps running, and a Dock click opens Welcome (following VS Code); Linux/Windows quit.
+- `luc <path>`: a Unix socket in the data directory (following VS Code), not LaunchServices.
+- `window.restoreWindows` defaults to `"all"`, like VS Code.
+- Opening a folder that is already open in another window focuses that window; a file opens in the window whose folder contains it most deeply (`findWindowOnFile`).
+- Language server, terminal: per window, like both references. Trust: one shared store, evaluated against each window's roots; a change in one window updates the others.

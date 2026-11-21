@@ -1,103 +1,103 @@
-# Nghiên cứu: Image preview
+# Research: Image preview
 
-Ngày 2026-11-18. Nguồn:
-- VS Code: `microsoft/vscode` nhánh `main`. Commit `e7d9908` (2026-10-20, #341900) xóa extension `extensions/media-preview` và chuyển trình xem ảnh vào core, ở `src/vs/workbench/contrib/mediaPreview/` (`common/mediaPreview.ts`, `mediaPreview.contribution.ts`, `browser/imageViewer.ts`, `browser/imagePreviewEditor.ts`, `browser/mediaPreviewStatusBar.ts`, `media/*.css`). Id và hành vi không đổi. Bản extension cũ xem ở commit `3f98d21`.
-- Zed: revision GPUI đang pin `b5cd310`, các crate `image_viewer` (`image_viewer.rs`, `image_info.rs`) và `project/src/image_store.rs`, cùng `gpui` (`platform.rs`, `color.rs`, `elements/img.rs`). Zed phần lớn là GPL: chỉ ghi lại thiết kế, không chép code.
+Date 2026-11-18. Sources:
+- VS Code: `microsoft/vscode` branch `main`. Commit `e7d9908` (2026-10-20, #341900) removed the `extensions/media-preview` extension and moved the image viewer into core, at `src/vs/workbench/contrib/mediaPreview/` (`common/mediaPreview.ts`, `mediaPreview.contribution.ts`, `browser/imageViewer.ts`, `browser/imagePreviewEditor.ts`, `browser/mediaPreviewStatusBar.ts`, `media/*.css`). IDs and behavior are unchanged. The old extension version is at commit `3f98d21`.
+- Zed: the GPUI revision currently pinned, `b5cd310`, the `image_viewer` crate (`image_viewer.rs`, `image_info.rs`) and `project/src/image_store.rs`, plus `gpui` (`platform.rs`, `color.rs`, `elements/img.rs`). Zed is mostly GPL: only the design is recorded, no code is copied.
 - Helix: `helix-term/src/ui/picker.rs`, `helix-term/src/commands.rs`.
 
 ## 1. VS Code
 
-- **Editor:** id `imagePreview.previewEditor`, priority `builtin`. Nhận các file khớp glob `*.{jpg,jpe,jpeg,png,bmp,gif,ico,webp,avif,svg}`. **SVG mặc định mở ra ảnh.** Người dùng đổi qua `workbench.editorAssociations`.
-- **Chuyển qua lại với mã nguồn:** khi đang xem `.svg` dạng ảnh, thanh tiêu đề editor có `imagePreview.reopenAsText`. Khi đang xem dạng text thì có `imagePreview.reopenAsPreview`. Cả hai gọi "Reopen Editor With". Không có phím tắt mặc định.
-- **Kích thước khi mở:** chế độ `fit` (`max-width/height: 100%`). Ảnh lớn thu nhỏ cho vừa khung, ảnh nhỏ không bị phóng to.
+- **Editor:** id `imagePreview.previewEditor`, priority `builtin`. Takes files matching the glob `*.{jpg,jpe,jpeg,png,bmp,gif,ico,webp,avif,svg}`. **SVG opens as an image by default.** Users change this through `workbench.editorAssociations`.
+- **Switching with source:** when viewing an `.svg` as an image, the editor title bar has `imagePreview.reopenAsText`. When viewing as text there is `imagePreview.reopenAsPreview`. Both call "Reopen Editor With". No default shortcut.
+- **Size on open:** `fit` mode (`max-width/height: 100%`). A large image shrinks to fit the frame; a small image is not enlarged.
 - **Zoom:**
-  - Click để phóng to, Alt-click (macOS) để thu nhỏ.
-  - Lăn chuột kèm Alt hoặc Ctrl, hoặc pinch trên trackpad, cũng zoom được.
-  - Các mức zoom cố định từ 0.1 đến 20. Từ 3× trở lên ảnh vẽ kiểu `pixelated`.
-  - Lệnh `imagePreview.zoomIn` và `imagePreview.zoomOut` không có phím mặc định.
-- **Thanh trạng thái (bên phải):**
-  - Mức zoom (`Whole Image` hoặc `NN%`), bấm vào để mở danh sách chọn mức.
-  - Kích thước `WxH`.
-  - Dung lượng `N.NNKB` (cơ số 1024, 2 chữ số thập phân).
-- **Nền:** ô cờ `conic-gradient` 16px, chỉ nằm sau ảnh. Màu rgb(230) với theme sáng, rgb(20) với theme tối. Ảnh có viền 1px.
-- **Tải lại:** theo dõi file, debounce 100 ms, đọc lại byte, giữ nguyên zoom và vị trí cuộn. Đọc lỗi giữa chừng (file đang được ghi) thì vẫn giữ ảnh cũ.
-- **Lỗi:** hiện "An error occurred while loading the image." trong khung xem. Bản cũ có thêm link mở bằng text editor. File con trỏ Git LFS có thông báo riêng.
-- **Setting:** không có setting nào cho ảnh.
-- **Lệnh khác:** `imagePreview.copyImage`.
+  - Click to zoom in, Alt-click (macOS) to zoom out.
+  - Mouse wheel with Alt or Ctrl, or a trackpad pinch, also zooms.
+  - Fixed zoom levels from 0.1 to 20. From 3× up the image is drawn `pixelated`.
+  - The commands `imagePreview.zoomIn` and `imagePreview.zoomOut` have no default keys.
+- **Status bar (right side):**
+  - Zoom level (`Whole Image` or `NN%`), clicking it opens a list to pick a level.
+  - Size `WxH`.
+  - File size `N.NNKB` (base 1024, 2 decimal places).
+- **Background:** a 16px `conic-gradient` checkerboard, only behind the image. Color rgb(230) with a light theme, rgb(20) with a dark theme. The image has a 1px border.
+- **Reload:** watches the file, debounce 100 ms, rereads the bytes, keeps the zoom and scroll position. If the read fails midway (the file is being written), the old image is kept.
+- **Error:** shows "An error occurred while loading the image." in the view. The old version also had a link to open in a text editor. A Git LFS pointer file has its own message.
+- **Settings:** there are no settings for images.
+- **Other commands:** `imagePreview.copyImage`.
 
 ## 2. Zed
 
-- **File mở ra ảnh:** các đuôi trong `gpui::Img::extensions()` (avif, jpg, jpeg, png, gif, webp, tif, tiff, tga, dds, bmp, ico, hdr, exr, pnm…, qoi, svg), **trừ SVG: SVG mở ra text.**
-- **Kích thước khi mở:** `min(scale_x, scale_y, 1.0)`, nghĩa là chỉ thu nhỏ, không phóng to.
-- **Zoom và kéo ảnh:**
-  - ⌘ kèm lăn chuột để zoom quanh con trỏ. Lăn chuột thường hoặc kéo chuột để di chuyển ảnh.
-  - Phím: ⌘= và ⌘- để zoom, ⌘0 về 100%, ⌘1 xem đúng kích thước gốc, ⌘⇧0 vừa khung.
-  - Có toolbar riêng cho zoom.
-- **Nền:** `gpui::checkerboard(panel_background, 32 * zoom)`, ô cờ to nhỏ theo zoom. Ảnh có viền 1px.
-- **Thanh trạng thái (`ImageInfo`):** các phần nối bằng " • ", ví dụ `1920x1080 • 1.2 MiB • 4 channels, 8 bits per pixel • PNG`.
-- **Setting:** `image_viewer.unit` nhận `binary` (mặc định, KiB) hoặc `decimal` (KB).
-- **Tải ảnh:** `ImageItem` giữ một `Arc<gpui::Image>` tạo từ byte. Định dạng đoán bằng `image::guess_format`, không đoán được thì thử SVG. View giải mã ở nền trước khi vẽ để không bị nháy.
-- **Tải lại:** khi worktree báo file đổi thì `ReloadNeeded`, đọc lại byte, giải mã xong mới thay ảnh. Sau đó giải phóng ảnh cũ bằng `window.drop_image` và `Image::remove_asset`. Tải lại lỗi thì giữ ảnh cũ và chỉ ghi log.
-- **Tab:** tiêu đề là tên file, tô màu theo trạng thái git. Icon theo loại file.
+- **Files that open as images:** the extensions in `gpui::Img::extensions()` (avif, jpg, jpeg, png, gif, webp, tif, tiff, tga, dds, bmp, ico, hdr, exr, pnm…, qoi, svg), **except SVG: SVG opens as text.**
+- **Size on open:** `min(scale_x, scale_y, 1.0)`, meaning it only shrinks, never enlarges.
+- **Zoom and dragging the image:**
+  - ⌘ with the mouse wheel zooms around the pointer. A plain wheel or dragging the mouse moves the image.
+  - Keys: ⌘= and ⌘- to zoom, ⌘0 back to 100%, ⌘1 view at exact original size, ⌘⇧0 fit to frame.
+  - There is a dedicated toolbar for zoom.
+- **Background:** `gpui::checkerboard(panel_background, 32 * zoom)`, the checker cell size scales with zoom. The image has a 1px border.
+- **Status bar (`ImageInfo`):** parts joined with " • ", for example `1920x1080 • 1.2 MiB • 4 channels, 8 bits per pixel • PNG`.
+- **Settings:** `image_viewer.unit` takes `binary` (default, KiB) or `decimal` (KB).
+- **Loading the image:** `ImageItem` holds an `Arc<gpui::Image>` built from bytes. The format is guessed with `image::guess_format`, and if that fails it tries SVG. The view decodes in the background before drawing so it does not flicker.
+- **Reload:** when the worktree reports the file changed, `ReloadNeeded` fires, the bytes are reread, and the image is swapped only after decoding finishes. Then the old image is released with `window.drop_image` and `Image::remove_asset`. If the reload fails, the old image is kept and only a log line is written.
+- **Tab:** the title is the file name, colored by git status. The icon follows the file type.
 
 ## 3. Helix
 
-Helix không xem được ảnh. Picker hiện `<Binary file>`. Mở URL `file:` trỏ tới file binary thì Helix giao cho chương trình mặc định của hệ điều hành.
+Helix cannot view images. The picker shows `<Binary file>`. Opening a `file:` URL that points to a binary file makes Helix hand it to the operating system's default program.
 
-## 4. GPUI ở revision đang pin
+## 4. GPUI at the pinned revision
 
-- `ImageFormat` có Png, Jpeg, Webp, Gif, Svg, Bmp, Tiff, Ico, Pnm. GIF có chuyển động.
-- `img(path)` lưu cache theo đường dẫn. **Ghi đè file không làm cache mất hiệu lực**, nên ảnh cũ vẫn hiện.
-- Hai cách ép tải lại:
-  - Dùng `ImageSource::Image(Arc<Image>)` với `Image::from_bytes`. Id của ảnh là hash của byte, nên nội dung mới tự có key cache mới.
-  - Hoặc gọi `remove_asset` rồi `window.drop_image`.
-- Markdown preview của Lucerna đang tải lại ảnh bằng cách tạo lại `RetainAllImageCache`.
-- `gpui::checkerboard(color, size)` có sẵn ở `color.rs`.
+- `ImageFormat` has Png, Jpeg, Webp, Gif, Svg, Bmp, Tiff, Ico, Pnm. GIFs animate.
+- `img(path)` caches by path. **Overwriting the file does not invalidate the cache**, so the old image keeps showing.
+- Two ways to force a reload:
+  - Use `ImageSource::Image(Arc<Image>)` with `Image::from_bytes`. The image id is the hash of the bytes, so new content automatically gets a new cache key.
+  - Or call `remove_asset` and then `window.drop_image`.
+- Lucerna's Markdown preview currently reloads images by recreating the `RetainAllImageCache`.
+- `gpui::checkerboard(color, size)` is available in `color.rs`.
 
-## 5. So sánh
+## 5. Comparison
 
 | | VS Code | Zed | Helix |
 |---|---|---|---|
-| SVG mặc định | Ảnh | Text | n/a |
-| Kích thước / zoom | Vừa khung, chỉ thu nhỏ; zoom 0.1–20 | Vừa khung, chỉ thu nhỏ; zoom, kéo, phím | không |
-| Thanh trạng thái | Zoom, `WxH`, dung lượng | `WxH • dung lượng • kênh • định dạng` | không |
-| Nền ô cờ | Có, 16px cố định | Có, 32px theo zoom | không |
-| Tải lại | Watcher, 100 ms, giữ zoom | Đổi trên đĩa thì đọc lại, giải mã xong mới thay | không |
-| Setting | Không | `image_viewer.unit` | không |
+| SVG by default | Image | Text | n/a |
+| Size / zoom | Fit to frame, only shrinks; zoom 0.1–20 | Fit to frame, only shrinks; zoom, drag, keys | none |
+| Status bar | Zoom, `WxH`, file size | `WxH • file size • channels • format` | none |
+| Checkerboard background | Yes, fixed 16px | Yes, 32px scaled by zoom | none |
+| Reload | Watcher, 100 ms, keeps zoom | On disk change reread, swap after decoding finishes | none |
+| Settings | None | `image_viewer.unit` | none |
 
-## 6. RAM sau khi đóng ảnh lớn (đo 2026-11-18)
+## 6. RAM after closing a large image (measured 2026-11-18)
 
-Máy: macOS 26.7.1. Mỗi app mở cùng một PNG 5000×5000 (khoảng 100 MB khi giải
-mã ra RGBA), rồi đóng tab. Số đo là physical footprint (`footprint`, `vmmap`).
-VS Code là tổng mọi tiến trình.
+Machine: macOS 26.7.1. Each app opens the same 5000×5000 PNG (about 100 MB when
+decoded to RGBA), then the tab is closed. The numbers are physical footprint
+(`footprint`, `vmmap`). VS Code is the total of all processes.
 
-| | Ban đầu | Đang mở | Sau khi đóng tab | Còn giữ lại |
+| | Initial | Open | After closing the tab | Still retained |
 |---|---|---|---|---|
-| Lucerna (bản debug, `dc0f728`) | 85 MB | 411 MB | 317 MB | khoảng 230 MB |
-| Zed 1.28.1 | 158 MB | 443 MB | 442 MB | khoảng 284 MB |
-| VS Code 1.146 | 733 MB | 1162 MB | 1033 MB (sau 40 s) | khoảng 300 MB |
+| Lucerna (debug build, `dc0f728`) | 85 MB | 411 MB | 317 MB | about 230 MB |
+| Zed 1.28.1 | 158 MB | 443 MB | 442 MB | about 284 MB |
+| VS Code 1.146 | 733 MB | 1162 MB | 1033 MB (after 40 s) | about 300 MB |
 
-**Mỗi app giữ lại phần nào:**
+**What each app retains:**
 - **Lucerna:**
-  - Texture GPU (IOAccelerator) về lại 4 MB.
-  - Dữ liệu ảnh còn sống trên CPU (`MALLOC_LARGE`) về 0.
-  - Phần còn lại là khoảng 190 MB `MALLOC_LARGE (empty)`: hai bộ đệm khoảng 95 MB sinh ra lúc giải mã. App đã `free` chúng, nhưng libmalloc vẫn giữ trong large cache.
-  - Mở rồi đóng lại lần nữa thì không tăng thêm, vì cache được dùng lại.
-- **Zed:** giữ cả texture GPU (103 MB) lẫn đúng 190 MB large cache như Lucerna. Zed có `mimalloc` làm `#[global_allocator]`, nhưng chỉ là feature tuỳ chọn và mặc định tắt (`crates/zed/src/main.rs`).
-- **VS Code:** tiến trình Renderer trả lại RAM sau GC. Tiến trình GPU của Chromium vẫn giữ khoảng 316 MB.
+  - GPU texture (IOAccelerator) is back to 4 MB.
+  - Image data still alive on the CPU (`MALLOC_LARGE`) is back to 0.
+  - The remainder is about 190 MB of `MALLOC_LARGE (empty)`: two buffers of about 95 MB produced during decoding. The app has `free`d them, but libmalloc still keeps them in its large cache.
+  - Opening and closing again does not grow it further, because the cache is reused.
+- **Zed:** keeps both the GPU texture (103 MB) and the same 190 MB large cache as Lucerna. Zed has `mimalloc` as a `#[global_allocator]`, but only as an optional feature that is off by default (`crates/zed/src/main.rs`).
+- **VS Code:** the Renderer process returns its RAM after GC. Chromium's GPU process still holds about 316 MB.
 
-**Nguyên nhân phía Lucerna** (kiểm chứng bằng một chương trình C nhỏ):
-- `malloc` rồi `free` 100 MB: footprint vẫn giữ 100 MB, kể cả sau 20 s.
-- Free 300 MB: footprint vẫn giữ nguyên.
-- `malloc_zone_pressure_relief` không trả lại được gì.
-- Chạy với `MallocLargeCache=0` thì footprint về 0 ngay sau khi free.
+**Cause on the Lucerna side** (verified with a small C program):
+- `malloc` then `free` 100 MB: the footprint still holds 100 MB, even after 20 s.
+- Freeing 300 MB: the footprint still stays the same.
+- `malloc_zone_pressure_relief` returns nothing.
+- Running with `MallocLargeCache=0`, the footprint goes to 0 right after the free.
 
-Đây là chính sách large cache của libmalloc trên macOS, không phải rò rỉ trong
-image preview.
+This is libmalloc's large-cache policy on macOS, not a leak in the image
+preview.
 
-**Quyết định:** chấp nhận.
-- Lucerna đã giải phóng mọi thứ nó sở hữu, và còn giữ ít hơn cả Zed lẫn VS Code.
-- Các cách đã cân nhắc và để lại:
-  - Một `#[global_allocator]` đưa các khối từ khoảng 16 MiB sang `mmap`/`munmap`. Cách này đụng allocator của cả chương trình, nên nếu làm thì cần spec riêng.
-  - Đặt `MallocLargeCache=0` qua `LSEnvironment`. Cách này chỉ có tác dụng khi app mở qua LaunchServices, và tắt cache cho mọi khối lớn.
-- Markdown preview có ảnh lớn cũng đi qua cùng đường giải mã, nên chịu cùng mức giữ lại này.
+**Decision:** accept.
+- Lucerna has released everything it owns, and still retains less than both Zed and VS Code.
+- Options considered and left alone:
+  - A `#[global_allocator]` that routes blocks from about 16 MiB up to `mmap`/`munmap`. This touches the whole program's allocator, so if it is done it needs its own spec.
+  - Setting `MallocLargeCache=0` through `LSEnvironment`. This only takes effect when the app is opened through LaunchServices, and it turns off the cache for every large block.
+- Markdown preview with a large image goes through the same decoding path, so it has the same level of retention.
