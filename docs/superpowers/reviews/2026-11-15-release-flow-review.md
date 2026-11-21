@@ -212,7 +212,7 @@ Date: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/2026
 - **Flow:** saving with `files.trimFinalNewlines`.
 - **Location:** [save.rs:212](../../../crates/lucerna-workbench/src/save.rs).
 - **Reproduction:** turn on `files.trimFinalNewlines`, save a file whose content is `\n\n\n`. The file is left with `\n`.
-- **Note:** VS Code produces an empty file; the agent said about 80% sure. The current test asserts the `\n` behavior.
+- **Note:** VS Code produces an empty file; the agent was about 80% sure. The current test asserts the `\n` behavior.
 - **Suggested fix:** check against VS Code's `TrimFinalNewLinesParticipant`.
 - **Fixed** (commit 404b591): an all-blank-lines file now becomes an empty file, as in VS Code.
 

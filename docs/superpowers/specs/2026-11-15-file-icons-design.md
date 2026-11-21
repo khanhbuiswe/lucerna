@@ -131,7 +131,7 @@ Divergence from Zed: Zed defaults to single-color icons and turns off icons on t
 
 Capture `luc` opened on the same sample folder (with `.ts`, `Dockerfile`, `docker-compose.yml`, `.env`, `.json`, `.md`, `.rs`) and a few tabs open. Capture before (current main) and after, in both Lucerna Dark and Lucerna Light. Save to `docs/research/file-icons-screenshots/`.
 
-## Left to the builder
+## Left to the implementer
 
 - The format of the generated data file (Rust `const`, or embedded JSON parsed once).
 - How to link font glyph codes to SVG names in `gen-seti.py`.

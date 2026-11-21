@@ -80,7 +80,7 @@ Vietnamese; everything written to the repository (code, comments, docs,
 specs, plans, research, commit messages, PR text) is English. Vietnamese
 in code is allowed only as test data.
 
-## Left to the builder
+## Left to the implementer
 
 - How files are grouped into batches, and committing per batch (stage by
   explicit path; other sessions share this checkout).

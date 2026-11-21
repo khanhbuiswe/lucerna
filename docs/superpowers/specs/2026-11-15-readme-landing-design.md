@@ -114,6 +114,6 @@ hero at 1200×630.
 `scripts/check-site.py` `METRICS` becomes `140ms, 169MB, 1.40%, 50MB`;
 `scripts/test_check_site.py` follows.
 
-## Left to the builder
+## Left to the implementer
 
 Exact wording of body copy, CSS details of the bars, mock contents.

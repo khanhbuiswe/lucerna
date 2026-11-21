@@ -301,7 +301,7 @@ Rust file that has a git diff and the same Explorer open. Save in
 `docs/research/lucerna-theme-screenshots/` (`before-dark.png`,
 `after-dark.png`, `before-light.png`, `after-light.png`).
 
-## Left to the builder
+## Left to the implementer
 
 - The exact values of colors not marked `[C]`/`[G]`/`[B]`: elevated
   background, borders, hover, the alphas, `ghost_element.*`, `element.active`,

@@ -140,7 +140,7 @@ Add to `default-settings.json` and read into `EditConfig` / the config view:
 - `lucerna-workbench` (gpui tests): ⌘D three times then type; ⌥-click to add then remove; ⇧⌥-drag across short lines then type; two-step Escape; Vim on: ⌘D ⌘D enters Insert, type in two places, Escape back to Normal with one cursor, `u` undoes the whole typing; `multiCursorModifier: ctrlCmd` swaps the roles of ⌥/⌘-click; ⌘U after ⌘D; Vim `<C-v>` select then `y` gives the same text as before (the existing tests must pass without changing their expected results).
 - Performance: measure typing with 1000 cursors and ⇧⌘L on a large file in `editor-benchmark`, recorded in `docs/perf-checklist.md`.
 
-## 7. Left to the builder
+## 7. Left to the implementer
 
 - The background threshold for ⇧⌘L, how to cache the character count in the status bar.
 - Splitting the plan into tasks (suggestion: shared find → pure multicursor → clipboard/paste → remove `block_selection` + Vim → mouse → commands/keys/settings → status bar → measuring).

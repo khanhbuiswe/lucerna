@@ -374,6 +374,6 @@ assert_eq!(
   - **T5-4** (sha of Task 2): `:-N` counts from the end; the line and column are separated by `:`, `,` or `#`; the line is clamped into `[1, line count]` like VS Code. Applies when Vim is off.
   - **T5-5** (sha of Task 1): a `crlf(true)` matcher together with a searcher whose line terminator is CRLF.
 
-  Do not edit the summary table or the line "The remaining P3 items not yet fixed"; the other groups' branches also edit this file, so that part is updated after merging into `claude/p3-fixes` (spec §5 "After merge").
+  Do not edit the summary table or the line "The remaining P3 items not yet fixed"; the other groups' branches also edit this file, so that part is updated after merging into `claude/p3-fixes` (spec §5 "After merging").
 
 - [ ] **Step 3: Commit** `docs(review): mark T3-3, T5-1, T5-4, T5-5 fixed`, with only the review file.
