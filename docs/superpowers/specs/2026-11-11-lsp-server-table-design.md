@@ -1,108 +1,108 @@
-# Bảng language server (kiểu Helix)
+# Language server table (Helix-style)
 
-Ngày 2026-11-11. Trạng thái: đã triển khai (commit 92d55bd–0c85e21, cộng commit docs sửa dòng này; gồm đợt sửa sau review cuối). Khác spec khi triển khai: `languages` của clangd là `["c","c++","objective-c"]` vì id extension là tên chữ thường; root marker của clangd giữ như Phase 3 (`compile_commands.json`, `.clangd`), không thêm `compile_flags.txt`, `.git`; lệnh cài clangd theo hệ điều hành (`xcode-select --install` trên macOS, `sudo apt install clangd` trên Linux); relay chờ vtsls đang `Starting` thay vì trả `null` ngay; lệnh `probe` của Health chạy trong thư mục root khi thư mục đã được tin cậy, chưa tin cậy thì chạy trong `$HOME`; hàng tóm tắt Health đếm server (mỗi server một lần), không đếm cặp (ngôn ngữ, server); phpactor cài bằng `composer global require phpactor/phpactor` vì Homebrew core không có formula.
+Date 2026-11-11. Status: implemented (commits 92d55bd–0c85e21, plus the docs commit that fixes this line; includes the fixes after the final review). Differences from the spec at implementation time: clangd's `languages` is `["c","c++","objective-c"]` because extension ids are lowercase names; clangd's root markers stay as in Phase 3 (`compile_commands.json`, `.clangd`), without adding `compile_flags.txt` or `.git`; the clangd install command depends on the OS (`xcode-select --install` on macOS, `sudo apt install clangd` on Linux); the relay waits for a vtsls that is `Starting` instead of returning `null` right away; Health's `probe` command runs in the root directory when the directory is trusted, and in `$HOME` when it is not; Health's summary row counts servers (each server once), not (language, server) pairs; phpactor is installed with `composer global require phpactor/phpactor` because Homebrew core has no formula for it.
 
-## 1. Mục tiêu
+## 1. Goals
 
-PHP, Ruby, Java, Kotlin, Swift, Lua, Elixir, Zig, Dart, Vue, C#, Haskell… có LSP trong Lucerna khi người dùng **tự cài server lên PATH**, không cần host WASM và không cần Lucerna tải gì. Cách làm theo Helix: một bảng server mặc định nằm trong lõi, người dùng ghi đè hoặc thêm server bằng settings JSON.
+PHP, Ruby, Java, Kotlin, Swift, Lua, Elixir, Zig, Dart, Vue, C#, Haskell… get LSP in Lucerna when the user **installs the server on PATH themselves**, with no WASM host and nothing for Lucerna to download. The approach follows Helix: a default server table lives in the core, and users override or add servers through settings JSON.
 
-Đã chốt với người dùng:
+Settled with the user:
 
-| # | Quyết định | Lý do |
+| # | Decision | Reason |
 |---|---|---|
-| T1 | **Mở rộng key `lsp` sẵn có** thay vì thêm key mới. Bảng mặc định và settings của người dùng cùng một hình dạng. | Một chỗ cấu hình cho một server; giữ tương thích với các key kiểu Zed đã có (`binary`, `initialization_options`, `settings`). |
-| T2 | **Khớp cả theo đuôi/tên file** (`file_types`), không chỉ theo id ngôn ngữ. | File Ruby, PHP… vẫn có LSP khi chưa cài extension ngôn ngữ (chỉ thiếu tô màu). Helix cũng khai báo file-types trong bảng. |
-| T3 | **Vue làm đủ, có relay** `tsserver/request` giữa vue-language-server và vtsls. | Không có relay thì phần `<script>` không có hover hay đi tới định nghĩa. Zed làm relay trong lõi; Helix không. |
-| T4 | **Popover ⚡ + tab Health + `luc lsp health`.** | Người dùng biết thiếu server nào và lệnh cài, như `hx --health`. |
-| T5 | **Bảng là dữ liệu JSON** (`servers.json`), một struct `ServerDef` thay cho trait `Adapter` và 6 adapter Rust. Hành vi đặc biệt bật bằng dữ liệu (biến `{data_dir}`, `"relay"`). | Một đường code; bảng dễ đọc, dễ ghi nguồn từng dòng; người dùng ghi đè bằng đúng hình dạng đó. |
-| T6 | **Không chép `languages.toml` của Helix** (MPL-2.0, copyleft theo file). Mỗi dòng viết từ tài liệu upstream của chính server, ghi `homepage`; đối chiếu được với nvim-lspconfig (Apache-2.0). | Lệnh, tham số, root marker là dữ kiện; tránh đưa file MPL vào repo. |
-| T7 | **Sửa D3 của Phase 3** (xem §8). | Chưa có host WASM, đây là cách rẻ nhất để có LSP cho mọi ngôn ngữ; rủi ro chạy lệnh tùy ý đã được cơ chế tin cậy thư mục chặn. |
+| T1 | **Extend the existing `lsp` key** instead of adding a new key. The default table and the user's settings share one shape. | One place to configure a server; stays compatible with the existing Zed-style keys (`binary`, `initialization_options`, `settings`). |
+| T2 | **Match by file extension/name too** (`file_types`), not only by language id. | Ruby, PHP… files still get LSP when no language extension is installed (only highlighting is missing). Helix also declares file-types in its table. |
+| T3 | **Do Vue fully, with a relay** of `tsserver/request` between vue-language-server and vtsls. | Without the relay, the `<script>` part gets no hover or go-to-definition. Zed does the relay in its core; Helix does not. |
+| T4 | **⚡ popover + Health tab + `luc lsp health`.** | The user knows which server is missing and the install command, like `hx --health`. |
+| T5 | **The table is JSON data** (`servers.json`), one `ServerDef` struct in place of the `Adapter` trait and 6 Rust adapters. Special behavior is switched on by data (the `{data_dir}` variable, `"relay"`). | One code path; the table is easy to read and to source line by line; users override it with exactly that shape. |
+| T6 | **Do not copy Helix's `languages.toml`** (MPL-2.0, file-level copyleft). Each line is written from the server's own upstream docs, with `homepage` recorded; it can be cross-checked against nvim-lspconfig (Apache-2.0). | Commands, arguments and root markers are facts; this avoids putting an MPL file in the repo. |
+| T7 | **Amend Phase 3's D3** (see §8). | There is no WASM host yet, and this is the cheapest way to get LSP for every language; the risk of running arbitrary commands is already blocked by the directory trust mechanism. |
 
-**Thành công khi:**
-- Cài `intelephense` (npm) rồi mở một file `.php` trong thư mục đã tin cậy, kể cả khi chưa cài extension PHP: có diagnostics, hover, F12, `@`.
-- Mở `.vue` khi đã cài `@vue/language-server` và `@vtsls/language-server`: hover trong `<script setup>` hiện kiểu TypeScript.
-- Thiếu server: popover ⚡ ghi "not found on PATH" kèm lệnh cài và nút Copy; tab Health và `luc lsp health` liệt kê mọi ngôn ngữ trong bảng.
-- Người dùng thêm một server bảng chưa có (ví dụ `"lsp": { "mylang-ls": { "command": "mylang-ls", "file_types": ["ml"] } }`) là chạy, không cần build lại Lucerna.
-- Mọi test của Phase 3 vẫn xanh.
+**Success when:**
+- Install `intelephense` (npm), then open a `.php` file in a trusted directory, even without the PHP extension installed: diagnostics, hover, F12 and `@` work.
+- Open a `.vue` file with `@vue/language-server` and `@vtsls/language-server` installed: hovering in `<script setup>` shows TypeScript types.
+- With a server missing: the ⚡ popover says "not found on PATH" with the install command and a Copy button; the Health tab and `luc lsp health` list every language in the table.
+- A user who adds a server the table does not have (for example `"lsp": { "mylang-ls": { "command": "mylang-ls", "file_types": ["ml"] } }`) gets it running without rebuilding Lucerna.
+- All Phase 3 tests stay green.
 
-**Ngoài phạm vi:** tự tải server; `only-features` / `except-features` của Helix; host WASM (3b, theo phương án d sau Phase 4); giao diện sửa bảng (người dùng sửa JSON); workspace nhiều root.
+**Out of scope:** downloading servers automatically; Helix's `only-features` / `except-features`; the WASM host (3b, per option d after Phase 4); a UI for editing the table (users edit JSON); multi-root workspaces.
 
-## 2. Tham khảo
+## 2. References
 
-Chi tiết ở `docs/research/2026-11-11-lsp-server-table.md`. Tóm tắt:
-- **Helix:** `[language-server.<name>]` (`command`, `args`, `config`, `timeout`, `environment`, `required-root-patterns`) và `[[language]]` (`language-servers`, `roots`, `language-id`, `file-types`). Gộp 3 lớp (mặc định → người dùng → `.helix/languages.toml`): bảng gộp theo key, mảng bị thay nguyên. `config` gửi làm `initializationOptions` và dùng trả lời `workspace/configuration`. `hx --health` chỉ chạy `which`, không khởi động server.
-- **Zed:** `lsp.<name>.{binary{path,arguments,env}, initialization_options, settings}` và `languages.<L>.language_servers` với `!`/`...`; **không** định nghĩa được server mới chỉ bằng settings (mọi server mới phải đến từ extension). Vue relay nằm trong lõi (`vue_language_server_ext.rs`).
-- **VS Code:** không có client LSP chung trong lõi; mỗi extension tự cấu hình. Các extension "generic client" (glspc…) dùng key riêng, không có chuẩn chung.
-- **Wu** (`dstrml/wu`, fork GPL của Zed) vẫn tải extension từ `api.zed.dev`. Lucerna không theo hướng này: điều khoản Zed (§2.2, §2.4(b)) chỉ cho truy cập qua cơ chế Zed chỉ định và cấm API không công khai.
-- **Lucerna lệch khỏi Zed và VS Code** ở chỗ cho định nghĩa server mới bằng settings (§8, theo Helix).
+Details are in `docs/research/2026-11-11-lsp-server-table.md`. Summary:
+- **Helix:** `[language-server.<name>]` (`command`, `args`, `config`, `timeout`, `environment`, `required-root-patterns`) and `[[language]]` (`language-servers`, `roots`, `language-id`, `file-types`). Three layers merge (default → user → `.helix/languages.toml`): tables merge by key, arrays are replaced whole. `config` is sent as `initializationOptions` and used to answer `workspace/configuration`. `hx --health` only runs `which` and does not start the server.
+- **Zed:** `lsp.<name>.{binary{path,arguments,env}, initialization_options, settings}` and `languages.<L>.language_servers` with `!`/`...`; a new server **cannot** be defined by settings alone (every new server must come from an extension). The Vue relay lives in the core (`vue_language_server_ext.rs`).
+- **VS Code:** no generic LSP client in the core; each extension configures itself. The "generic client" extensions (glspc…) use their own keys, with no common standard.
+- **Wu** (`dstrml/wu`, a GPL fork of Zed) still downloads extensions from `api.zed.dev`. Lucerna does not go this way: Zed's terms (§2.2, §2.4(b)) only allow access through the mechanism Zed designates and forbid non-public APIs.
+- **Lucerna departs from Zed and VS Code** by allowing new servers to be defined in settings (§8, following Helix).
 
-## 3. Mô hình dữ liệu
+## 3. Data model
 
-### 3.1 Một mục server
+### 3.1 A server entry
 
-`lsp.<tên>` có các trường (trường mới đánh dấu *):
+`lsp.<name>` has these fields (new fields marked *):
 
-| Trường | Kiểu | Ý nghĩa |
+| Field | Type | Meaning |
 |---|---|---|
-| `command`* | chuỗi | Tên binary tìm trên PATH của login shell, hoặc đường dẫn tuyệt đối |
-| `args`* | mảng chuỗi | Tham số; hỗ trợ biến (§3.3) |
-| `env`* | object chuỗi → chuỗi | Biến môi trường thêm vào (gộp lên môi trường login shell) |
-| `languages`* | mảng id ngôn ngữ Lucerna | Ví dụ `"php"`, `"vue.js"`, `"c++"` (id extension = tên chữ thường, dấu cách thành `-`) |
-| `file_types`* | mảng | Đuôi file (`"rb"`) hoặc tên file đầy đủ (`"Gemfile"`); so khớp không phân biệt hoa thường với đuôi, phân biệt với tên file |
-| `language_id`* | chuỗi, hoặc object id Lucerna → id LSP | `languageId` trong `didOpen`. Không có thì dùng id ngôn ngữ Lucerna; file không có ngôn ngữ thì dùng giá trị chuỗi, hoặc phần tử đầu của `languages` |
-| `root_markers`* | mảng | Tên file/thư mục đánh dấu root; hỗ trợ glob `*.sln`, `*.cabal` |
-| `root_search`* | `"nearest"` \| `"outermost"` \| `"ordered"` | Như `RootSearch` hiện có (`ordered` = `NearestByMarker`) |
-| `probe`* | mảng chuỗi hoặc `false` | Lệnh chạy thử khi tìm binary (mặc định `["--version"]`) |
-| `enabled`* | bool | Mặc định `true`; server thay thế trong bảng mặc định là `false` |
-| `relay`* | `"vue-tsserver"` | Bật relay của Vue (§5) |
-| `install`* | chuỗi, hoặc object `macos`/`linux`/`windows` → chuỗi | Lệnh cài hiển thị trong Health |
-| `homepage`* | URL | Tài liệu upstream; cũng là nguồn của dòng này |
-| `note`* | chuỗi | Ghi chú một dòng hiển thị trong tab Health (ví dụ server ghi vào thư mục project) |
-| `binary` | object `{path, arguments, env}` | Có sẵn (kiểu Zed); `path` thay `command`, `arguments` thay `args`, `env` gộp lên `env` |
-| `initialization_options` | object | Có sẵn |
-| `settings` | object | Có sẵn (trả lời `workspace/configuration`, `didChangeConfiguration`) |
+| `command`* | string | Binary name looked up on the login shell's PATH, or an absolute path |
+| `args`* | array of strings | Arguments; variables are supported (§3.3) |
+| `env`* | object string → string | Extra environment variables (merged onto the login shell environment) |
+| `languages`* | array of Lucerna language ids | For example `"php"`, `"vue.js"`, `"c++"` (extension id = lowercase name, spaces become `-`) |
+| `file_types`* | array | File extension (`"rb"`) or full file name (`"Gemfile"`); matching is case-insensitive for extensions and case-sensitive for file names |
+| `language_id`* | string, or object Lucerna id → LSP id | `languageId` in `didOpen`. If absent, the Lucerna language id is used; a file with no language uses the string value, or the first element of `languages` |
+| `root_markers`* | array | File/directory names that mark the root; globs such as `*.sln`, `*.cabal` are supported |
+| `root_search`* | `"nearest"` \| `"outermost"` \| `"ordered"` | Same as the existing `RootSearch` (`ordered` = `NearestByMarker`) |
+| `probe`* | array of strings or `false` | Command run as a trial when looking for the binary (default `["--version"]`) |
+| `enabled`* | bool | Default `true`; alternative servers in the default table are `false` |
+| `relay`* | `"vue-tsserver"` | Turns on the Vue relay (§5) |
+| `install`* | string, or object `macos`/`linux`/`windows` → string | Install command shown in Health |
+| `homepage`* | URL | Upstream docs; also the source of this line |
+| `note`* | string | One-line note shown in the Health tab (for example the server writes into the project directory) |
+| `binary` | object `{path, arguments, env}` | Already exists (Zed-style); `path` replaces `command`, `arguments` replaces `args`, `env` merges onto `env` |
+| `initialization_options` | object | Already exists |
+| `settings` | object | Already exists (answers `workspace/configuration`, `didChangeConfiguration`) |
 
-Một mục **dùng được** khi có `command` (hoặc `binary.path`) và có ít nhất một trong `languages` / `file_types`. Mục chỉ ghi đè vài trường của một server mặc định (ví dụ chỉ `settings`) vẫn hợp lệ vì được gộp với dòng mặc định.
+An entry is **usable** when it has `command` (or `binary.path`) and at least one of `languages` / `file_types`. An entry that only overrides a few fields of a default server (for example only `settings`) is still valid because it is merged with the default line.
 
-### 3.2 Gộp lớp
+### 3.2 Layer merging
 
-- Ba lớp: **mặc định** (`crates/lucerna-lsp/assets/servers.json`, nhúng bằng `include_str!`) → **User** → **Workspace**. Lớp User và Workspace là giá trị `lsp` mà `SettingsStore` đã gộp (object gộp đệ quy, lớp trên thắng; giá trị không phải object thay nguyên).
-- Gộp mặc định với settings cùng quy tắc: object gộp theo key đệ quy; mảng (`args`, `languages`, `file_types`, `root_markers`, `probe`) bị thay nguyên.
-- **Tin cậy:** khi thư mục chưa tin cậy, Lucerna không chạy server nào và không đọc `lsp` của lớp Workspace (như Phase 3, `get_trusted`). Khi đã tin cậy, lớp Workspace được đọc đầy đủ, kể cả `command`.
-- Chọn server cho một ngôn ngữ vẫn dùng `lucerna.lsp.languageServers` ghi đè theo ngôn ngữ (`"[php]": { … }`), với `!tên` và `"..."`. `"..."` gồm mọi server **đang bật** khớp với file (§4.1), theo thứ tự tên.
-- Kết quả gộp là `ServerTable { servers: BTreeMap<Arc<str>, ServerDef>, errors: Vec<TableError> }`. Mục sai kiểu hoặc thiếu trường bắt buộc vào `errors` (kèm tên key và lý do) và bị bỏ qua; các mục khác vẫn dùng được.
+- Three layers: **default** (`crates/lucerna-lsp/assets/servers.json`, embedded with `include_str!`) → **User** → **Workspace**. The User and Workspace layers are the `lsp` value that `SettingsStore` has already merged (objects merge recursively, the upper layer wins; non-object values replace whole).
+- Merging the default with settings follows the same rules: objects merge by key recursively; arrays (`args`, `languages`, `file_types`, `root_markers`, `probe`) are replaced whole.
+- **Trust:** when the directory is untrusted, Lucerna runs no server and does not read the Workspace layer's `lsp` (as in Phase 3, `get_trusted`). When trusted, the Workspace layer is read in full, including `command`.
+- Choosing servers for a language still uses `lucerna.lsp.languageServers` to override per language (`"[php]": { … }`), with `!name` and `"..."`. `"..."` covers every **enabled** server that matches the file (§4.1), in name order.
+- The merge result is `ServerTable { servers: BTreeMap<Arc<str>, ServerDef>, errors: Vec<TableError> }`. An entry of the wrong type or missing a required field goes into `errors` (with the key name and the reason) and is skipped; the other entries stay usable.
 
-### 3.3 Biến trong `args` và `env`
+### 3.3 Variables in `args` and `env`
 
-| Biến | Giá trị |
+| Variable | Value |
 |---|---|
-| `{root}` | Root của server (§4.2) |
-| `{data_dir}` | `<data dir Lucerna>/lsp/<tên server>/<hash ngắn của root>`; tạo nếu chưa có |
-| `{npm_root}` | Kết quả `npm root -g` (chạy nền một lần mỗi tiến trình, timeout 5 s, dùng môi trường login shell) |
+| `{root}` | The server's root (§4.2) |
+| `{data_dir}` | `<Lucerna data dir>/lsp/<server name>/<short hash of root>`; created if missing |
+| `{npm_root}` | Result of `npm root -g` (run in the background once per process, 5 s timeout, using the login shell environment) |
 
-Biến không biết, hoặc `{npm_root}` thất bại, thì server đó chuyển sang `Failed` với thông báo nêu biến. Không có biến nào trong `command`.
+An unknown variable, or a failed `{npm_root}`, moves that server to `Failed` with a message naming the variable. No variable is allowed in `command`.
 
-## 4. Khớp file và vòng đời
+## 4. File matching and lifecycle
 
-### 4.1 Chọn server cho một file
+### 4.1 Choosing servers for a file
 
-1. Nếu file có ngôn ngữ Lucerna (id `L`) và có server trong bảng (bật hay tắt) liệt kê `L` trong `languages`: các server đó.
-2. Nếu không có ngôn ngữ, hoặc không server nào liệt kê `L` (extension đặt tên khác bảng, ví dụ "Terraform Vars" → `terraform-vars` cho `.tfvars`, "OCaml Interface" → `ocaml-interface` cho `.mli`): server có đuôi file hoặc tên file trong `file_types`.
-3. Lọc theo `lucerna.lsp.languageServers` của `L` (hoặc mặc định `["..."]` khi không có ngôn ngữ) và `enabled`.
-4. `languageId` trong `didOpen` theo `language_id` (§3.1).
+1. If the file has a Lucerna language (id `L`) and the table has servers (enabled or not) that list `L` in `languages`: those servers.
+2. If there is no language, or no server lists `L` (an extension named differently from the table, for example "Terraform Vars" → `terraform-vars` for `.tfvars`, "OCaml Interface" → `ocaml-interface` for `.mli`): the servers whose `file_types` contain the file's extension or name.
+3. Filter by `L`'s `lucerna.lsp.languageServers` (or the default `["..."]` when there is no language) and by `enabled`.
+4. `languageId` in `didOpen` follows `language_id` (§3.1).
 
-`Documents` phát `DocumentEvent::Opened` cả khi `language_id` là `None`; `LanguageServers` dùng đường dẫn để khớp `file_types`. Kiểm tra "file quá lớn" và "chưa tin cậy" giữ nguyên.
+`Documents` emits `DocumentEvent::Opened` even when `language_id` is `None`; `LanguageServers` uses the path to match `file_types`. The "file too large" and "untrusted" checks stay unchanged.
 
-### 4.2 Root, khởi động, nhiều server
+### 4.2 Root, startup, multiple servers
 
-- Root tìm theo `root_markers` và `root_search` như Phase 3; marker có `*` hoặc `?` là glob trên tên các mục trong từng thư mục cha. File ngoài workspace dùng server đang chạy (như bản sửa cuối Phase 3).
-- `ServerKey.server` đổi từ `&'static str` sang `Arc<str>` vì tên server giờ đến từ dữ liệu.
-- Một file có thể gắn nhiều server (đã có). Mọi request (hover, định nghĩa, symbol…) gộp như Phase 3.
-- Settings đổi: tính lại bảng; server có `command`/`args`/`env`/`binary`/`initialization_options` đổi thì restart, chỉ `settings` đổi thì `didChangeConfiguration`, server bị bỏ hoặc tắt thì stop (logic `SettingsDiff` hiện có, so trên `ServerDef`).
+- The root is found by `root_markers` and `root_search` as in Phase 3; a marker with `*` or `?` is a glob over the entry names in each parent directory. A file outside the workspace uses the running server (as in the final Phase 3 fix).
+- `ServerKey.server` changes from `&'static str` to `Arc<str>` because the server name now comes from data.
+- A file can be attached to several servers (already the case). Every request (hover, definition, symbols…) merges as in Phase 3.
+- When settings change: recompute the table; a server whose `command`/`args`/`env`/`binary`/`initialization_options` changed is restarted, one whose only `settings` changed gets `didChangeConfiguration`, one removed or disabled is stopped (the existing `SettingsDiff` logic, comparing on `ServerDef`).
 
 ## 5. Vue
 
-- Bảng mặc định: `vue-language-server` (`--stdio`, `languages: ["vue.js"]`, `file_types: ["vue"]`, `language_id: "vue"`, `relay: "vue-tsserver"`) và `vtsls` (`--stdio`, `languages: ["vue.js"]`, `file_types: ["vue"]`, `language_id: "vue"`), với `settings` của vtsls (trả lời `workspace/configuration`, như nvim-lspconfig) khai báo plugin:
+- Default table: `vue-language-server` (`--stdio`, `languages: ["vue.js"]`, `file_types: ["vue"]`, `language_id: "vue"`, `relay: "vue-tsserver"`) and `vtsls` (`--stdio`, `languages: ["vue.js"]`, `file_types: ["vue"]`, `language_id: "vue"`), with vtsls's `settings` (answering `workspace/configuration`, as in nvim-lspconfig) declaring the plugin:
 
   ```json
   { "vtsls": { "tsserver": { "globalPlugins": [ {
@@ -112,33 +112,33 @@ Biến không biết, hoặc `{npm_root}` thất bại, thì server đó chuyể
   } ] } } }
   ```
 
-  (Biến cũng được thay trong `settings` và `initialization_options`.)
-- **Relay** (trong `lucerna-lsp`, bật bởi `relay: "vue-tsserver"`): vue-language-server gửi notification `tsserver/request` với mảng các `[id, command, args]`. Với mỗi phần tử, Lucerna tìm server `vtsls` đang `Running` cùng root (không có thì `typescript-language-server`, như Zed), gửi `workspace/executeCommand { command: "typescript.tsserverRequest", arguments: [command, args, { isAsync: true, lowPriority: true }] }`, rồi gửi lại vue-language-server notification `tsserver/response` với `[[id, body]]` (body là `result.body` của câu trả lời, `null` khi lỗi). Không có server TypeScript cùng root thì trả ngay `[[id, null]]` để vue-language-server không treo; nếu server đó đang `Starting` thì request chờ tới khi nó `Running` (gửi đi) hoặc thất bại/dừng (trả `null`), vì vue-language-server gửi `_vue:projectInfo` ngay sau `didOpen`, lúc vtsls thường chưa khởi động xong (nvim-lspconfig thử lại 10 lần × 100 ms cho cùng lý do). Mỗi request chạy nền và trả lời riêng, không chặn event khác.
-- **Hình dạng đã kiểm** (2026-11-11) với `vuejs/language-tools` (MIT): `packages/language-server/lib/server.ts` gửi `sendNotification('tsserver/request', [id, command, args])` và nhận `tsserver/response` bằng `([id, res]) => …`; `vscode-jsonrpc` bọc một tham số mảng vào mảng params, nên trên dây là `[[id, command, args]]` và `[[id, body]]`. Client VS Code (`extensions/vscode/src/extension.ts`) gọi `typescript.tsserverRequest` với `command, args, { isAsync: true, lowPriority: true }` và trả `res?.body`. nvim-lspconfig `lsp/vue_ls.lua` (Apache-2.0) cũng mở hai lớp mảng và trả `{ { id, r and r.body } }`, nhưng bỏ object thứ ba trong `arguments`. Lucerna theo client VS Code; khớp với mô tả ở trên.
-- TypeScript/JavaScript thuần vẫn dùng `typescript-language-server` (như Phase 3). vtsls chỉ gắn với `.vue`; người dùng muốn dùng vtsls cho TS thì thêm `"typescript"` vào `languages` của nó và chọn bằng `languageServers`.
+  (Variables are also substituted in `settings` and `initialization_options`.)
+- **Relay** (in `lucerna-lsp`, enabled by `relay: "vue-tsserver"`): vue-language-server sends a `tsserver/request` notification with an array of `[id, command, args]`. For each element, Lucerna finds a `Running` `vtsls` with the same root (or else `typescript-language-server`, as Zed does), sends `workspace/executeCommand { command: "typescript.tsserverRequest", arguments: [command, args, { isAsync: true, lowPriority: true }] }`, then sends vue-language-server a `tsserver/response` notification with `[[id, body]]` (body is the reply's `result.body`, `null` on error). If there is no TypeScript server with the same root, it immediately replies `[[id, null]]` so vue-language-server does not hang; if that server is `Starting`, the request waits until it is `Running` (then sends) or fails/stops (then replies `null`), because vue-language-server sends `_vue:projectInfo` right after `didOpen`, when vtsls usually has not finished starting (nvim-lspconfig retries 10 times × 100 ms for the same reason). Each request runs in the background and is answered separately, without blocking other events.
+- **Verified shape** (2026-11-11) against `vuejs/language-tools` (MIT): `packages/language-server/lib/server.ts` sends `sendNotification('tsserver/request', [id, command, args])` and receives `tsserver/response` with `([id, res]) => …`; `vscode-jsonrpc` wraps a single array parameter in a params array, so on the wire it is `[[id, command, args]]` and `[[id, body]]`. The VS Code client (`extensions/vscode/src/extension.ts`) calls `typescript.tsserverRequest` with `command, args, { isAsync: true, lowPriority: true }` and returns `res?.body`. nvim-lspconfig's `lsp/vue_ls.lua` (Apache-2.0) also unwraps two array levels and returns `{ { id, r and r.body } }`, but drops the third object in `arguments`. Lucerna follows the VS Code client; this matches the description above.
+- Plain TypeScript/JavaScript still uses `typescript-language-server` (as in Phase 3). vtsls is attached only to `.vue`; a user who wants vtsls for TS adds `"typescript"` to its `languages` and selects it with `languageServers`.
 
 ## 6. jdtls
 
-Dòng trong bảng: `"command": "jdtls", "args": ["-data", "{data_dir}"]` (script launcher của Homebrew, cần JDK 21+). `{data_dir}` nằm trong data dir của Lucerna nên jdtls không ghi workspace data vào project. Không cần adapter Rust riêng.
+Table line: `"command": "jdtls", "args": ["-data", "{data_dir}"]` (Homebrew's launcher script, needs JDK 21+). `{data_dir}` lives in Lucerna's data dir so jdtls does not write workspace data into the project. No dedicated Rust adapter is needed.
 
 ## 7. Health
 
-- **Popover ⚡:** hàng server `NotFound` cho các file đang mở hiện thêm dòng lệnh cài theo hệ điều hành hiện tại (font code, mờ) và nút chữ "Copy" (chép lệnh vào clipboard). Lỗi bảng (`TableError`) hiện thành hàng riêng "Invalid `lsp.<tên>`: <lý do>". Cuối popover thêm nút "Show All Languages…" mở tab Health. Dùng lại `popover`, `text_button`, `tooltip` của `ui.rs`.
-- **Tab Health** (`lucerna.lsp.health`, `TabItem::LspHealth`, một tab, không lưu workspace state): danh sách chỉ đọc, mỗi dòng một cặp (ngôn ngữ, server) trong bảng, gom theo ngôn ngữ với header như `excerpt_list`. Cột: server, trạng thái (`✓ /đường/dẫn` màu `text.muted`, `✗ not found` màu `warning`, `disabled` mờ), lệnh cài + nút Copy. Đầu tab có hàng tóm tắt "18 of 40 servers found" (đếm server, mỗi server một lần) và nút refresh; lỗi bảng hiện ngay dưới, cùng dạng hàng với popover. `which` và `probe` chạy nền, kết quả cache tới khi bấm refresh, settings đổi hoặc thư mục đổi trạng thái tin cậy. `probe` chạy trong root khi thư mục đã tin cậy, không thì trong `$HOME` (shim rustup, asdf, mise đọc file cấu hình của thư mục).
-- **`luc lsp health`:** in cùng bảng ra stdout dạng cột (ngôn ngữ, server, trạng thái, lệnh cài), không cần GUI; mã thoát 0. Dùng `lucerna-lsp` trực tiếp và settings User (không đọc settings Workspace của thư mục hiện tại).
-- Server ghi vào thư mục project (ruby-lsp `.ruby-lsp/`, elixir-ls `.elixir_ls/`, metals `.metals/` `.bloop/`, clangd `.cache/clangd/`, sourcekit-lsp `.build/`) có ghi chú một dòng trong tab Health. Không chặn: thư mục đã qua bước tin cậy.
+- **⚡ popover:** a `NotFound` server row for the open files additionally shows the install command for the current OS (code font, muted) and a text button "Copy" (copies the command to the clipboard). Table errors (`TableError`) appear as their own row "Invalid `lsp.<name>`: <reason>". The bottom of the popover gets a "Show All Languages…" button that opens the Health tab. Reuses `popover`, `text_button`, `tooltip` from `ui.rs`.
+- **Health tab** (`lucerna.lsp.health`, `TabItem::LspHealth`, a single tab, not saved in workspace state): a read-only list, one row per (language, server) pair in the table, grouped by language with headers like `excerpt_list`. Columns: server, status (`✓ /path/to/binary` in `text.muted`, `✗ not found` in `warning`, `disabled` muted), install command + Copy button. The top of the tab has a summary row "18 of 40 servers found" (counts servers, each once) and a refresh button; table errors appear right below, in the same row form as the popover. `which` and `probe` run in the background, and the results are cached until refresh is clicked, settings change, or the directory's trust state changes. `probe` runs in the root when the directory is trusted, otherwise in `$HOME` (rustup, asdf and mise shims read the directory's config files).
+- **`luc lsp health`:** prints the same table to stdout as columns (language, server, status, install command), with no GUI needed; exit code 0. Uses `lucerna-lsp` directly and the User settings (does not read the current directory's Workspace settings).
+- Servers that write into the project directory (ruby-lsp `.ruby-lsp/`, elixir-ls `.elixir_ls/`, metals `.metals/` `.bloop/`, clangd `.cache/clangd/`, sourcekit-lsp `.build/`) get a one-line note in the Health tab. Not blocking: the directory has already passed the trust step.
 
-## 8. Thay đổi spec cũ
+## 8. Changes to older specs
 
-- **Phase 3, D3** đổi từ "Không cho tự khai báo server chỉ bằng settings" thành: "**Cho tự khai báo server bằng settings** (`lsp.<tên>.command`…), theo Helix. Lệch khỏi VS Code và Zed. Lý do: chưa có host WASM, đây là cách rẻ nhất để có LSP cho mọi ngôn ngữ; rủi ro chạy lệnh tùy ý đã được cơ chế tin cậy thư mục chặn (settings Workspace chỉ được đọc khi đã tin cậy)." Mục "Ngoài phạm vi" của Phase 3 bỏ "server tự khai báo".
-- Phase 3 §3.1 `adapters`: bảng adapter Rust thay bằng `servers.json`; giá trị các dòng rust-analyzer, gopls, basedpyright/pyright, typescript-language-server, clangd giữ nguyên.
-- Phase 3 §8 settings: `lsp` thêm các trường §3.1.
+- **Phase 3, D3** changes from "Do not allow declaring a server by settings alone" to: "**Allow declaring a server by settings** (`lsp.<name>.command`…), following Helix. Departs from VS Code and Zed. Reason: there is no WASM host yet, and this is the cheapest way to get LSP for every language; the risk of running arbitrary commands is already blocked by the directory trust mechanism (Workspace settings are only read when trusted)." Phase 3's "Out of scope" section drops "user-declared servers".
+- Phase 3 §3.1 `adapters`: the table of Rust adapters is replaced by `servers.json`; the values of the rust-analyzer, gopls, basedpyright/pyright, typescript-language-server and clangd lines stay unchanged.
+- Phase 3 §8 settings: `lsp` gains the §3.1 fields.
 
-## 9. Bảng mặc định
+## 9. Default table
 
-Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong bảng nhưng `enabled: false`. Lệnh và root marker lấy từ tài liệu upstream (cột "Nguồn" = `homepage`), đối chiếu nvim-lspconfig. Cột "Ngôn ngữ" là id Lucerna (bundled hoặc từ extension phổ biến); `file_types` liệt kê các đuôi tương ứng.
+Each language has exactly one server enabled by default; alternative servers are in the table with `enabled: false`. Commands and root markers come from upstream docs (the "Source" column = `homepage`), cross-checked against nvim-lspconfig. The "Language" column is the Lucerna id (bundled or from a common extension); `file_types` lists the matching extensions.
 
-| Ngôn ngữ (id) | Server bật | Lệnh | Root markers | Cài (macOS) | Tắt sẵn |
+| Language (id) | Enabled server | Command | Root markers | Install (macOS) | Disabled by default |
 |---|---|---|---|---|---|
 | rust | rust-analyzer | `rust-analyzer` | `Cargo.toml` (outermost) | `rustup component add rust-analyzer` | |
 | go | gopls | `gopls` | `go.work`, `go.mod` (ordered) | `go install golang.org/x/tools/gopls@latest` | |
@@ -152,7 +152,7 @@ Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong b
 | lua | lua-language-server | `lua-language-server` | `.luarc.json`, `.luarc.jsonc`, `.stylua.toml`, `selene.toml`, `.git` | `brew install lua-language-server` | |
 | elixir | elixir-ls | `elixir-ls` | `mix.exs` | `brew install elixir-ls` | expert |
 | zig | zls | `zls` | `build.zig`, `zls.json` | `brew install zls` | |
-| dart | dart | `dart language-server --protocol=lsp` | `pubspec.yaml` | Dart SDK hoặc Flutter | |
+| dart | dart | `dart language-server --protocol=lsp` | `pubspec.yaml` | Dart SDK or Flutter | |
 | vue.js | vue-language-server + vtsls | §5 | `package.json` | `npm i -g @vue/language-server @vtsls/language-server` | |
 | c, c++, objective-c | clangd | `clangd` | `compile_commands.json`, `.clangd` | `xcode-select --install` (Linux: `sudo apt install clangd`) | |
 | c# | csharp-ls | `csharp-ls` | `*.sln`, `*.slnx`, `*.csproj` | `dotnet tool install -g csharp-ls` | roslyn-language-server |
@@ -163,8 +163,8 @@ Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong b
 | dockerfile | docker-langserver | `docker-langserver --stdio` | `Dockerfile`, `.git` | `npm i -g dockerfile-language-server-nodejs` | |
 | yaml | yaml-language-server | `yaml-language-server --stdio` | `.git` | `brew install yaml-language-server` | |
 | json, jsonc | vscode-json-language-server | `… --stdio` | `.git` | `npm i -g vscode-langservers-extracted` | |
-| css, scss, less | vscode-css-language-server | `… --stdio` | `package.json`, `.git` | như trên | |
-| html | vscode-html-language-server | `… --stdio` | `package.json`, `.git` | như trên | |
+| css, scss, less | vscode-css-language-server | `… --stdio` | `package.json`, `.git` | as above | |
+| html | vscode-html-language-server | `… --stdio` | `package.json`, `.git` | as above | |
 | shellscript | bash-language-server | `bash-language-server start` | `.git` | `brew install bash-language-server` | |
 | toml | taplo | `taplo lsp stdio` | `.taplo.toml`, `taplo.toml`, `.git` | `brew install taplo` | |
 | markdown | marksman | `marksman server` | `.marksman.toml`, `.git` | `brew install marksman` | |
@@ -172,36 +172,36 @@ Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong b
 | gleam | gleam | `gleam lsp` | `gleam.toml` | `brew install gleam` | |
 | erlang | elp | `elp server` | `rebar.config`, `.elp.toml`, `erlang.mk` | `brew install erlang-language-platform` | |
 
-Test kiểm id ngôn ngữ bundled của Lucerna (`shellscript`, `json`…) có trong registry và được bảng nêu tên; id extension (`php`, `ruby`, `vue.js`, `c++`, `c#`…) chỉ được kiểm đúng dạng (chữ thường, không dấu cách), không kiểm khớp extension thật vì extension không có sẵn khi test. File có id không server nào liệt kê vẫn có server nhờ `file_types` (§4.1, có test).
+A test checks that Lucerna's bundled language ids (`shellscript`, `json`…) are in the registry and named by the table; extension ids (`php`, `ruby`, `vue.js`, `c++`, `c#`…) are only checked for the right form (lowercase, no spaces), not for matching a real extension, because extensions are not available during tests. A file whose id no server lists still gets a server through `file_types` (§4.1, covered by a test).
 
-## 10. Kiến trúc mã
+## 10. Code architecture
 
-- `crates/lucerna-lsp/assets/servers.json`: bảng mặc định.
-- `crates/lucerna-lsp/src/table.rs` (mới): `ServerDef`, `ServerTable::build(defaults: &Value, user_and_workspace: &Value) -> ServerTable`, gộp lớp, kiểm tra từng mục, `TableError`.
-- `crates/lucerna-lsp/src/vars.rs` (mới): thay `{root}`, `{data_dir}`, `{npm_root}`.
-- `crates/lucerna-lsp/src/relay.rs` (mới): relay Vue.
-- `crates/lucerna-lsp/src/adapters.rs`: bỏ trait `Adapter` và các `Static`; giữ `find_root` (nhận `&ServerDef`) và thêm glob.
-- `crates/lucerna-lsp/src/settings.rs`, `registry.rs`: dùng `ServerDef`, `ServerKey.server: Arc<str>`, `select_servers` theo §4.1.
-- `crates/lucerna-lsp/src/health.rs` (mới): `health(table, launcher) -> Vec<HealthRow>`, dùng chung cho tab và CLI.
-- `crates/lucerna-workbench`: `language_servers` dùng `ServerTable` và khớp `file_types`; `lsp_status.rs` thêm lệnh cài + Copy + lỗi bảng; `lsp_health.rs` (mới) cho tab Health; `TabItem::LspHealth`.
-- `crates/lucerna/src/`: lệnh con `luc lsp health` (như `luc ext`).
+- `crates/lucerna-lsp/assets/servers.json`: the default table.
+- `crates/lucerna-lsp/src/table.rs` (new): `ServerDef`, `ServerTable::build(defaults: &Value, user_and_workspace: &Value) -> ServerTable`, layer merging, per-entry validation, `TableError`.
+- `crates/lucerna-lsp/src/vars.rs` (new): substitutes `{root}`, `{data_dir}`, `{npm_root}`.
+- `crates/lucerna-lsp/src/relay.rs` (new): the Vue relay.
+- `crates/lucerna-lsp/src/adapters.rs`: drop the `Adapter` trait and the `Static`s; keep `find_root` (taking `&ServerDef`) and add glob.
+- `crates/lucerna-lsp/src/settings.rs`, `registry.rs`: use `ServerDef`, `ServerKey.server: Arc<str>`, `select_servers` per §4.1.
+- `crates/lucerna-lsp/src/health.rs` (new): `health(table, launcher) -> Vec<HealthRow>`, shared by the tab and the CLI.
+- `crates/lucerna-workbench`: `language_servers` uses `ServerTable` and matches `file_types`; `lsp_status.rs` adds the install command + Copy + table errors; `lsp_health.rs` (new) for the Health tab; `TabItem::LspHealth`.
+- `crates/lucerna/src/`: the `luc lsp health` subcommand (like `luc ext`).
 
-## 11. Xử lý lỗi
+## 11. Error handling
 
-- Mục sai: bỏ qua mục đó, báo trong popover ⚡ và tab Health; không panic, không ảnh hưởng server khác.
-- `npm root -g` thất bại hoặc timeout: chỉ server dùng `{npm_root}` chuyển `Failed`, thông báo "npm not found; {npm_root} unavailable".
-- Relay không tìm thấy vtsls, hoặc vtsls trả lỗi: trả `[[id, null]]`.
-- `servers.json` hỏng là lỗi lúc build (test bắt), không phải lỗi lúc chạy.
+- Bad entry: skip that entry, report it in the ⚡ popover and the Health tab; no panic, no effect on other servers.
+- `npm root -g` fails or times out: only servers using `{npm_root}` move to `Failed`, with the message "npm not found; {npm_root} unavailable".
+- The relay cannot find vtsls, or vtsls returns an error: reply `[[id, null]]`.
+- A broken `servers.json` is a build-time error (caught by a test), not a runtime error.
 
-## 12. Kiểm thử
+## 12. Testing
 
-- **Bảng mặc định:** parse được; mỗi dòng có `command`, có `languages` hoặc `file_types`, có `install` và `homepage`; mỗi ngôn ngữ đúng một server `enabled`.
-- **`table.rs`:** gộp (object gộp, mảng thay, User thắng mặc định, Workspace thắng User); mục sai vào `errors`; ghi đè chỉ `settings` của server mặc định.
-- **Khớp:** theo ngôn ngữ; theo đuôi và tên file khi không có ngôn ngữ; `language_id` dạng chuỗi và dạng object; `languageServers` với `!`/`...`.
-- **Biến:** `{root}`, `{data_dir}` (tạo thư mục), `{npm_root}` (fake launcher), biến không biết.
+- **Default table:** parses; every line has `command`, has `languages` or `file_types`, has `install` and `homepage`; every language has exactly one `enabled` server.
+- **`table.rs`:** merging (objects merge, arrays replace, User beats default, Workspace beats User); a bad entry goes into `errors`; overriding only `settings` of a default server.
+- **Matching:** by language; by extension and file name when there is no language; `language_id` as string and as object; `languageServers` with `!`/`...`.
+- **Variables:** `{root}`, `{data_dir}` (creates the directory), `{npm_root}` (fake launcher), unknown variable.
 - **Root:** glob `*.sln`.
-- **Relay:** hai `FakeServer` (vue và vtsls): `tsserver/request` → `workspace/executeCommand` sang vtsls → `tsserver/response` đúng id; không có vtsls thì trả `null`.
-- **Workbench:** mở `.rb` khi không có ngôn ngữ Ruby vẫn khởi động server Ruby (fake); popover hiện lệnh cài và Copy chép đúng chuỗi; tab Health liệt kê đủ dòng và trạng thái; server do người dùng khai báo trong settings User chạy được; khai báo trong `.lucerna/settings.json` chỉ chạy khi đã tin cậy.
-- **CLI:** snapshot `luc lsp health` với fake launcher.
-- **Phase 3:** toàn bộ test cũ xanh.
-- **Thử thật:** rust-analyzer, clangd (và server npm/brew có sẵn nếu đã cài) trên máy phát triển.
+- **Relay:** two `FakeServer`s (vue and vtsls): `tsserver/request` → `workspace/executeCommand` to vtsls → `tsserver/response` with the right id; with no vtsls, replies `null`.
+- **Workbench:** opening `.rb` with no Ruby language still starts the Ruby server (fake); the popover shows the install command and Copy copies the exact string; the Health tab lists all rows and statuses; a server declared in User settings runs; one declared in `.lucerna/settings.json` runs only when trusted.
+- **CLI:** snapshot of `luc lsp health` with a fake launcher.
+- **Phase 3:** all old tests green.
+- **Real runs:** rust-analyzer, clangd (and npm/brew servers if installed) on the development machine.
